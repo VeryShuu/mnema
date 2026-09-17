@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Протоколы</h2>
+<table>
+<tr><th>ID</th><th>Job</th><th>Тема</th><th>Модель LLM</th><th>Создан</th><th></th></tr>
+{% for p in protocols %}
+<tr>
+ <td><a href="/protocols/{{ p.id }}">{{ p.id }}</a></td>
+ <td><a href="/jobs/{{ p.job_id }}">{{ p.job_id }}</a></td>
+ <td>{{ jobs[p.job_id].topic if p.job_id in jobs else '' }}</td>
+ <td>{{ p.llm_model or '—' }}</td>
+ <td>{{ p.created_ts }}</td>
+ <td>
+   <a href="/api/protocols/{{ p.id }}?format=md">md</a>
+   <a href="/api/protocols/{{ p.id }}?format=docx">docx</a>
+   <a href="/api/protocols/{{ p.id }}?format=json">json</a>
+ </td>
+</tr>
+{% else %}<tr><td colspan="6" class="muted">нет протоколов</td></tr>{% endfor %}
+</table>
+{% endblock %}

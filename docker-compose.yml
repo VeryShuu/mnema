@@ -1,0 +1,60 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+    command: ["python", "-m", "mnema.api.main"]
+    env_file: .env
+    environment:
+      - DATABASE_URL=sqlite:////data/db.sqlite
+      - ARCHIVE_DIR=/data/archive
+    volumes:
+      - data:/data
+      - ./templates:/app/templates:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+    command: ["python", "-m", "mnema.worker.main"]
+    env_file: .env
+    environment:
+      - DATABASE_URL=sqlite:////data/db.sqlite
+      - ARCHIVE_DIR=/data/archive
+    volumes:
+      - data:/data
+      - hf-cache:/root/.cache/huggingface
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  web-bot:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.webbot
+    env_file: .env
+    environment:
+      - ZOOM_PROFILE_DIR=/data/zoom-profile
+      - DATA_DIR=/data
+    volumes:
+      - data:/data
+      - ./templates:/app/templates:ro
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+volumes:
+  data:
+  redis-data:
+  hf-cache:

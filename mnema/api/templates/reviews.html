@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Очередь уточнений (ФТ-28)</h2>
+{% for r in pending %}
+<div class="card" style="border-left:4px solid #eab308">
+  <h3>Job #{{ r.job_id }} ({{ jobs[r.job_id].topic if r.job_id in jobs else '' }}) — кластер «{{ r.cluster_label }}»</h3>
+  {% if r.candidate %}
+    <p>Похоже на <b>{{ r.candidate }}</b> ({{ '%.0f'|format((r.similarity or 0)*100) }}%). Это он?</p>
+    <form onsubmit="answer({{ r.id }}, {{ r.candidate_id }}, null);return false;">
+      <button type="submit">Да, это {{ r.candidate }}</button>
+    </form>
+    <form style="margin-top:.3rem" onsubmit="return createFor({{ r.id }})">
+      Нет — создать новый профиль: <input placeholder="ФИО" id="name_{{ r.id }}" required>
+      <button type="submit">Создать</button>
+    </form>
+  {% else %}
+    <p>Голос не опознан. Выберите сотрудника или создайте профиль:</p>
+    <form onsubmit="return createFor({{ r.id }})">
+      <select id="sel_{{ r.id }}">
+        <option value="">— создать нового: </option>
+        {% for p in profiles %}<option value="{{ p.id }}">{{ p.employee_name }}</option>{% endfor %}
+      </select>
+      <input placeholder="ФИО нового (если нет выше)" id="name_{{ r.id }}">
+      <button type="submit">Применить</button>
+    </form>
+  {% endif %}
+  <p><b>Эталонные фрагменты:</b></p>
+  {% for seg in refsegs.get(r.id, []) %}
+    <p><audio controls preload="none" src="/api/jobs/{{ r.job_id }}/audio?format=wav#t={{ seg.t_start }},{{ seg.t_end }}"></audio>
+    <span class="muted">{{ '%.0f'|format(seg.t_start) }}–{{ '%.0f'|format(seg.t_end) }} с: {{ seg.text[:80] }}</span></p>
+  {% endfor %}
+</div>
+{% else %}<p class="muted">Нет ожидающих уточнений.</p>{% endfor %}
+<script>
+async function answer(rid, employeeId, employeeName){
+  const body = {employee_id: employeeId, employee_name: employeeName};
+  await fetch('/api/reviews/'+rid, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  location.reload();
+}
+function createFor(rid){
+  const sel = document.getElementById('sel_'+rid);
+  if (sel && sel.value){ answer(rid, parseInt(sel.value), null); return false; }
+  const nm = document.getElementById('name_'+rid).value.trim();
+  if(!nm){ alert('Укажите ФИО'); return false; }
+  answer(rid, null, nm); return false;
+}
+</script>
+{% endblock %}

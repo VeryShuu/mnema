@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Встречи и расписание</h2>
+<div class="card">
+  <h3>Создать задачу</h3>
+  <form method="post" action="/jobs/create">
+    <input name="meeting_link" placeholder="Ссылка-приглашение Zoom или meeting_id" size="60" required>
+    <input name="topic" placeholder="Тема">
+    <input name="start_at" type="datetime-local" title="Пусто — записать сейчас">
+    <button type="submit">Создать</button>
+  </form>
+  <form method="post" action="/jobs/import-ics" enctype="multipart/form-data" style="margin-top:.5rem">
+    <input type="file" name="file" accept=".ics">
+    <button type="submit">Импорт .ics</button>
+  </form>
+</div>
+<p>
+ Фильтр:
+ <a href="/jobs">все</a>
+ <a href="/jobs?status=scheduled">scheduled</a>
+ <a href="/jobs?status=recording">recording</a>
+ <a href="/jobs?status=done">done</a>
+ <a href="/jobs?status=failed">failed</a>
+</p>
+<table>
+<tr><th>ID</th><th>Тема</th><th>Meeting</th><th>Старт</th><th>Статус</th><th></th></tr>
+{% for j in jobs %}
+<tr>
+ <td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td>
+ <td>{{ j.topic }}</td><td>{{ j.zoom_meeting_id }}</td><td>{{ j.start_at }}</td>
+ <td><span class="badge {{ j.status }}">{{ j.status }}</span></td>
+ <td>{% if j.status in ('scheduled','launching','recording','processing') %}
+   <button hx-post="/jobs/{{ j.id }}/cancel" hx-on="click: location.reload()">Отменить</button>{% endif %}</td>
+</tr>
+{% endfor %}
+</table>
+{% endblock %}

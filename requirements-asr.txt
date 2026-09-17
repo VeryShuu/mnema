@@ -1,0 +1,8 @@
+# Tyazhelye zavisimosti ASR/diarizacii (worker). Otdel'no ot baza,
+# chtoby api-image ne tashchil PyTorch. USTANAVLIVAETSYA: pip install -r requirements-asr.txt
+torch>=2.2
+torchaudio>=2.2
+silero-vad>=5.1
+pyannote.audio>=3.1
+faster-whisper>=1.0
+numpy>=1.26

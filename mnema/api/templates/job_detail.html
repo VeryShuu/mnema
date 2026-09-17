@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Job #{{ job.id }} — {{ job.topic }}</h2>
+<div class="card">
+  <table>
+    <tr><th>Meeting</th><td>{{ job.zoom_meeting_id }}</td></tr>
+    <tr><th>Статус</th><td><span class="badge {{ job.status }}">{{ job.status }}</span></td></tr>
+    <tr><th>Пароль</th><td>{{ 'задан (скрыт)' if pwd_present else 'нет' }}</td></tr>
+    <tr><th>Старт</th><td>{{ job.start_at }}</td></tr>
+    <tr><th>Запись начата</th><td>{{ job.started_ts or '—' }}</td></tr>
+    <tr><th>Завершено</th><td>{{ job.ended_ts or '—' }}</td></tr>
+    {% if job.fail_reason %}<tr><th>Причина сбоя</th><td>{{ job.fail_reason }}</td></tr>{% endif %}
+    {% if job.error %}<tr><th>Ошибка</th><td>{{ job.error }}</td></tr>{% endif %}
+    {% if job.note %}<tr><th>Примечание</th><td>{{ job.note }}</td></tr>{% endif %}
+  </table>
+</div>
+<div class="card">
+  <h3>Аудио (ФТ-41)</h3>
+  {% for a in audio %}
+    <p>{{ a.kind }} — {{ '%.0f'|format(a.duration_s) if a.duration_s else '?' }} с, {{ (a.bytes//1024 if a.bytes else '?') }} КБ
+      <a href="/api/jobs/{{ job.id }}/audio?format={{ a.kind }}">скачать</a>
+      {% if a.kind=='mp3' %}<audio controls src="/api/jobs/{{ job.id }}/audio?format=mp3"></audio>{% endif %}
+    </p>
+  {% else %}<p class="muted">аудио пока нет</p>{% endfor %}
+</div>
+{% if protocol %}<p><a href="/protocols/{{ protocol.id }}">Открыть протокол →</a></p>{% endif %}
+{% if reviews %}<p><a href="/reviews">Есть нерешённые уточнения ({{ reviews|length }}) →</a></p>{% endif %}
+<div class="card">
+  <h3>Event-log (автообновление)</h3>
+  <div class="log" hx-get="/api/jobs/{{ job.id }}" hx-trigger="every 5s"
+       hx-swap="outerHTML" id="log">
+    <table><tr><th>Время</th><th>Событие</th><th>Детали</th></tr>
+    {% for e in events %}<tr><td>{{ e.ts }}</td><td>{{ e.event }}</td><td>{{ e.detail }}</td></tr>{% endfor %}
+    </table>
+  </div>
+</div>
+{% endblock %}
