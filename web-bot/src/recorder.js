@@ -8,9 +8,18 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildJoinUrl } from "./config.js";
 
+function cleanSingletonLocks(profileDir) {
+  // Ostatochnye blokirovki Chromium (upavshiy protsess / drugoy konteyner):
+  // bez udaleniya profil' nie otkroetsya (exitCode=21).
+  for (const f of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+    try { fs.rmSync(path.join(profileDir, f), { force: true }); } catch { /* net — norm */ }
+  }
+}
+
 // Health-check Zoom-сессии (FT-24): otkryt' app.zoom.us persistent-profilem i
 // proverdity, ne trebuetsya li login (sessiya iva ~2 nedeli). Vozvr. true ok.
 export async function healthCheckSession(cfg) {
+  cleanSingletonLocks(cfg.zoomProfileDir);
   let ctx;
   try {
     ctx = await chromium.launchPersistentContext(cfg.zoomProfileDir, {
@@ -32,7 +41,7 @@ export async function healthCheckSession(cfg) {
   }
 }
 
-const EVENT = { // FT-9
+export const EVENT = { // FT-9
   NAVIGATING: "navigating", PREJOIN: "prejoin", WAITING_ROOM: "waiting_room",
   JOINED: "joined", ENDED: "ended", BOT_WALL: "bot_wall", LOGIN_REQUIRED: "login_required",
   TRACK_ADDED: "track_added", TRACK_REMOVED: "track_removed",
@@ -42,6 +51,7 @@ const EVENT = { // FT-9
 export async function launchAndRecord(jobId, cfg, holder, onEvent) {
   const jobDir = path.join(cfg.dataDir, "jobs", String(jobId));
   fs.mkdirSync(jobDir, { recursive: true });
+  cleanSingletonLocks(cfg.zoomProfileDir);
   const webmPath = path.join(jobDir, "raw.webm");
   const wavPath = path.join(jobDir, "meeting.wav");
   const mp3Path = path.join(jobDir, "meeting.mp3");
@@ -60,33 +70,47 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
 
   const state = {
     stopRequested: false, reloads: 0, joinedAt: null, lastChunksTs: Date.now(),
-    chunksSaved: 0,
+    lastNavTs: Date.now(), chunksSaved: 0,
   };
   holder.requestStop = () => { state.stopRequested = true; };
 
   await page.addInitScript(INIT_SCRIPT);
 
-  // --- vykachivanie chankov kazhdye N s (FT-1): bazu ne teryaem pri padenii
+  // --- vykachivanie chankov kazhdye N s (FT-1): iz VSEH freymov (vstrecha
+  //     Zoom zhivyot v dochernem iframe — v main frame audio net)
   let recording = false;
   let lastOffset = 0;
+  const frameOffsets = new Map(); // frame -> kol-vo vykachannyh bait
   const file = fs.openSync(webmPath, "a");
   const flushTimer = setInterval(async () => {
     if (!recording) return;
     try {
-      const b64 = await page.evaluate(([off]) =>
-        (window.__mnemaDrain ? window.__mnemaDrain(off) : null), [lastOffset]);
-      if (b64 && b64.data && b64.data.length) {
-        fs.writeSync(file, Buffer.from(b64.data, "base64"));
-        state.chunksSaved = b64.total;
-        lastOffset = b64.total;
-        state.lastChunksTs = Date.now();
-        if (b64.total % 15 === 0)
-          onEvent(EVENT.CHUNKS_SAVED, `total=${b64.total}`);
+      let gotAny = false;
+      let tracks = 0;
+      for (const fr of page.frames()) {
+        const off = frameOffsets.get(fr) || 0;
+        let b64 = null;
+        try {
+          b64 = await fr.evaluate((o) =>
+            (window.__mnemaDrain ? window.__mnemaDrain(o) : null), [off]);
+        } catch (e) { frameOffsets.set(fr, 0); continue; }
+        if (!b64) continue;
+        const st = await fr.evaluate(() => window.__mnemaStatus ? window.__mnemaStatus() : null).catch(() => null);
+        if (st && st.tracks > tracks) tracks = st.tracks;
+        if (b64.data && b64.data.length) {
+          fs.writeSync(file, Buffer.from(b64.data, "base64"));
+          frameOffsets.set(fr, b64.total);
+          lastOffset = (lastOffset || 0) + b64.data.length;
+          state.chunksSaved += b64.total - off;
+          gotAny = true;
+          state.lastChunksTs = Date.now();
+        }
       }
-      const st = await page.evaluate(() => window.__mnemaStatus ? window.__mnemaStatus() : null);
-      if (st) {
-        if (st.tracks !== undefined) onEvent(EVENT.TRACK_ADDED, `live_tracks=${st.tracks}`);
-      }
+      state.liveTracks = tracks;
+      if (tracks > 0 && (flushTimer.counter = (flushTimer.counter || 0) + 1) % 6 === 0)
+        onEvent(EVENT.TRACK_ADDED, `live_tracks=${tracks}`);
+      if (gotAny && (flushTimer.saved = (flushTimer.saved || 0) + 1) % 12 === 0)
+        onEvent(EVENT.CHUNKS_SAVED, `saved=${state.chunksSaved} bait`);
     } catch (e) {
       onEvent(EVENT.ERROR, `flush: ${e.message}`);
     }
@@ -106,15 +130,18 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
     // uzhol konca vstrechi / tihi / hard-limit (FT-4)
     const end = await waitForEnd(page, cfg, state, onEvent);
 
-    // ostannie chanki (do zaversheniya тайméra)
-    try {
-      const b64 = await page.evaluate(([off]) =>
-        window.__mnemaDrain ? window.__mnemaDrain(off) : null, [lastOffset]);
-      if (b64 && b64.data?.length) {
-        fs.writeSync(file, Buffer.from(b64.data, "base64"));
-        lastOffset = b64.total;
-      }
-    } catch { /* stranitsa uzhe mohla utochn */ }
+    // ostannie chanki iz vseh freymov
+    for (const fr of page.frames()) {
+      try {
+        const off = frameOffsets.get(fr) || 0;
+        const b64 = await fr.evaluate(([o]) =>
+          window.__mnemaDrain ? window.__mnemaDrain(o) : null, [off]);
+        if (b64 && b64.data?.length) {
+          fs.writeSync(file, Buffer.from(b64.data, "base64"));
+          frameOffsets.set(fr, b64.total);
+        }
+      } catch { /* stranitsa uzhe mohla utochn */ }
+    }
 
     if (end.reason === "reload_exhausted") {
       return { ok: false, fail_reason: "page_crash",
@@ -129,29 +156,42 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
 }
 
 // ------------------------------------------------------------------ zahod
+// Oprasivanie klassifikatora poka chto-to raspoznanno (DOM za Gruzitsya dolgo).
+async function pollClassify(page, timeoutMs, intervalMs = 2000) {
+  const until = Date.now() + timeoutMs;
+  let last = "pending";
+  while (Date.now() < until) {
+    last = await classifyPage(page);
+    if (last !== "pending") return last;
+    await page.waitForTimeout(intervalMs);
+  }
+  return last;
+}
+
 async function joinMeeting(page, cfg, state, onEvent, jobId) {
   const deadlineMs = Date.now() + (cfg.joinDeadlineMin * 60 - cfg.prejoinSeconds) * 1000;
   let joinUrl = process.env.MNEMA_JOIN_URL; // dlya testov: lokalnaya fixtura
   if (!joinUrl) {
     const meta = await fetchJobMeta(jobId);
     if (!meta) return { ok: false, reason: "timeout", error: "net meta job" };
-    joinUrl = buildJoinUrl(cfg, meta.meeting_id, meta.pwd);
+    joinUrl = joinUrlFromMeta(cfg, meta);
   }
   onEvent(EVENT.NAVIGATING, "to join url");
 
+  let navigated = false;
   while (Date.now() < deadlineMs && !state.stopRequested) {
-    try {
-      await page.goto(joinUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-    } catch (e) {
-      if (!state.stopRequested) {
+    if (!navigated) {
+      try {
+        await page.goto(joinUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+        navigated = true;
+      } catch (e) {
         onEvent(EVENT.ERROR, `goto: ${e.message}`);
         await page.waitForTimeout(5000);
         continue;
       }
-      return { ok: false, reason: "timeout", error: String(e.message) };
     }
 
-    const verdict = await classifyPage(page);
+    const verdict = await pollClassify(page, 12000, 2000);
     if (verdict === "bot_wall") {
       onEvent(EVENT.BOT_WALL, "Automated bots aren't allowed");
       return { ok: false, reason: "zoom_requires_rtms",
@@ -169,39 +209,49 @@ async function joinMeeting(page, cfg, state, onEvent, jobId) {
         onEvent(EVENT.JOINED, "iz waiting room");
         return { ok: true };
       }
-      if (classifyPage(page) === "waiting_room") {
-        onEvent(EVENT.WAITING_ROOM, "stuck");
-        return { ok: false, reason: "waiting_room_stuck",
-                 error: "host ne vypustil iz waiting room" };
-      }
-      continue;
+      return { ok: false, reason: "waiting_room_stuck",
+               error: "host ne vypustil iz waiting room" };
     }
     if (verdict === "meeting_ended") {
       return { ok: false, reason: "not_started", error: "vstrecha uze zasvershena" };
     }
     if (verdict === "prejoin") {
       onEvent(EVENT.PREJOIN, "imya + Join");
-      await fillNameAndJoin(page, cfg.botName);
-      if (await waitForLeaveButton(page, deadlineMs)) {
+      await fillNameAndJoin(page, cfg, onEvent);
+      // reCAPTCHA: reshaet tol'ko chelovek (§12). Zhdём vruchnuyu prokhod
+      // cherez noVNC (MAX CAPTCHA_WAIT_MIN), bez avtomatiki.
+      if (await waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent)) {
         onEvent(EVENT.JOINED, "s pred-join");
         return { ok: true };
       }
-      const v2 = await classifyPage(page);
-      if (v2 === "bot_wall") {
-        return { ok: false, reason: "zoom_requires_rtms", error: "stena posle Join" };
-      }
-      continue;
+      continue; // eshche raz proitiremovat i popytats'
     }
     if (verdict === "joined") {
       onEvent(EVENT.JOINED, "uže v zone");
       return { ok: true };
     }
-    // hosts_ne_started/registry:
-    onEvent(EVENT.PREJOIN, "zhdём starta vstrechi");
-    await page.waitForTimeout(15000);
+    // pending: zhdём; esli 1.5 min bez izmeneniy — odin reload dlya strahovki
+    onEvent(EVENT.PREJOIN, "zhdём otobrazenia vstrechi");
+    if (Date.now() - state.lastNavTs > 90000) {
+      onEvent(EVENT.RELOAD, "stalyy pending - reload");
+      navigated = false;
+      state.lastNavTs = Date.now();
+    }
   }
   return { ok: false, reason: state.stopRequested ? "cancelled" : "not_started",
            error: state.stopRequested ? "ostanovleno vruchnuyu" : "deadline vhoda istёk" };
+}
+
+function joinUrlFromMeta(cfg, meta) {
+  // Pryamoy prioglashatel'nyy ssylki (PMN /my/..., /j/...) s parolem.
+  if (meta.join_link) {
+    let u = meta.join_link;
+    if (meta.pwd && !/[?&]pwd=/.test(u)) {
+      u += (u.includes("?") ? "&" : "?") + "pwd=" + encodeURIComponent(meta.pwd);
+    }
+    return u;
+  }
+  return buildJoinUrl(cfg, meta.meeting_id, meta.pwd);
 }
 
 async function fetchJobMeta(jobId) {
@@ -216,50 +266,108 @@ async function fetchJobMeta(jobId) {
 }
 
 // Klassifikator sostoyaniya stranitsy po neskolkim priznakam (FT-4/12 'hristkost' DOM).
+// Vebl-klient Zoom: /my/... i /j/... otkryvayut zaglushku s iframe
+// (meetings/iframe.html), gde lezhat knopki «Join from browser»/pre-join.
 export async function classifyPage(page) {
   try {
-    const info = await page.evaluate(() => {
-      const txt = document.body ? document.body.innerText : "";
-      const has = (s) => txt.toLowerCase().includes(s.toLowerCase());
-      const leaveBtn =
-        document.querySelector("[aria-label='Leave meeting']") ||
-        document.querySelector("[data-variant='danger'] :text('Leave')") ||
-        [...document.querySelectorAll("button")].some((b) => /leave/i.test(b.innerText));
-      const joinBtn = [...document.querySelectorAll("button")].some(
-        (b) => /^(Join|Join from your browser)$/i.test(b.innerText.trim()));
-      return {
-        leaveBtn, joinBtn,
-        botWall: has("Automated bots aren't allowed") || has("must use a Zoom app") || has("Zoom Workplace app"),
-        signRequired: has("Sign in to continue to Zoom"),
-        waitingRoom: has("Please wait for the host to start this meeting") ||
-                     has("waiting room") || !!document.querySelector("#waitingSessionTitle"),
-        ended: has("The meeting has ended") || has("This meeting has ended"),
-      };
-    });
+    const frames = page.frames();
+    let info = { leaveBtn: false, joinBrowser: false, join: false, micJoin: false,
+                 botWall: false, signRequired: false, waitingRoom: false, ended: false,
+                 captcha: false };
+    for (const fr of frames) {
+      const loc = await fr.evaluate(() => {
+        const txt = document.body ? document.body.innerText : "";
+        const has = (s) => txt.toLowerCase().includes(s.toLowerCase());
+        const btns = [...document.querySelectorAll("button, a")].map(
+          (b) => (b.innerText || b.getAttribute("aria-label") || "").trim().toLowerCase());
+        return {
+          leaveBtn: btns.some(t => /leave|выйти из встречи/.test(t)),
+          joinBrowser: btns.some(t => /join from browser|войти из браузера/.test(t)),
+          join: btns.some(t => t === "join" || t === "присоединиться"),
+          micJoin: !!document.querySelector("#join_with_audio_link, #mic-button"),
+          botWall: has("automated bots aren't allowed") || has("must use a zoom app") ||
+                   has("join requires sign in") || has("rtms"),
+          signRequired: has("sign in to continue to zoom"),
+          waitingRoom: has("please wait for the host to start this meeting") ||
+                       has("waiting for the host"),
+          ended: has("the meeting has ended") || has("this meeting has ended"),
+          captcha: /recaptcha/i.test(document.location.href)
+                   || document.querySelector("iframe[src*='recaptcha'], .grecaptcha-badge") !== null
+                   || has("protected by recaptcha"),
+        };
+      }).catch(() => null);
+      if (!loc) continue;
+      for (const k of Object.keys(info)) info[k] = info[k] || loc[k];
+    }
     if (info.signRequired) return "login_required";
-    if (info.botWall) return "bot_wall";
+    if (info.botWall && !info.captcha) return "bot_wall";
     if (info.ended) return "meeting_ended";
     if (info.leaveBtn) return "joined";
+    if (info.captcha) return "captcha";
     if (info.waitingRoom) return "waiting_room";
-    if (info.joinBtn) return "prejoin";
+    if (info.joinBrowser || info.join || info.micJoin) return "prejoin";
     return "pending";
   } catch (e) {
     return "pending";
   }
 }
 
-async function fillNameAndJoin(page, botName) {
-  try {
-    const nameInput = page.locator("input[type='text']").first();
-    if (await nameInput.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await nameInput.fill(botName);
+// Knopku/pole iskhem vo VSEH freymah (vebl-klientZoom rizmesya po IFRAMEam).
+async function clickAnyFrame(page, nameRe, waitMs = 3000) {
+  const until = Date.now() + waitMs;
+  while (Date.now() < until) {
+    for (const fr of page.frames()) {
+      const btn = fr.getByRole("button", { name: nameRe }).first();
+      if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
+        await btn.click({ timeout: 5000 }).catch(() => {});
+        return true;
+      }
+      const link = fr.locator("a,div[role=button]").filter({ hasText: nameRe }).first();
+      if (await link.isVisible({ timeout: 300 }).catch(() => false)) {
+        await link.click({ timeout: 5000 }).catch(() => {});
+        return true;
+      }
     }
-    const joinBtn = page.getByRole("button", { name: /^(Join|Join from your browser)$/i }).first();
-    if (await joinBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await joinBtn.click();
+    await page.waitForTimeout(1000);
+  }
+  return false;
+}
+
+async function fillAnyFrame(page, botName, waitMs = 6000) {
+  const until = Date.now() + waitMs;
+  while (Date.now() < until) {
+    for (const fr of page.frames()) {
+      const inp = fr.locator("input[type='text']").first();
+      if (await inp.isVisible({ timeout: 500 }).catch(() => false)) {
+        await inp.fill(botName).catch(() => {});
+        return true;
+      }
+    }
+    await page.waitForTimeout(1000);
+  }
+  return false;
+}
+
+async function fillNameAndJoin(page, cfg, onEvent) {
+  try {
+    await clickAnyFrame(page, /accept cookies/i, 2500);
+    // ekran «Join meeting» -> «Join from browser»
+    if (await clickAnyFrame(page, /join from browser|войти из браузера/i, 4000)) {
+      onEvent(EVENT.PREJOIN, "nata 'Join from browser'");
+      await page.waitForTimeout(4000);
+    }
+    // pred-join: imya + Join
+    await fillAnyFrame(page, cfg.botName, 8000);
+    if (await clickAnyFrame(page, /^join$|присоединиться/i, 8000)) {
+      onEvent(EVENT.PREJOIN, "nata 'Join'");
+      await page.waitForTimeout(3000);
+    }
+    // vybor audiomarshruta (esli wyskakhyvaet okno)
+    if (await clickAnyFrame(page, /join with (computer )?audio|войти с компьютер/i, 8000)) {
+      onEvent(EVENT.PREJOIN, "nata 'Join with computer audio'");
     }
   } catch (e) {
-    /* prozhzhaem: mogut byt' drugie selektory — classify razberiotsya */
+    onEvent(EVENT.ERROR, `fillNameAndJoin: ${e.message}`);
   }
 }
 
@@ -271,6 +379,43 @@ async function waitForLeaveButton(page, deadlineMs) {
     await page.waitForTimeout(3000);
   }
   return false;
+}
+
+// reCAPTCHA na knopke Join reshaet tol'ko chelovek (§12, kadptcha). Zhdёm
+// vruchnuyu prokhoda cherez noVNC: signal + odnorazovyy alert, do CAPTCHA_WAIT_MIN.
+let captchaAlerted = false;
+async function waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent) {
+  const waitMs = (cfg.captchaWaitMin || 15) * 60 * 1000;
+  const capUntil = Math.min(deadlineMs, Date.now() + waitMs);
+  let sawCaptcha = false;
+  while (Date.now() < capUntil) {
+    const v = await classifyPage(page);
+    if (v === "joined") return true;
+    if (v === "captcha") {
+      if (!sawCaptcha) {
+        sawCaptcha = true;
+        onEvent("captcha", "reCAPTCHA na Join — nuzhen vruchnuyu prokhod cherez noVNC :6080");
+        if (!captchaAlerted) {
+          captchaAlerted = true;
+          alertOperator("reCAPTCHA pri vhode v vstrechu", "Otvorite noVNC :6080 (Connect) i proidite kapchu v okne Zoom. Avtomatizaciya kapchi zapreshchena (§12).");
+        }
+      }
+    } else if (sawCaptcha && (v === "bot_wall" || v === "login_required" || v === "meeting_ended")) {
+      return false;
+    }
+    await page.waitForTimeout(3000);
+  }
+  return false;
+}
+
+// Pryamoy SMTP signal cherez api (ne blokuyushchiy): proshu otdeliti v pish'mo
+// cherez vnutrenniy endpoint, esli yest'; inache — console/notify ostanovitsya.
+function alertOperator(subject, body) {
+  const API = process.env.API_URL || "http://api:8000";
+  fetch(`${API}/api/alert`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ subject, body, dedup_key: "captcha" }),
+  }).catch((e) => console.error("alert fail:", e.message));
 }
 
 // -------------------------------------------------------------- konets zapiši
@@ -424,7 +569,8 @@ const INIT_SCRIPT = `
   }
 
   function attachTrack(track) {
-    if (track.kind !== 'audio') return;
+    if (track.kind !== 'audio' || track._mnemaHooked) return;
+    track._mnemaHooked = true;
     ensurePipeline();
     try {
       const src = ctx.createMediaStreamSource(new MediaStream([track]));
@@ -432,6 +578,34 @@ const INIT_SCRIPT = `
       window.__mnemaTracks++;
     } catch (e) { /* uze podat' ili nedastupno */ }
   }
+
+  function attachStream(stream) {
+    try {
+      for (const t of (stream && stream.getAudioTracks ? stream.getAudioTracks() : []))
+        attachTrack(t);
+    } catch (e) { /* */ }
+  }
+
+  // Zapis' audio idyot cherez WebAudio: lovimsya ksozdaniya istochnikov
+  // MediaStream v Lyubom AudioContext (createMediaStreamSource), a takzhe
+  // HTMLMediaElement.srcObject — eto lovit dorozhki daie bez sobytiy PC.
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (AC) {
+    const origCss = AC.prototype.createMediaStreamSource;
+    AC.prototype.createMediaStreamSource = function (stream) {
+      attachStream(stream);
+      return origCss.call(this, stream);
+    };
+  }
+  try {
+    const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'srcObject');
+    if (desc && desc.set) {
+      Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', {
+        get: desc.get,
+        set(v) { if (v) attachStream(v); desc.set.call(this, v); },
+      });
+    }
+  } catch (e) { /* net definitora — ladno */ }
 
   window.RTCPeerConnection = function (...args) {
     const pc = new OrigPC(...args);
@@ -451,16 +625,11 @@ const INIT_SCRIPT = `
   };
   window.RTCPeerConnection.prototype = OrigPC.prototype;
 
-  // Vyachka chankov s nachala offset; keshiraem posledniy vraz (idempotentnost')
+  // Vyachka VSEH nakoplennyh chanov (destruktivno): massiv ochishchaetsya,
+  // vne shnit offset nie nuzhen — pishmo v fajl pridetaet porcyami.
   window.__mnemaDrain = function (offsetBytes) {
-    const out = [];
-    let pos = 0;
-    for (const c of window.__mnemaChunks) {
-      if (pos + c.len <= offsetBytes) { pos += c.len; continue; }
-      if (pos >= offsetBytes) out.push(c.b64);
-      pos += c.len;
-    }
-    window.__mnemaChunks = []; // vraz sbroshen; sled. vyachka s total
+    const out = window.__mnemaChunks.map(function (c) { return c.b64; });
+    window.__mnemaChunks = [];
     return { data: out.join(''), total: window.__mnemaTotal };
   };
   window.__mnemaStatus = function () {

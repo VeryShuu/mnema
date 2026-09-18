@@ -116,7 +116,8 @@ def api_join_info(jid: int):
         job = s.get(Job, jid)
         if job is None:
             raise HTTPException(404)
-        return {"meeting_id": job.zoom_meeting_id, "pwd": get_pwd(job.pwd_ref)}
+        return {"meeting_id": job.zoom_meeting_id, "pwd": get_pwd(job.pwd_ref),
+                "join_link": job.join_link}
 
 
 # vnutrennie sobytiya ot web-bot (FT-9 event-log + statusy)
@@ -264,6 +265,22 @@ def _serve_audio(job_id: int, fmt: str, request: Request | None):
             "Content-Length": str(length),
         })
     return FileResponse(path, media_type=mime, headers={"Accept-Ranges": "bytes"})
+
+
+class AlertIn(BaseModel):
+    subject: str
+    body: str
+    dedup_key: str | None = "alert"
+
+
+@app.post("/api/alert")
+def api_alert(body: AlertIn):
+    """Vnutrenniy signal ot web-bot (napr. reCAPTCHA, §12) -> e-mail."""
+    n = NotifyService().enqueue("alert",
+                                f"[Mnema] {body.subject}", body.body,
+                                dedup_key=body.dedup_key or "alert")
+    NotifyService().dispatch_pending(limit=5)
+    return {"queued": n.id if n else None}
 
 
 class SegmentPatch(BaseModel):

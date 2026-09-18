@@ -8,7 +8,7 @@ from sqlalchemy import select
 from .db import get_session
 from .models import Job, SessionEvent
 from .secrets_store import store_pwd
-from .zoom_link import extract_meeting_id
+from .zoom_link import extract_meeting_id, normalize_join_link
 
 
 def create_job(*, meeting_link: str | None = None, meeting_id: str | None = None,
@@ -21,6 +21,7 @@ def create_job(*, meeting_link: str | None = None, meeting_id: str | None = None
         raise ValueError("nuzhen meeting_link ili meeting_id")
     mid, extracted_pwd = extract_meeting_id(src)
     pwd = pwd or extracted_pwd
+    join_link = normalize_join_link(meeting_link) if meeting_link else None
     if start_at is not None and start_at.tzinfo is None:
         start_at = start_at.replace(tzinfo=dt.timezone.utc)
     immediate = start_at is None
@@ -28,7 +29,8 @@ def create_job(*, meeting_link: str | None = None, meeting_id: str | None = None
         start_at = dt.datetime.now(dt.timezone.utc)
     status = "scheduled"
     with get_session() as s:
-        job = Job(zoom_meeting_id=mid, pwd_ref=(store_pwd(mid, pwd) if pwd else None),
+        job = Job(zoom_meeting_id=mid, join_link=join_link,
+                  pwd_ref=(store_pwd(mid, pwd) if pwd else None),
                   topic=topic or f"Meeting {mid}", start_at=start_at,
                   duration_max_min=duration_max_min, status=status,
                   created_by=created_by)

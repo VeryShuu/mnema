@@ -18,6 +18,11 @@ def test_invite_link_passcode_param():
     assert pwd == "xyz"
 
 
+def test_pmn_link():
+    mid, pwd = extract_meeting_id("https://us06web.zoom.us/my/corp.gold?pwd=abc.1")
+    assert mid == "my/corp.gold" and pwd == "abc.1"
+
+
 def test_direct_wc_link():
     mid, _ = extract_meeting_id("https://app.zoom.us/wc/987654321/join")
     assert mid == "987654321"

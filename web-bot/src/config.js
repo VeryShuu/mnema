@@ -14,6 +14,7 @@ export function loadConfig() {
     pageReloadRetries: int(process.env.PAGE_RELOAD_RETRIES, 2),
     announceWav: process.env.ANNOUNCE_WAV || "templates/announce.wav",
     headful: process.env.HEADFUL === "1",
+    captchaWaitMin: int(process.env.CAPTCHA_WAIT_MIN, 15),
     chunkFlushMs: int(process.env.CHUNK_FLUSH_MS, 5000),
   };
 }

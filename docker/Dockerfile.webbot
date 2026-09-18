@@ -1,7 +1,7 @@
 FROM node:20-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg mkvtoolnix \
+    ffmpeg mkvtoolnix xvfb x11vnc novnc websockify \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -9,6 +9,12 @@ COPY web-bot/package.json ./
 RUN npm install && npx playwright install --with-deps chromium
 
 COPY web-bot/src ./src
+COPY web-bot/scripts ./scripts
+RUN chmod +x scripts/*.sh
 COPY templates ./templates
 
-CMD ["node", "src/index.js"]
+# Vsega headful pod Xvfb + noVNC: nuzhno dlya reCAPTCHA (FT §12: reshaet tol'ko
+# chelovek; pri javlenii kapchi operator vhodit cherez noVNC i klikaet Join).
+ENV DISPLAY=:99
+EXPOSE 6080
+CMD ["bash", "-lc", "Xvfb :99 -screen 0 1440x900x24 & x11vnc -display :99 -forever -nopw -shared -rfbport 5900 & websockify --web=/usr/share/novnc 6080 localhost:5900 & sleep 2 && node src/index.js"]

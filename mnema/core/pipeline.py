@@ -17,8 +17,8 @@ from .notify import NotifyService
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "scheduled": {"launching", "cancelled", "failed"},
-    "launching": {"recording", "failed", "scheduled"},
-    "recording": {"processing", "failed"},
+    "launching": {"recording", "failed", "scheduled", "cancelled"},
+    "recording": {"processing", "failed", "cancelled"},
     "processing": {"awaiting_llm", "awaiting_review", "done", "failed"},
     "awaiting_llm": {"processing", "done", "failed"},
     "awaiting_review": {"done", "processing", "failed"},

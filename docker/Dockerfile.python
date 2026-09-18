@@ -9,7 +9,8 @@ COPY requirements.txt requirements-asr.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY mnema ./mnema
-COPY alembic.ini alembic/ ./
+COPY alembic.ini ./alembic.ini
+COPY alembic/ ./alembic/
 # Tyazhelye ASR-diaperizatsii zavisimosti (torch/pyannote/faster-whisper)
 # USTANAVLIVAYUTSYA PO TREBOVANIYU: docker build --build-arg WITH_ASR=1
 ARG WITH_ASR=0

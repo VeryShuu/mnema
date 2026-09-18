@@ -23,6 +23,7 @@ class Job(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     zoom_meeting_id: Mapped[str] = mapped_column(String(64), index=True)
+    join_link: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     pwd_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
     topic: Mapped[str] = mapped_column(String(512), default="")
     start_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

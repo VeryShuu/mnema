@@ -41,9 +41,12 @@ services:
     environment:
       - ZOOM_PROFILE_DIR=/data/zoom-profile
       - DATA_DIR=/data
+      - HEADFUL=1   # Chromium pod Xvfb, noVNC dlya vruchnuyu prokhoda reCAPTCHA (§12)
     volumes:
       - data:/data
       - ./templates:/app/templates:ro
+    ports:
+      - "8080:6080"   # noVNC: vruchnuyu perelogin i prokhod reCAPTCHA (§12)
     depends_on:
       - redis
     restart: unless-stopped
