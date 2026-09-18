@@ -25,10 +25,9 @@ def run_worker() -> None:
     names = [q.strip() for q in os.environ.get(
         "WORKER_QUEUES", "asr,structure").split(",") if q.strip()]
     r = Redis.from_url(redis_url())
-    queues = [Queue(n, connection=r) for n in names]
+    queues = [Queue(n, connection=r, default_timeout=4 * 3600) for n in names]
     print(f"rq worker start: queues={names}", flush=True)
-    Worker(queues, connection=r,
-            job_timeout="4h", max_jobs=1000).work()
+    Worker(queues, connection=r).work()
 
 
 def run_worker_sync() -> None:

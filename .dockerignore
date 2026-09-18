@@ -1,0 +1,17 @@
+venv/
+.git/
+data/
+archive/
+logs/
+__pycache__/
+*.pyc
+.env
+.env.*
+node_modules/
+tests/
+fixtures/
+*.wav
+!templates/announce.wav
+RESEARCH.md
+.kilo/
+.kilocode/

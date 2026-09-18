@@ -28,16 +28,16 @@ async function main() {
           runTask(task, redis).finally(() => processing.delete(task.job_id));
         }
       }
-      const stop = await redis.rpop("mnema:stop");
+      const stop = await redis.rPop("mnema:stop");
       if (stop) {
         const s = JSON.parse(stop);
         console.log("[web-bot] stop requested for", s.job_id);
         recorders.get(s.job_id)?.requestStop();
       }
-      const hc = await redis.rpop("mnema:session_healthcheck");
+      const hc = await redis.rPop("mnema:session_healthcheck");
       if (hc) {
         const ok = await healthCheckSession(cfg);
-        await redis.lpush("mnema:session_health",
+        await redis.lPush("mnema:session_health",
           JSON.stringify({ ok, ts: new Date().toISOString() }));
       }
     } catch (e) {

@@ -20,7 +20,7 @@ def get_queue(name: str):
         from rq import Queue
         r = Redis.from_url(redis_url(), socket_connect_timeout=1)
         r.ping()
-        q = Queue(name, connection=r)
+        q = Queue(name, connection=r, default_timeout=4 * 3600)
         _queues[name] = (q, "rq")
     except Exception:
         _queues[name] = (None, "direct")
@@ -31,6 +31,6 @@ def enqueue_job(name: str, func, *args, **kwargs) -> bool:
     """Enqueue v RQ; esli redis niedostupen — True (vzyvatel' reshayet' sam)."""
     q, mode = get_queue(name)
     if mode == "rq":
-        q.enqueue(func, *args, **kwargs, job_timeout="4h")
+        q.enqueue(func, *args, **kwargs)
         return True
     return False

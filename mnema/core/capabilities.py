@@ -40,10 +40,11 @@ def capability_status(force: bool = False) -> dict:
             url = os.environ.get("ASR_BASE_URL", "").strip()
             key = os.environ.get("ASR_API_KEY", "").strip()
         if base["state"] == "configured" and url:
+            probe_path = "/models" if cap == "llm" else "/v1/models"
             now = time.monotonic()
             last = _cooldowns.get(cap)
             if force or last is None or (now - last[0]) > PROBE_COOLDOWN_S:
-                ok, detail = _probe(url, key)
+                ok, detail = _probe(url, key, probe_path)
                 base["probe"] = {"ok": ok, "detail": detail}
                 base["state"] = "configured" if ok else "misconfigured"
                 _cooldowns[cap] = (now, base)

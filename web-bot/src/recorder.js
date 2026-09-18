@@ -8,6 +8,30 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildJoinUrl } from "./config.js";
 
+// Health-check Zoom-сессии (FT-24): otkryt' app.zoom.us persistent-profilem i
+// proverdity, ne trebuetsya li login (sessiya iva ~2 nedeli). Vozvr. true ok.
+export async function healthCheckSession(cfg) {
+  let ctx;
+  try {
+    ctx = await chromium.launchPersistentContext(cfg.zoomProfileDir, {
+      headless: true, args: ["--use-fake-device-for-media-stream"],
+    });
+    const page = await ctx.newPage();
+    await page.goto("https://app.zoom.us/wc/home", {
+      waitUntil: "domcontentloaded", timeout: 40000,
+    });
+    const v = await classifyPage(page);
+    const ok = v !== "login_required" && v !== "bot_wall";
+    if (!ok) console.log("[health] zoom sessiya ne zhivaya:", v);
+    return ok;
+  } catch (e) {
+    console.error("[health] oshibka provery:", e.message);
+    return false;
+  } finally {
+    if (ctx) { try { await ctx.close(); } catch { /* */ } }
+  }
+}
+
 const EVENT = { // FT-9
   NAVIGATING: "navigating", PREJOIN: "prejoin", WAITING_ROOM: "waiting_room",
   JOINED: "joined", ENDED: "ended", BOT_WALL: "bot_wall", LOGIN_REQUIRED: "login_required",

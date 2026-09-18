@@ -10,7 +10,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY mnema ./mnema
 COPY alembic.ini alembic/ ./
-RUN pip install --no-cache-dir -r requirements-asr.txt || true
+# Tyazhelye ASR-diaperizatsii zavisimosti (torch/pyannote/faster-whisper)
+# USTANAVLIVAYUTSYA PO TREBOVANIYU: docker build --build-arg WITH_ASR=1
+ARG WITH_ASR=0
+RUN if [ "$WITH_ASR" = "1" ]; then pip install --no-cache-dir -r requirements-asr.txt; fi
 
 EXPOSE 8000
 CMD ["python", "-m", "mnema.api.main"]
