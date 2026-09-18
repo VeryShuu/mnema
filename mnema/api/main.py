@@ -554,11 +554,24 @@ def web_job_detail(request: Request, jid: int):
         audio = s.scalars(select(AudioFile).where(AudioFile.job_id == jid)).all()
         proto = s.scalars(select(Protocol).where(Protocol.job_id == jid)).first()
         reviews = s.scalars(select(ReviewRequest).where(
-            ReviewRequest.job_id == jid)).all()
+            ReviewRequest.job_id == jid,
+            ReviewRequest.status == "pending")).all()
     pwd_present = job.pwd_ref is not None
     return templates.TemplateResponse(request, "job_detail.html", {
         "request": request, "job": job, "events": events, "audio": audio,
         "protocol": proto, "reviews": reviews, "pwd_present": pwd_present})
+
+
+@app.get("/jobs/{jid}/log", response_class=HTMLResponse)
+def web_job_log(request: Request, jid: int):
+    with get_session() as s:
+        job = s.get(Job, jid)
+        if job is None:
+            raise HTTPException(404)
+        events = s.scalars(select(SessionEvent).where(
+            SessionEvent.job_id == jid).order_by(SessionEvent.ts.desc()).limit(300)).all()
+    return templates.TemplateResponse(request, "job_log.html", {
+        "request": request, "job": job, "events": events})
 
 
 @app.get("/protocols", response_class=HTMLResponse)

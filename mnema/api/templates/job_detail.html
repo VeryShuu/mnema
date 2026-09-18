@@ -27,11 +27,6 @@
 {% if reviews %}<p><a href="/reviews">Есть нерешённые уточнения ({{ reviews|length }}) →</a></p>{% endif %}
 <div class="card">
   <h3>Event-log (автообновление)</h3>
-  <div class="log" hx-get="/api/jobs/{{ job.id }}" hx-trigger="every 5s"
-       hx-swap="outerHTML" id="log">
-    <table><tr><th>Время</th><th>Событие</th><th>Детали</th></tr>
-    {% for e in events %}<tr><td>{{ e.ts }}</td><td>{{ e.event }}</td><td>{{ e.detail }}</td></tr>{% endfor %}
-    </table>
-  </div>
+  {% include "job_log.html" %}
 </div>
 {% endblock %}
