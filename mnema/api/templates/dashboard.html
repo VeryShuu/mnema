@@ -19,7 +19,8 @@
         <span class="badge {{ 'done' if zoom_health.ok else 'failed' }}">{{ 'В порядке' if zoom_health.ok else 'Проблема' }}</span>
         {% if not zoom_health.ok and zoom_health.detail %}<span class="muted">{{ zoom_health.detail }}</span>{% endif %}
         <span class="muted"> · проверено {{ zoom_health.checked_ts }}</span>
-      {% else %}<span class="muted">проверка ещё не выполнялась</span>{% endif %}</td></tr>
+      {% else %}<span class="muted">проверка ещё не выполнялась</span>{% endif %}
+      <a href="http://{{ request.url.hostname }}:8080/vnc.html" target="_blank" title="Открыть браузер бота (для ручного входа в Zoom и прохождения reCAPTCHA)">Подключиться через noVNC</a></td></tr>
     <tr><th>Очередь задач</th><td>
       <span class="badge {{ 'done' if queue_ok else 'failed' }}">{{ 'Доступна' if queue_ok else 'Недоступна' }}</span></td></tr>
   </table>
