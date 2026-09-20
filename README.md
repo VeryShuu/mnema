@@ -39,7 +39,27 @@ HEADFUL=1 docker compose run --rm web-bot
 ```
 
 Состояния Job (НТ‑2): `scheduled → launching → recording → processing →
-[awaiting_llm?] → [awaiting_review?] → done | failed`. Processing идемпотентен.
+[awaiting_llm?] → [awaiting_review?] → done | failed`. Для архивных загрузок:
+`scheduled → uploading → processing → …`. Processing идемпотентен.
+
+## Загрузка архивных записей совещаний
+
+На вкладке «Встречи» — карточка «Загрузить архивную запись совещания»:
+тема, дата прошедшей встречи, видео/аудиофайл (mp4/mkv/mov/avi/webm/m4a/mp3/wav/…).
+Создаётся Job `source=upload` (без Zoom), запускается **полный цикл анализа**:
+извлечение аудиодорожки (ffmpeg), VAD, диаризация, ASR, распознавание людей по
+реестру голосов, стенограмма и LLM‑протокол — как у живых записей.
+
+- Загрузка **чанками с возобновлением** (оборванный файл догружается с последней
+  принятой позиции): `POST /api/uploads`, `POST /api/uploads/{id}/chunk?offset=`,
+  `GET /api/uploads/{id}/offset`, `POST .../finalize`, `GET /api/jobs/{id}/uploads/active`.
+- После finalize оригинал лежит в `/data/jobs/<id>/raw.<ext>`; из него worker
+  делает `meeting.wav/mp3` — аудиодорожка доступна теми же эндпоинтами, что у
+  записанных встреч: `GET /api/jobs/{id}/audio?format=mp3|wav` (Range, плеер на
+  странице встречи), оригинал — `GET /api/jobs/{id}/source`.
+- Лимит `UPLOAD_MAX_GB` (8), размер чанка `UPLOAD_CHUNK_MB` (16);
+  `KEEP_UPLOADED_SOURCE=0` — удалять исходник после извлечения дорожек.
+  Незавершённые загрузки старше 24 ч чистит maintenance.
 
 ## Управление
 
@@ -47,7 +67,8 @@ HEADFUL=1 docker compose run --rm web-bot
   (+ импорт `.ics`), детали Job (event‑log, скачивание аудио), протоколы
   (плеер mp3 с переходом по реплике), очередь уточнений, реестр голосов
   (регистрация с микрофона браузера), редактирование сегментов.
-- REST: `GET/POST/DELETE /api/jobs`, `GET /api/protocols/{id}` (`?format=md|docx|json`),
+- REST: `GET/POST/DELETE /api/jobs`, `POST /api/uploads*` (архив‑загрузки),
+  `GET /api/protocols/{id}` (`?format=md|docx|json`),
   `GET /api/protocols/{id}/audio?format=mp3|wav|webm` (Range), `PATCH .../segments`,
   `GET/POST /api/reviews`, `GET/POST/DELETE /api/voice-profiles`, `GET /health`.
 

@@ -164,6 +164,15 @@ REGISTRY: tuple[Block, ...] = (
             if_empty="=> servis ne startuet"),
         Key("RETENTION_DAYS", DEFAULTED, "180",
             readers="scheduler", when="HT-3", if_empty="180"),
+        Key("UPLOAD_MAX_GB", DEFAULTED, "8",
+            readers="api", when="zagruzka arhivnyh zapisey",
+            if_empty="8 GB na fayl"),
+        Key("UPLOAD_CHUNK_MB", DEFAULTED, "16",
+            readers="api", when="chunk pri zagruzke arhiva",
+            if_empty="16 MB"),
+        Key("KEEP_UPLOADED_SOURCE", DEFAULTED, "1",
+            readers="worker", when="posle izvlecheniya audio iz arhiva",
+            if_empty="hranit' ishodnik (0 = udalyat' posle konversii)"),
     )),
 )
 

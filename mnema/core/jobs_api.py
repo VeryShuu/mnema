@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -52,9 +53,17 @@ def cancel_job(job_id: int) -> Job | None:
         if job is None:
             return None
         cur = job.status
+        if cur == "uploading":
+            from .models import Upload
+            for up in job.uploads:
+                if up.status in ("pending", "uploading"):
+                    up.status = "failed"
+                    up.error = "otmeneno vmeste s vstrechey"
+                    Path(up.path).unlink(missing_ok=True)
+            s.commit()
     if cur in ("recording", "launching"):
         from . import jobs_launch
         jobs_launch.request_stop(job_id)
-    if cur in ("scheduled", "launching", "recording", "processing"):
+    if cur in ("scheduled", "launching", "recording", "processing", "uploading"):
         return transition(job_id, "cancelled", event="cancelled")
     return job

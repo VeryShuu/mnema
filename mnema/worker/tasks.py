@@ -6,6 +6,7 @@ nulya. Vne-zavisimosti (gigastt/ollama) — capability, FT-39.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 from sqlalchemy import select
@@ -35,6 +36,7 @@ def run_asr_pipeline(job_id: int) -> None:
     p = _job_paths(job_id)
     try:
         _prepare_wav(job_id, p)
+        _maybe_drop_raw_source(job_id, p)
         with get_session() as s:
             s.add(SessionEvent(job_id=job_id, event="vad_start")); s.commit()
         from ..core.vad import segment_speech
@@ -77,23 +79,100 @@ def _classify(e: Exception) -> str:
     return "processing_error"
 
 
+def _maybe_drop_raw_source(job_id: int, p: dict) -> None:
+    """KEEP_UPLOADED_SOURCE=0: udalit' ishodnyy arhiv (i ego AudioFile-row)
+    posle uspechnogo izvlecheniya meeting.wav/mp3. Tol'ko dlya source=upload.
+
+    Udalenie po puti (ne po kind), chtoby ne zadet' distributivnye rowy
+    meeting.wav/meeting.mp3."""
+    from sqlalchemy import select as _select
+    from ..core.models import Upload
+    from ..core.uploads import keep_source
+    if keep_source():
+        return
+    if not p["wav"].exists() or not p["mp3"].exists():
+        return
+    raw = _find_raw(p["dir"])
+    if raw is None:
+        return
+    if str(raw) == str(p["wav"]) or str(raw) == str(p["mp3"]):
+        return  # raw i est' distributiv — ne udalyaem
+    with get_session() as s:
+        job = s.get(Job, job_id)
+        if job is None or job.source != "upload":
+            return
+        s.query(AudioFile).filter(AudioFile.job_id == job_id,
+                                  AudioFile.path == str(raw)).delete()
+        for up in s.scalars(_select(Upload).where(Upload.job_id == job_id)).all():
+            if up.status == "complete" and up.path == str(raw):
+                up.path = ""
+        s.commit()
+    raw.unlink(missing_ok=True)
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """Hardlink vmesto kopii (obychno tot zhe volume /data): ekonomiya v GB.
+    Pri nevozmozhnosti hardlinka (raznye FS) — copyfile."""
+    if dst.exists():
+        dst.unlink()
+    try:
+        os.link(str(src), str(dst))
+    except OSError:
+        shutil.copyfile(str(src), str(dst))
+
+
+def _find_raw(job_dir: Path) -> Path | None:
+    """Nayti ishodnyy fayl konveyera: raw.webm (zapis') ili raw.<ext> (arhiv-zagruzka).
+
+    Proizvodnye fayly konveyera nazyvayutsya meeting.*, togda kak raw.* sozdayet
+    tol'ko finalize zagruzki (ili web-bot) — lyuboy raw.<ext> eto istoch."""
+    from ..core.audio import MEDIA_EXTENSIONS
+    cand = job_dir / "raw.webm"
+    if cand.exists():
+        return cand
+    for f in sorted(job_dir.glob("raw.*")):
+        if f.suffix.lower() in MEDIA_EXTENSIONS:
+            return f
+    return None
+
+
 def _prepare_wav(job_id: int, p: dict) -> None:
-    """webm -> wav/mp3 (FT-6 + FT-41) esli eshche ne sdelano."""
-    from ..core.audio import webm_to_wav16k, webm_to_mp3, repair_webm, wav_duration_s, mkvmerge_available
-    webm = p["webm"]
-    if not webm.exists():
+    """Ishodnik (webm-zapis' ili arhivnyy video/audio) -> wav/mp3 (FT-6 + FT-41)."""
+    from ..core.audio import webm_to_wav16k, webm_to_mp3, repair_webm, wav_duration_s
+    from ..core.audio import media_to_wav16k, media_to_mp3
+    raw = _find_raw(p["dir"])
+    if raw is None:
         return
     if p["wav"].exists() and p["wav"].stat().st_size > 44:
         return
-    if not _webm_ok(webm):
-        repair_webm(webm)
-    webm_to_wav16k(webm, p["wav"])
-    dur = wav_duration_s(p["wav"])
-    if not p["mp3"].exists():
-        ok = webm_to_mp3(webm, p["mp3"]) or _wav_to_mp3(p)
-        if not ok:
-            # mp3 enc niedostupen — vydayem wav kak distributiv (FT-41a dopuskaet)
-            pass
+    is_webm = raw.suffix.lower() == ".webm"
+    if is_webm:
+        if not _webm_ok(raw):
+            repair_webm(raw)
+        webm_to_wav16k(raw, p["wav"])
+        dur = wav_duration_s(p["wav"])
+        if not p["mp3"].exists():
+            ok = webm_to_mp3(raw, p["mp3"]) or _wav_to_mp3(p)
+            if not ok:
+                pass  # mp3 enc niedostupen — vydayem wav kak distributiv (FT-41a)
+    elif raw.suffix.lower() == ".wav":
+        # arhivnyy wav lyubogo formata: peresampleiruem v canonical'nyy 16k mono
+        media_to_wav16k(raw, p["wav"])
+        dur = wav_duration_s(p["wav"])
+        if not p["mp3"].exists():
+            media_to_mp3(raw, p["mp3"]) or _wav_to_mp3(p)
+    elif raw.suffix.lower() == ".mp3":
+        from ..core.audio import ffprobe_duration
+        if raw != p["mp3"]:
+            _link_or_copy(raw, p["mp3"])  # gotovaya dorozhka dlya vydachi
+        dur = ffprobe_duration(raw)
+        media_to_wav16k(raw, p["wav"])
+    else:
+        # video/konteyner: izvlekayem pervuyu audio-dorozhku
+        media_to_wav16k(raw, p["wav"])
+        dur = wav_duration_s(p["wav"])
+        if not p["mp3"].exists():
+            media_to_mp3(raw, p["mp3"])
     _register_audio_files(job_id, p, dur)
 
 

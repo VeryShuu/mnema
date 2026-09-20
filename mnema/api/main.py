@@ -22,11 +22,12 @@ from ..core.db import Base, get_engine, get_session
 from ..core.jobs_api import cancel_job, create_job
 from ..core.models import (AudioFile, Job, Notification, Protocol,
                            ReviewRequest, Segment, SessionEvent, SessionHealth,
-                           VoiceProfile)
+                           Upload, VoiceProfile)
 from ..core.notify import NotifyService
 from ..core.pipeline import review_requests_resolved, transition
 from ..core.scheduler import import_ics, start_default_jobs
 from ..core.secrets_store import get_pwd
+from ..core import uploads as uploads_svc
 
 app = FastAPI(title="Mnema", version="0.1.0")
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -230,17 +231,8 @@ def api_job_audio(jid: int, format: str = "webm", request: Request = None):
     return _serve_audio(jid, format, request)
 
 
-def _serve_audio(job_id: int, fmt: str, request: Request | None):
-    if fmt not in ("mp3", "wav", "webm"):
-        raise HTTPException(400, "format: mp3|wav|webm")
-    with get_session() as s:
-        a = s.scalars(select(AudioFile).where(
-            AudioFile.job_id == job_id, AudioFile.kind == fmt)).first()
-    if a is None or not Path(a.path).exists():
-        raise HTTPException(404, f"audio {fmt} otsutstvuet")
-    path = Path(a.path)
+def _serve_path(path: Path, mime: str, request: Request | None):
     size = path.stat().st_size
-    mime = {"mp3": "audio/mpeg", "wav": "audio/wav", "webm": "audio/webm"}[fmt]
     range_header = request.headers.get("range") if request else None
     if range_header and range_header.startswith("bytes="):
         start_s, _, end_s = range_header[6:].partition("-")
@@ -265,6 +257,30 @@ def _serve_audio(job_id: int, fmt: str, request: Request | None):
             "Content-Length": str(length),
         })
     return FileResponse(path, media_type=mime, headers={"Accept-Ranges": "bytes"})
+
+
+ORIG_MIME = {
+    ".mp4": "video/mp4", ".m4v": "video/mp4", ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime", ".avi": "video/x-msvideo", ".wmv": "video/x-ms-wmv",
+    ".webm": "video/webm", ".flv": "video/x-flv", ".ts": "video/mp2t",
+    ".mpg": "video/mpeg", ".mpeg": "video/mpeg", ".3gp": "video/3gpp",
+    ".m4a": "audio/mp4", ".aac": "audio/aac", ".opus": "audio/opus",
+    ".ogg": "audio/ogg", ".oga": "audio/ogg", ".flac": "audio/flac",
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".amr": "audio/amr",
+}
+
+
+def _serve_audio(job_id: int, fmt: str, request: Request | None):
+    if fmt not in ("mp3", "wav", "webm"):
+        raise HTTPException(400, "format: mp3|wav|webm")
+    with get_session() as s:
+        a = s.scalars(select(AudioFile).where(
+            AudioFile.job_id == job_id, AudioFile.kind == fmt)).first()
+    if a is None or not Path(a.path).exists():
+        raise HTTPException(404, f"audio {fmt} otsutstvuet")
+    path = Path(a.path)
+    mime = {"mp3": "audio/mpeg", "wav": "audio/wav", "webm": "audio/webm"}[fmt]
+    return _serve_path(path, mime, request)
 
 
 class AlertIn(BaseModel):
@@ -430,6 +446,110 @@ async def api_upload_sample(vid: int, file: UploadFile = File(...)):
     return {"ok": True}
 
 
+# ------------------------------------------------- upload arhivnyh zapisey (FT-upload)
+class UploadInit(BaseModel):
+    filename: str
+    bytes_total: int | None = None
+    job_id: int | None = None
+    topic: str | None = None
+    meeting_date: dt.datetime | None = None
+    note: str | None = None
+
+
+@app.post("/api/uploads")
+def api_upload_init(body: UploadInit):
+    try:
+        job, up = uploads_svc.create_upload(
+            filename=body.filename, bytes_total=body.bytes_total,
+            job_id=body.job_id, topic=body.topic or "",
+            meeting_date=body.meeting_date, note=body.note)
+    except (OverflowError,) as e:
+        raise HTTPException(413, str(e))
+    except KeyError:
+        raise HTTPException(404)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"job_id": job.id, "upload_id": up.id,
+            "offset": up.bytes_received, "chunk_mb": uploads_svc.chunk_mb()}
+
+
+@app.get("/api/uploads/{uid}/offset")
+def api_upload_offset(uid: int):
+    try:
+        off, status = uploads_svc.offset_of(uid)
+    except KeyError:
+        raise HTTPException(404)
+    return {"offset": off, "status": status}
+
+
+@app.post("/api/uploads/{uid}/chunk")
+async def api_upload_chunk(uid: int, request: Request, offset: int | None = None):
+    data = await request.body()
+    try:
+        up = uploads_svc.append_chunk(uid, data, offset=offset)
+    except (OverflowError,) as e:
+        raise HTTPException(413, str(e))
+    except KeyError:
+        raise HTTPException(404)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"offset": up.bytes_received, "status": up.status}
+
+
+@app.post("/api/uploads/{uid}/finalize")
+def api_upload_finalize(uid: int):
+    try:
+        job = uploads_svc.finalize(uid)
+    except KeyError:
+        raise HTTPException(404)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "job_id": job.id, "status": job.status}
+
+
+@app.post("/api/uploads/{uid}/cancel")
+def api_upload_cancel(uid: int):
+    try:
+        job = uploads_svc.cancel_upload(uid)
+    except KeyError:
+        raise HTTPException(404)
+    return {"ok": True, "job_id": job.id, "status": job.status if job else None}
+
+
+@app.get("/api/jobs/{jid}/uploads/active")
+def api_upload_active(jid: int):
+    """Akturnaya (nedokonchennaya) zagruzka vstrechi dlya vozobnovleniya."""
+    with get_session() as s:
+        if s.get(Job, jid) is None:
+            raise HTTPException(404)
+        up = s.scalars(select(Upload).where(
+            Upload.job_id == jid,
+            Upload.status.in_(("pending", "uploading")))
+            .order_by(Upload.id.desc())).first()
+    if up is None:
+        return {"upload_id": None}
+    real = Path(up.path).stat().st_size if Path(up.path).exists() else 0
+    return {"upload_id": up.id, "filename": up.filename,
+            "bytes_total": up.bytes_total,
+            "offset": min(up.bytes_received, real), "status": up.status}
+
+
+@app.get("/api/jobs/{jid}/source")
+def api_job_source(jid: int, request: Request = None):
+    """Razdacha ishodnogo arhivnogo video/audio (Range) dlya ob'yav source=upload."""
+    with get_session() as s:
+        if s.get(Job, jid) is None:
+            raise HTTPException(404)
+        up = s.scalars(select(Upload).where(
+            Upload.job_id == jid, Upload.status == "complete")
+            .order_by(Upload.id.desc())).first()
+    if up is None or not Path(up.path).exists():
+        raise HTTPException(404, "ishodnyy fayl otsutstvuet")
+    path = Path(up.path)
+    mime = ORIG_MIME.get(path.suffix.lower(), "application/octet-stream")
+    return _serve_path(path, mime, request)
+
+
 @app.get("/health")
 def health():
     caps = capability_status()
@@ -466,7 +586,8 @@ def web_dashboard(request: Request):
     caps = capability_status()
     with get_session() as s:
         active = s.scalars(select(Job).where(
-            Job.status.in_(("scheduled", "launching", "recording", "processing"))
+            Job.status.in_(("scheduled", "launching", "recording", "processing",
+                            "uploading"))
         ).order_by(Job.start_at).limit(20)).all()
         recent_failed = s.scalars(select(Job).where(
             Job.status == "failed").order_by(Job.ended_ts.desc()).limit(10)).all()
@@ -543,6 +664,13 @@ async def web_import_ics(file: UploadFile = File(...)):
     return {"imported": n}
 
 
+@app.get("/jobs/upload", response_class=HTMLResponse)
+def web_upload_page(request: Request, job_id: int | None = None):
+    return templates.TemplateResponse(request, "upload.html", {
+        "request": request, "chunk_mb": uploads_svc.chunk_mb(),
+        "upload_job_id": job_id})
+
+
 @app.get("/jobs/{jid}", response_class=HTMLResponse)
 def web_job_detail(request: Request, jid: int):
     with get_session() as s:
@@ -556,10 +684,13 @@ def web_job_detail(request: Request, jid: int):
         reviews = s.scalars(select(ReviewRequest).where(
             ReviewRequest.job_id == jid,
             ReviewRequest.status == "pending")).all()
+        up = s.scalars(select(Upload).where(
+            Upload.job_id == jid).order_by(Upload.id.desc()).limit(1)).first()
     pwd_present = job.pwd_ref is not None
     return templates.TemplateResponse(request, "job_detail.html", {
         "request": request, "job": job, "events": events, "audio": audio,
-        "protocol": proto, "reviews": reviews, "pwd_present": pwd_present})
+        "protocol": proto, "reviews": reviews, "pwd_present": pwd_present,
+        "upload": up})
 
 
 @app.get("/jobs/{jid}/log", response_class=HTMLResponse)

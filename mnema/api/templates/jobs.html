@@ -14,12 +14,18 @@
     <button type="submit">Импорт .ics</button>
   </form>
 </div>
+<div class="card">
+  <h3>Загрузить архивную запись совещания</h3>
+  <p class="muted">Загрузите видео/аудио прошедшей встречи (можно несколько ГБ). Будет создана встреча, извлечена аудиодорожка и запущен полный анализ с распознаванием людей.</p>
+  <a href="/jobs/upload"><button type="button">Загрузить запись…</button></a>
+</div>
 <p>
  Фильтр:
  <a href="/jobs">все</a>
  <a href="/jobs?status=scheduled">scheduled</a>
  <a href="/jobs?status=recording">recording</a>
  <a href="/jobs?status=done">done</a>
+ <a href="/jobs?status=uploading">uploading</a>
  <a href="/jobs?status=failed">failed</a>
 </p>
 <table>
@@ -27,10 +33,10 @@
 {% for j in jobs %}
 <tr>
  <td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td>
- <td>{{ j.topic }}</td><td>{{ j.zoom_meeting_id }}</td><td>{{ j.start_at }}</td>
+ <td>{{ j.topic }}</td><td>{{ j.zoom_meeting_id or 'архив' }}</td><td>{{ j.start_at }}</td>
  <td><span class="badge {{ j.status }}">{{ j.status }}</span></td>
- <td>{% if j.status in ('scheduled','launching','recording','processing') %}
-   <button hx-post="/jobs/{{ j.id }}/cancel" hx-on="click: location.reload()">Отменить</button>{% endif %}</td>
+ <td>{% if j.status in ('scheduled','launching','recording','processing','uploading') %}
+    <button hx-post="/jobs/{{ j.id }}/cancel" hx-on="click: location.reload()">Отменить</button>{% endif %}</td>
 </tr>
 {% endfor %}
 </table>

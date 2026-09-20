@@ -16,14 +16,15 @@ from .models import AudioFile, Job, Notification, Protocol, ReviewRequest, Sessi
 from .notify import NotifyService
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
-    "scheduled": {"launching", "cancelled", "failed"},
+    "scheduled": {"launching", "cancelled", "failed", "uploading"},
     "launching": {"recording", "failed", "scheduled", "cancelled"},
     "recording": {"processing", "failed", "cancelled"},
+    "uploading": {"processing", "failed", "cancelled"},
     "processing": {"awaiting_llm", "awaiting_review", "done", "failed"},
     "awaiting_llm": {"processing", "done", "failed"},
     "awaiting_review": {"done", "processing", "failed"},
     "done": set(),
-    "failed": {"processing"},
+    "failed": {"processing", "uploading"},
     "cancelled": set(),
 }
 

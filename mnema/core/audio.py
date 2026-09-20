@@ -64,6 +64,74 @@ def webm_to_mp3(webm: Path, mp3: Path, bitrate: str = "64k") -> bool:
     return ok
 
 
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".oga", ".flac", ".m4a", ".aac", ".opus", ".webm", ".amr"}
+VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mkv", ".mov", ".avi", ".wmv", ".webm", ".flv", ".ts", ".mpg", ".mpeg", ".3gp"}
+MEDIA_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
+
+
+def media_ext_ok(filename: str) -> bool:
+    return Path(filename).suffix.lower() in MEDIA_EXTENSIONS
+
+
+def probe_media(path: Path) -> dict:
+    """ffprobe: dlitelnost' i nalichie audio-dorozhki v lyubom konteyenerye.
+
+    Vozvraschaet {"ok": bool, "duration_s": float, "error": str|None};
+    ok=False esli fayl neprochitaem ili audio-stream otsutstvuet."""
+    if shutil.which("ffprobe") is None:
+        return {"ok": False, "duration_s": 0.0, "error": "ffprobe neta v sisteme"}
+    try:
+        r = run(["ffprobe", "-v", "quiet", "-print_format", "json",
+                 "-show_format", "-show_streams", str(path)])
+    except FileNotFoundError:
+        return {"ok": False, "duration_s": 0.0, "error": "ffprobe ne zapustilsya"}
+    if r.returncode != 0:
+        return {"ok": False, "duration_s": 0.0, "error": "fayl povrezhden ili format ne podderzhivaetsya"}
+    try:
+        data = json.loads(r.stdout)
+    except (ValueError, TypeError):
+        return {"ok": False, "duration_s": 0.0, "error": "ffprobe vernul necoryektnyy vyvod"}
+    streams = data.get("streams") or []
+    audio = [s for s in streams if s.get("codec_type") == "audio"]
+    if not audio:
+        return {"ok": False, "duration_s": 0.0, "error": "v fayle nets audiodorozhki"}
+    dur = 0.0
+    try:
+        dur = float(data.get("format", {}).get("duration", 0) or 0)
+    except (ValueError, TypeError):
+        dur = 0.0
+    if dur <= 0:
+        for a in audio:
+            try:
+                dur = float(a.get("duration", 0) or 0)
+                if dur > 0:
+                    break
+            except (ValueError, TypeError):
+                continue
+    if dur <= 0:
+        return {"ok": False, "duration_s": 0.0, "error": "ne udalos' opredit' dlitelnost'"}
+    return {"ok": True, "duration_s": dur, "error": None}
+
+
+def media_to_wav16k(src: Path, wav: Path) -> None:
+    """Pervaya audio-dorozhka iz video/audio -> PCM WAV 16 kHz 16-bit mono."""
+    r = run(["ffmpeg", "-y", "-i", str(src), "-vn", "-map", "0:a:0",
+             "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", str(wav)])
+    if r.returncode != 0 or not wav.exists() or wav.stat().st_size <= 44:
+        wav.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg media->wav: {r.stderr[-500:]}")
+
+
+def media_to_mp3(src: Path, mp3: Path, bitrate: str = "64k") -> bool:
+    """Pervaya audio-dorozhka -> mp3 44.1 kHz mono (vygruzka/pleer, kak u zapisey)."""
+    r = run(["ffmpeg", "-y", "-i", str(src), "-vn", "-map", "0:a:0",
+             "-ar", "44100", "-ac", "1", "-b:a", bitrate, str(mp3)])
+    ok = r.returncode == 0 and mp3.exists() and mp3.stat().st_size > 0
+    if not ok:
+        mp3.unlink(missing_ok=True)
+    return ok
+
+
 def wav_duration_s(wav: Path) -> float:
     try:
         with wave.open(str(wav), "rb") as w:

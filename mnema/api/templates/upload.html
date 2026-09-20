@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Загрузка архивной записи совещания</h2>
+<div class="card">
+  <div id="form">
+    {% if upload_job_id is none %}
+    <p><label>Тема встречи<br><input id="topic" size="60" placeholder="Например: Планёрка 12.09"></label></p>
+    <p><label>Дата прошедшей встречи<br><input id="meeting_date" type="datetime-local"></label></p>
+    <p><label>Примечание<br><input id="note" size="60" placeholder="необязательно"></label></p>
+    {% else %}
+    <p class="muted">Продолжение загрузки для встречи #{{ upload_job_id }}. Выберите тот же файл — загрузка продолжится с последней принятой позиции.</p>
+    {% endif %}
+    <p><label>Файл записи (видео/аудио, до нескольких ГБ)<br>
+      <input id="file" type="file" accept=".mp4,.m4v,.mkv,.mov,.avi,.wmv,.webm,.flv,.ts,.mpg,.mpeg,.3gp,.wav,.mp3,.ogg,.oga,.flac,.m4a,.aac,.opus,.amr" size="70"></label></p>
+    <button id="go" type="button">Загрузить и анализировать</button>
+    <button id="cancelBtn" type="button" style="display:none">Отменить</button>
+  </div>
+  <div id="prog" style="display:none">
+    <p id="status" class="muted"></p>
+    <progress id="bar" max="100" value="0" style="width:100%"></progress>
+    <p id="err" style="color:#b00"></p>
+  </div>
+</div>
+<script>
+const CHUNK = {{ chunk_mb }} * 1024 * 1024;
+const JOB_ID = {{ (upload_job_id | tojson) if upload_job_id is not none else 'null' }};
+let uploadId = null, jobId = JOB_ID;
+const $ = (id) => document.getElementById(id);
+async function activeUpload() {
+  // dlya prodolzheniya: nayti nedokonchennuyu zagruzku etoy vstrechi
+  const r = await fetch('/api/jobs/' + JOB_ID + '/uploads/active');
+  if (!r.ok) return null;
+  const j = await r.json();
+  if (!j.upload_id) return null;
+  uploadId = j.upload_id; jobId = JOB_ID;
+  return j.offset || 0;
+}
+async function initUpload(file) {
+  const topic = $('topic') ? $('topic').value.trim() : '';
+  const note = $('note') ? $('note').value.trim() : '';
+  const mdObj = $('meeting_date');
+  const md = mdObj ? mdObj.value : '';
+  const body = {filename: file.name, bytes_total: file.size, topic, note: note || null};
+  if (JOB_ID) body.job_id = JOB_ID;
+  if (md) body.meeting_date = new Date(md).toISOString();
+  const r = await fetch('/api/uploads', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.detail || ('HTTP '+r.status));
+  uploadId = j.upload_id; jobId = j.job_id;
+  return j.offset || 0;
+}
+async function sendChunk(file, offset) {
+  const blob = file.slice(offset, offset + CHUNK);
+  const r = await fetch('/api/uploads/'+uploadId+'/chunk?offset='+offset,
+    {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: blob});
+  if (r.status === 409) {
+    const cur = await fetch('/api/uploads/'+uploadId+'/offset').then(x=>x.json());
+    return cur.offset;
+  }
+  if (!r.ok) { const j = await r.json().catch(()=>({})); throw new Error(j.detail || ('HTTP '+r.status)); }
+  const j = await r.json();
+  return j.offset;
+}
+async function upload() {
+  $('err').textContent = '';
+  $('prog').style.display = '';
+  $('go').disabled = true; $('cancelBtn').style.display = '';
+  const file = $('file').files[0];
+  if (!file) { $('err').textContent = 'Выберите файл'; reset(); return; }
+  try {
+    let offset = null;
+    if (JOB_ID) {
+      $('status').textContent = 'Поиск незавершённой загрузки...';
+      const act = await fetch('/api/jobs/' + JOB_ID + '/uploads/active').then(x=>x.json());
+      if (act.upload_id && act.filename === file.name &&
+          (act.bytes_total == null || act.bytes_total === file.size)) {
+        uploadId = act.upload_id; offset = act.offset || 0;
+      }
+    }
+    if (uploadId === null) {
+      $('status').textContent = 'Создание встречи и резервирование...';
+      offset = await initUpload(file);
+    }
+    $('status').textContent = 'Загрузка...';
+    while (offset < file.size) {
+      const next = await sendChunk(file, offset);
+      offset = Math.max(next, offset + CHUNK);
+      $('bar').value = Math.min(100, Math.round(offset * 100 / file.size));
+      $('status').textContent = 'Загрузка... ' + $('bar').value + '% (' +
+        (offset/1048576).toFixed(1) + ' / ' + (file.size/1048576).toFixed(1) + ' МБ)';
+    }
+    $('bar').value = 100; $('status').textContent = 'Проверка и запуск анализа...';
+    const r = await fetch('/api/uploads/'+uploadId+'/finalize', {method:'POST'});
+    if (!r.ok) { const j = await r.json().catch(()=>({})); throw new Error(j.detail || ('HTTP '+r.status)); }
+    window.location = '/jobs/' + jobId;
+  } catch (e) {
+    $('err').textContent = 'Ошибка: ' + e.message;
+    reset();
+  }
+}
+async function cancelUpload() {
+  if (uploadId) { try { await fetch('/api/uploads/'+uploadId+'/cancel',{method:'POST'}); } catch(e){} }
+  window.location = '/jobs';
+}
+function reset(){ $('go').disabled=false; $('cancelBtn').style.display='none'; }
+$('go').onclick = upload;
+$('cancelBtn').onclick = cancelUpload;
+</script>
+{% endblock %}

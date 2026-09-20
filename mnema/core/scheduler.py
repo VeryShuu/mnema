@@ -119,8 +119,13 @@ def digest_job() -> None:
 
 def maintenance_job() -> None:
     from .pipeline import review_timeout_check
+    from .uploads import gc_stale_uploads
     review_timeout_check()
     NotifyService().dispatch_pending()
+    try:
+        gc_stale_uploads()
+    except Exception:  # noqa: BLE001 — GC ne dolzhen lonit' maintenance
+        pass
 
 
 def import_ics(text: str) -> int:

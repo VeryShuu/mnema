@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Integer,
-                        String, Text)
+from sqlalchemy import (JSON, BigInteger, Boolean, DateTime, Float,
+                        ForeignKey, Integer, String, Text)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
 JOB_STATUSES = ("scheduled", "launching", "recording", "processing",
-                "awaiting_llm", "awaiting_review", "done", "failed", "cancelled")
+                "awaiting_llm", "awaiting_review", "done", "failed",
+                "cancelled", "uploading")
 SPEAKER_SOURCES = ("voiceprint", "unresolved", "multi_voice")
+JOB_SOURCES = ("zoom", "upload")
+UPLOAD_STATUSES = ("pending", "uploading", "complete", "failed")
 
 
 def _utcnow() -> dt.datetime:
@@ -22,7 +25,8 @@ class Job(Base):
     __tablename__ = "jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    zoom_meeting_id: Mapped[str] = mapped_column(String(64), index=True)
+    zoom_meeting_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    source: Mapped[str] = mapped_column(String(16), default="zoom")  # zoom | upload
     join_link: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     pwd_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
     topic: Mapped[str] = mapped_column(String(512), default="")
@@ -41,8 +45,32 @@ class Job(Base):
 
     events: Mapped[list["SessionEvent"]] = relationship(back_populates="job")
     audio_files: Mapped[list["AudioFile"]] = relationship(back_populates="job")
+    uploads: Mapped[list["Upload"]] = relationship(back_populates="job")
     segments: Mapped[list["Segment"]] = relationship(back_populates="job")
     protocol: Mapped["Protocol | None"] = relationship(back_populates="job", uselist=False)
+
+
+class Upload(Base):
+    """Zagruzka arhivnoy zapisi (video/audio) na vstreche source=upload.
+
+    Vozymlayemaya (resumable): chunki dokleyivayutsya v vremennyiy file;
+    finalize validiruet audio-dorozhku i zapuskaet konveyer."""
+    __tablename__ = "uploads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(512))
+    path: Mapped[str] = mapped_column(String(1024))
+    bytes_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    bytes_received: Mapped[int] = mapped_column(BigInteger, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True),
+                                                    default=_utcnow, onupdate=_utcnow)
+
+    job: Mapped[Job] = relationship(back_populates="uploads")
 
 
 class SessionEvent(Base):
@@ -64,7 +92,7 @@ class AudioFile(Base):
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
     kind: Mapped[str] = mapped_column(String(8))  # wav | webm | mp3
     path: Mapped[str] = mapped_column(String(1024))
-    bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
