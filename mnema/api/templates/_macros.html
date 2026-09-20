@@ -1,0 +1,22 @@
+{% macro badge(status) -%}
+{%- set labels = {
+  'scheduled': 'Запланирована',
+  'launching': 'Запуск',
+  'recording': 'Идёт запись',
+  'processing': 'Обработка',
+  'awaiting_llm': 'Ожидает ИИ-обработку',
+  'awaiting_review': 'Ожидает уточнения',
+  'done': 'Завершена',
+  'failed': 'Ошибка',
+  'cancelled': 'Отменена',
+  'uploading': 'Загрузка',
+  'pending': 'Ожидает',
+  'complete': 'Завершена',
+  'upload': 'Архив',
+  'configured': 'Настроено',
+  'misconfigured': 'Ошибка настройки',
+  'not_configured': 'Не настроено',
+  'needs_review': 'Нужно уточнение'
+} -%}
+<span class="badge {{ status }}">{{ labels.get(status, status) }}</span>
+{%- endmacro %}

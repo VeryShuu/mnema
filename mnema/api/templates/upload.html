@@ -12,13 +12,13 @@
     {% endif %}
     <p><label>Файл записи (видео/аудио, до нескольких ГБ)<br>
       <input id="file" type="file" accept=".mp4,.m4v,.mkv,.mov,.avi,.wmv,.webm,.flv,.ts,.mpg,.mpeg,.3gp,.wav,.mp3,.ogg,.oga,.flac,.m4a,.aac,.opus,.amr" size="70"></label></p>
-    <button id="go" type="button">Загрузить и анализировать</button>
+    <button id="go" type="button" class="primary">Загрузить и анализировать</button>
     <button id="cancelBtn" type="button" style="display:none">Отменить</button>
   </div>
   <div id="prog" style="display:none">
     <p id="status" class="muted"></p>
     <progress id="bar" max="100" value="0" style="width:100%"></progress>
-    <p id="err" style="color:#b00"></p>
+    <p id="err" style="color:var(--err)"></p>
   </div>
 </div>
 <script>

@@ -1,28 +1,57 @@
 {% extends "base.html" %}
+{% from "_macros.html" import badge %}
 {% block content %}
-<h2>Дашборд</h2>
+<h2>Панель управления</h2>
 <div class="card">
-  <h3>Capabilities (ФТ-39)</h3>
+  <h3>Состояние сервисов</h3>
+  <div class="table-wrap">
   <table>
-    <tr><th>LLM</th><td>{{ 'configured' if caps.llm.state=='configured' else caps.llm.state }} — backend={{ caps.llm.backend or '—' }}, model={{ caps.llm.model or '—' }}{% if caps.llm.probe %} (probe: {{ 'ok' if caps.llm.probe.ok else caps.llm.probe.detail }}){% endif %}</td></tr>
-    <tr><th>ASR</th><td>{{ caps.asr.state }} — backend={{ caps.asr.backend }}, model={{ caps.asr.model or '—' }}{% if caps.asr.probe %} (probe: {{ 'ok' if caps.asr.probe.ok else caps.asr.probe.detail }}){% endif %}</td></tr>
-    <tr><th>Zoom-сессия</th><td>
-      {% if zoom_health %}{{ 'OK' if zoom_health.ok else 'ПРОБЛЕМА: ' ~ (zoom_health.detail or '') }} <span class="muted">проверено {{ zoom_health.checked_ts }}</span>
-      {% else %}проверка ещё не выполнялась (SESSION_HEALTHCRON){% endif %}</td></tr>
-    <tr><th>Очередь (redis)</th><td>{{ 'ok' if queue_ok else 'недоступна' }}</td></tr>
+    <tr><th>Языковая модель</th><td>
+      <span class="badge {{ caps.llm.state }}">{{ 'Настроено' if caps.llm.state=='configured' else ('Ошибка настройки' if caps.llm.state=='misconfigured' else 'Не настроено') }}</span>
+      <span class="muted">сервер={{ caps.llm.backend or '—' }}, модель={{ caps.llm.model or '—' }}</span>
+      {% if caps.llm.probe %}<span class="muted"> · проверка: {{ 'в порядке' if caps.llm.probe.ok else caps.llm.probe.detail }}</span>{% endif %}</td></tr>
+    <tr><th>Распознавание речи</th><td>
+      <span class="badge {{ caps.asr.state }}">{{ 'Настроено' if caps.asr.state=='configured' else ('Ошибка настройки' if caps.asr.state=='misconfigured' else 'Не настроено') }}</span>
+      <span class="muted">сервер={{ caps.asr.backend }}, модель={{ caps.asr.model or '—' }}</span>
+      {% if caps.asr.probe %}<span class="muted"> · проверка: {{ 'в порядке' if caps.asr.probe.ok else caps.asr.probe.detail }}</span>{% endif %}</td></tr>
+    <tr><th>Сессия Zoom</th><td>
+      {% if zoom_health %}
+        <span class="badge {{ 'done' if zoom_health.ok else 'failed' }}">{{ 'В порядке' if zoom_health.ok else 'Проблема' }}</span>
+        {% if not zoom_health.ok and zoom_health.detail %}<span class="muted">{{ zoom_health.detail }}</span>{% endif %}
+        <span class="muted"> · проверено {{ zoom_health.checked_ts }}</span>
+      {% else %}<span class="muted">проверка ещё не выполнялась</span>{% endif %}</td></tr>
+    <tr><th>Очередь задач</th><td>
+      <span class="badge {{ 'done' if queue_ok else 'failed' }}">{{ 'Доступна' if queue_ok else 'Недоступна' }}</span></td></tr>
   </table>
+  </div>
 </div>
 <div class="card">
   <h3>Активные записи</h3>
-  <table><tr><th>ID</th><th>Тема</th><th>Meeting</th><th>Старт</th><th>Статус</th></tr>
-  {% for j in active %}<tr><td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td><td>{{ j.topic }}</td><td>{{ j.zoom_meeting_id }}</td><td>{{ j.start_at }}</td><td><span class="badge {{ j.status }}">{{ j.status }}</span></td></tr>{% else %}<tr><td colspan="5" class="muted">нет активных</td></tr>{% endfor %}
+  <div class="table-wrap">
+  <table>
+    <tr><th>№</th><th>Тема</th><th>Встреча Zoom</th><th>Начало</th><th>Статус</th></tr>
+    {% for j in active %}<tr>
+      <td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td>
+      <td>{{ j.topic }}</td><td>{{ j.zoom_meeting_id }}</td><td>{{ j.start_at }}</td>
+      <td>{{ badge(j.status) }}</td></tr>
+    {% else %}<tr><td colspan="5" class="muted">Нет активных записей</td></tr>{% endfor %}
   </table>
+  </div>
 </div>
 <div class="card">
   <h3>Последние сбои</h3>
-  <table><tr><th>ID</th><th>Тема</th><th>Причина</th><th>Когда</th></tr>
-  {% for j in recent_failed %}<tr><td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td><td>{{ j.topic }}</td><td>{{ j.fail_reason or j.error }}</td><td>{{ j.ended_ts }}</td></tr>{% else %}<tr><td colspan="4" class="muted">нет сбоев</td></tr>{% endfor %}
+  <div class="table-wrap">
+  <table>
+    <tr><th>№</th><th>Тема</th><th>Причина</th><th>Когда</th></tr>
+    {% for j in recent_failed %}<tr>
+      <td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td>
+      <td>{{ j.topic }}</td><td>{{ j.fail_reason or j.error }}</td><td>{{ j.ended_ts }}</td></tr>
+    {% else %}<tr><td colspan="4" class="muted">Сбоев нет</td></tr>{% endfor %}
   </table>
+  </div>
 </div>
-<p>Всего задач по статусам: {% for k,v in job_status_counts.items() %}{{ k }}={{ v }} {% endfor %}</p>
+<div class="card">
+  <h3>Задачи по статусам</h3>
+  <p>{% for k,v in job_status_counts.items() %}{{ badge(k) }} <b>{{ v }}</b>&nbsp; {% else %}<span class="muted">Задач нет</span>{% endfor %}</p>
+</div>
 {% endblock %}

@@ -1,9 +1,11 @@
 {% extends "base.html" %}
+{% from "_macros.html" import badge %}
 {% block content %}
-<h2>Протокол #{{ protocol.id }} — {{ job.topic }}</h2>
+<div class="page-head"><h2>Протокол №{{ protocol.id }} — {{ job.topic }}</h2></div>
 <audio id="player" controls src="/api/jobs/{{ job.id }}/audio?format=mp3"></audio>
-<div class="card">
+<div class="card" style="margin-top:1rem">
   <h3>Структурированная часть</h3>
+  <div class="table-wrap">
   <table>
   <tr><th>Тема</th><td>{{ protocol.json_data.topic if protocol.json_data else '' }}</td></tr>
   <tr><th>Повестка</th><td>{% for a in (protocol.json_data.agenda or []) %}{{ a }}<br>{% endfor %}</td></tr>
@@ -13,18 +15,19 @@
     {% for ai in (protocol.json_data.action_items or []) %}<tr><td>{{ ai.task }}</td><td>{{ ai.owner or '—' }}</td><td>{{ ai.due or '—' }}</td></tr>{% endfor %}
     </table></td></tr>
   </table>
+  </div>
 </div>
 <div class="card">
-  <h3>Стенограмма (клик по времени — перемотка аудио)</h3>
+  <h3>Стенограмма <span class="muted" style="font-weight:400">(нажмите на время, чтобы перемотать аудио)</span></h3>
   {% for s in segments %}
   <p><a href="#" onclick="document.getElementById('player').currentTime={{ s.t_start }};return false;">{{ '%02d:%02d:%02d'|format((s.t_start//3600)|int, (s.t_start%3600//60)|int, (s.t_start%60)|int) }}</a>
   <b>{{ s.speaker_name or ('Голос ' ~ (s.speaker_id or '?')) }}</b>: {{ s.text }}
-  {% if s.needs_review %}<span class="badge awaiting_review">needs_review</span>{% endif %}</p>
+  {% if s.needs_review %}{{ badge('needs_review') }}{% endif %}</p>
   {% endfor %}
 </div>
 <p>
- <a href="/api/protocols/{{ protocol.id }}?format=md">md</a>
- <a href="/api/protocols/{{ protocol.id }}?format=docx">docx</a>
- <a href="/api/protocols/{{ protocol.id }}?format=json">json</a>
+  Скачать: <a href="/api/protocols/{{ protocol.id }}?format=md">Markdown</a> ·
+  <a href="/api/protocols/{{ protocol.id }}?format=docx">DOCX</a> ·
+  <a href="/api/protocols/{{ protocol.id }}?format=json">JSON</a>
 </p>
 {% endblock %}

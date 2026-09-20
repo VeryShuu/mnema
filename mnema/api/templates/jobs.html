@@ -1,43 +1,47 @@
 {% extends "base.html" %}
+{% from "_macros.html" import badge %}
 {% block content %}
 <h2>Встречи и расписание</h2>
 <div class="card">
   <h3>Создать задачу</h3>
-  <form method="post" action="/jobs/create">
-    <input name="meeting_link" placeholder="Ссылка-приглашение Zoom или meeting_id" size="60" required>
+  <form method="post" action="/jobs/create" style="display:flex;gap:.5rem;flex-wrap:wrap">
+    <input name="meeting_link" placeholder="Ссылка-приглашение Zoom или номер встречи" size="50" required>
     <input name="topic" placeholder="Тема">
     <input name="start_at" type="datetime-local" title="Пусто — записать сейчас">
-    <button type="submit">Создать</button>
+    <button type="submit" class="primary">Создать</button>
   </form>
-  <form method="post" action="/jobs/import-ics" enctype="multipart/form-data" style="margin-top:.5rem">
+  <form method="post" action="/jobs/import-ics" enctype="multipart/form-data" style="margin-top:.7rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
     <input type="file" name="file" accept=".ics">
-    <button type="submit">Импорт .ics</button>
+    <button type="submit">Импорт календаря (.ics)</button>
   </form>
 </div>
 <div class="card">
   <h3>Загрузить архивную запись совещания</h3>
   <p class="muted">Загрузите видео/аудио прошедшей встречи (можно несколько ГБ). Будет создана встреча, извлечена аудиодорожка и запущен полный анализ с распознаванием людей.</p>
-  <a href="/jobs/upload"><button type="button">Загрузить запись…</button></a>
+  <a href="/jobs/upload"><button type="button" class="primary">Загрузить запись…</button></a>
 </div>
-<p>
- Фильтр:
- <a href="/jobs">все</a>
- <a href="/jobs?status=scheduled">scheduled</a>
- <a href="/jobs?status=recording">recording</a>
- <a href="/jobs?status=done">done</a>
- <a href="/jobs?status=uploading">uploading</a>
- <a href="/jobs?status=failed">failed</a>
+<p class="muted">Фильтр по статусу:
+  <a href="/jobs">все</a> ·
+  <a href="/jobs?status=scheduled">запланированные</a> ·
+  <a href="/jobs?status=recording">идёт запись</a> ·
+  <a href="/jobs?status=done">завершённые</a> ·
+  <a href="/jobs?status=uploading">загрузка</a> ·
+  <a href="/jobs?status=failed">с ошибкой</a>
 </p>
+<div class="table-wrap">
 <table>
-<tr><th>ID</th><th>Тема</th><th>Meeting</th><th>Старт</th><th>Статус</th><th></th></tr>
+<tr><th>№</th><th>Тема</th><th>Встреча Zoom</th><th>Начало</th><th>Статус</th><th></th></tr>
 {% for j in jobs %}
 <tr>
  <td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td>
  <td>{{ j.topic }}</td><td>{{ j.zoom_meeting_id or 'архив' }}</td><td>{{ j.start_at }}</td>
- <td><span class="badge {{ j.status }}">{{ j.status }}</span></td>
+ <td>{{ badge(j.status) }}</td>
  <td>{% if j.status in ('scheduled','launching','recording','processing','uploading') %}
     <button hx-post="/jobs/{{ j.id }}/cancel" hx-on="click: location.reload()">Отменить</button>{% endif %}</td>
 </tr>
+{% else %}
+<tr><td colspan="6" class="muted">Встреч пока нет</td></tr>
 {% endfor %}
 </table>
+</div>
 {% endblock %}

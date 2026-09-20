@@ -1,37 +1,43 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Реестр голосов (ФТ-29)</h2>
+<div class="page-head"><h2>Реестр голосов</h2></div>
 <div class="card">
   <h3>Регистрация нового голоса</h3>
   <form method="post" action="#" onsubmit="return false;">
     <input id="emp_name" placeholder="ФИО" required>
-    <input id="emp_id" placeholder="Табельный (опц.)">
-    <label><input type="checkbox" id="consent"> Согласен на обработку голосовых биометрических данных (ФТ-31)</label>
-    <button onclick="createProfile()">Создать профиль</button>
+    <input id="emp_id" placeholder="Табельный номер (необязательно)">
+    <label><input type="checkbox" id="consent"> Согласен на обработку голосовых биометрических данных</label>
+    <button class="primary" onclick="createProfile()">Создать профиль</button>
   </form>
-  <div id="rec" style="display:none;margin-top:.5rem">
-    <p id="recstatus">Готов. Нажмите «Запись» и произнесите 3–4 фразы (15–30 с суммарно).</p>
+  <div id="rec" style="display:none;margin-top:.7rem">
+    <p id="recstatus" class="muted">Готов. Нажмите «Запись» и произнесите 3–4 фразы (15–30 секунд суммарно).</p>
     <button id="recbtn">Запись</button>
     <audio id="playback" controls></audio>
   </div>
   <input type="hidden" id="vid">
 </div>
+<div class="table-wrap">
 <table>
-<tr><th>ID</th><th>ФИО</th><th>Таб. №</th><th>Эталонов</th><th>Согласие</th><th>Метрики (ФТ-33)</th><th></th></tr>
+<tr><th>№</th><th>ФИО</th><th>Табельный №</th><th>Эталонов</th><th>Согласие</th><th>Метрики распознавания</th><th></th></tr>
 {% for p in profiles %}
 <tr>
  <td>{{ p.id }}</td><td>{{ p.employee_name }}</td><td>{{ p.employee_id or '—' }}</td>
  <td>{{ p.sample_paths|length if p.sample_paths else 0 }}</td>
- <td>{{ 'есть' if p.consent_ts else 'НЕТ' }}</td>
+ <td>{{ 'Есть' if p.consent_ts else 'Нет' }}</td>
  <td class="muted">{{ p.match_stats or {} }}</td>
- <td><button onclick="delProfile({{ p.id }})">Удалить</button></td>
+ <td><button class="danger" onclick="delProfile({{ p.id }})">Удалить</button></td>
 </tr>
+{% else %}
+<tr><td colspan="7" class="muted">Профилей пока нет</td></tr>
 {% endfor %}
 </table>
+</div>
+{% endblock %}
+{% block scripts %}
 <script>
 let mediaRecorder, chunks=[], stream;
 async function createProfile(){
-  if(!document.getElementById('consent').checked){ alert('Нужно согласие (ФТ-31)'); return; }
+  if(!document.getElementById('consent').checked){ alert('Необходимо согласие на обработку биометрических данных'); return; }
   const name = document.getElementById('emp_name').value.trim();
   if(!name){ alert('Укажите ФИО'); return; }
   const r = await fetch('/api/voice-profiles', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -56,13 +62,13 @@ document.getElementById('recbtn').onclick = async function(){
       {method:'POST', body: fd});
     const j = await r.json();
     if(j.ok){ alert('Запись добавлена в профиль'); location.reload(); }
-    else { alert('Низкое качество: '+j.reason+' — перезапишите'); }
+    else { alert('Низкое качество записи: '+j.reason+' — перезапишите'); }
   };
   mediaRecorder.start();
-  document.getElementById('recstatus').textContent='Идёт запись… нажмите ещё раз чтобы завершить.';
+  document.getElementById('recstatus').textContent='Идёт запись… нажмите ещё раз, чтобы завершить.';
 };
 async function delProfile(id){
-  if(!confirm('Удалить профиль со всеми эталонами (ФТ-31)?')) return;
+  if(!confirm('Удалить профиль со всеми эталонными записями?')) return;
   await fetch('/api/voice-profiles/'+id,{method:'DELETE'});
   location.reload();
 }

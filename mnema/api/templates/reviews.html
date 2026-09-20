@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Очередь уточнений (ФТ-28)</h2>
+<div class="page-head"><h2>Очередь уточнений</h2></div>
 {% for r in pending %}
-<div class="card" style="border-left:4px solid #eab308">
-  <h3>Job #{{ r.job_id }} ({{ jobs[r.job_id].topic if r.job_id in jobs else '' }}) — кластер «{{ r.cluster_label }}»</h3>
+<div class="card" style="border-left:4px solid var(--warn)">
+  <h3>Встреча №{{ r.job_id }} ({{ jobs[r.job_id].topic if r.job_id in jobs else '' }}) — голосовой кластер «{{ r.cluster_label }}»</h3>
   {% if r.candidate %}
     <p>Похоже на <b>{{ r.candidate }}</b> ({{ '%.0f'|format((r.similarity or 0)*100) }}%). Это он?</p>
     <form onsubmit="answer({{ r.id }}, {{ r.candidate_id }}, null);return false;">

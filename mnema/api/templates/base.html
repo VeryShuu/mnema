@@ -1,38 +1,160 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" data-theme="dark">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Mnema{% endblock %}</title>
+<script>
+(function(){try{var t=localStorage.getItem('mnema-theme');if(t){document.documentElement.dataset.theme=t;}}catch(e){}})();
+</script>
 <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 <style>
-body{font-family:system-ui,sans-serif;margin:0;background:#f5f6f8;color:#222}
-nav{background:#1d2733;color:#fff;padding:.6rem 1rem}
-nav a{color:#cfe1ff;margin-right:1rem;text-decoration:none}
-main{max-width:1100px;margin:1rem auto;padding:0 1rem}
-table{border-collapse:collapse;width:100%;background:#fff}
-th,td{border:1px solid #dde;padding:.4rem .6rem;text-align:left;font-size:.92rem}
-.badge{padding:.1rem .5rem;border-radius:.6rem;font-size:.8rem;background:#e6e9ef}
-.badge.done{background:#d5f0d5}.badge.failed{background:#f7d0d0}
-.badge.recording,.badge.processing{background:#d0e4f7}.badge.awaiting_review,.badge.awaiting_llm{background:#fdeecd}
-.badge.uploading{background:#e4d7f5}.badge.upload{background:#dfe8f5;color:#345}
-.card{background:#fff;border:1px solid #dde;border-radius:.5rem;padding:1rem;margin-bottom:1rem}
-audio{width:100%}
-button{cursor:pointer;padding:.3rem .8rem}
-input,select{padding:.3rem}
+:root[data-theme="dark"]{
+  --bg:#0b0d10; --bg-elev:#14171c; --bg-card:#151920; --bg-hover:#1b2028;
+  --border:#252b35; --border-soft:#1e242e;
+  --text:#e8ebf0; --text-muted:#8b94a3; --text-faint:#5d6675;
+  --accent:#5b9dff; --accent-soft:rgba(91,157,255,.14);
+  --ok:#3ecf8e; --ok-soft:rgba(62,207,142,.14);
+  --warn:#e8b33c; --warn-soft:rgba(232,179,60,.14);
+  --err:#f47174; --err-soft:rgba(244,113,116,.14);
+  --info:#60a5fa; --info-soft:rgba(96,165,250,.14);
+  --purple:#a78bfa; --purple-soft:rgba(167,139,250,.14);
+  --neutral:#9aa4b2; --neutral-soft:rgba(154,164,178,.12);
+  --nav-bg:#0e1116; --shadow:0 8px 24px rgba(0,0,0,.35);
+  color-scheme:dark;
+}
+:root[data-theme="light"]{
+  --bg:#f4f6f9; --bg-elev:#ffffff; --bg-card:#ffffff; --bg-hover:#eef2f7;
+  --border:#dde3ec; --border-soft:#e7ecf3;
+  --text:#1a2230; --text-muted:#5f6b7d; --text-faint:#93a0b1;
+  --accent:#2f6fed; --accent-soft:rgba(47,111,237,.1);
+  --ok:#14945c; --ok-soft:rgba(20,148,92,.12);
+  --warn:#b2790a; --warn-soft:rgba(178,121,10,.12);
+  --err:#cf3f43; --err-soft:rgba(207,63,67,.12);
+  --info:#2563c9; --info-soft:rgba(37,99,201,.1);
+  --purple:#7c5cd6; --purple-soft:rgba(124,92,214,.12);
+  --neutral:#64748b; --neutral-soft:rgba(100,116,139,.12);
+  --nav-bg:#101826; --shadow:0 8px 24px rgba(16,24,38,.08);
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  font-size:15px;line-height:1.55;transition:background .2s,color .2s}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+
+.topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:1.4rem;
+  padding:.7rem 1.4rem;background:var(--nav-bg);border-bottom:1px solid var(--border);flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:.55rem;color:#fff;font-weight:700;font-size:1.05rem;letter-spacing:.02em}
+.brand-mark{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#5b9dff,#a78bfa)}
+.topbar nav{display:flex;gap:.2rem;flex-wrap:wrap;flex:1}
+.topbar nav a{color:#c6cfdd;padding:.35rem .7rem;border-radius:.5rem;font-size:.92rem}
+.topbar nav a:hover{background:rgba(255,255,255,.08);color:#fff;text-decoration:none}
+.theme-toggle{display:inline-flex;align-items:center;gap:.45rem;background:rgba(255,255,255,.08);
+  border:1px solid rgba(255,255,255,.15);color:#dfe6f0;border-radius:2rem;padding:.3rem .8rem;
+  font-size:.85rem;cursor:pointer}
+.theme-toggle:hover{background:rgba(255,255,255,.15)}
+
+main{max-width:1150px;margin:1.4rem auto;padding:0 1.2rem}
+h2{font-size:1.45rem;font-weight:700;margin:0 0 1.1rem;letter-spacing:-.01em}
+h3{font-size:1.02rem;font-weight:650;margin:0 0 .8rem}
+
+.page-head{display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1.1rem}
+.page-head h2{margin:0}
+
+.card{background:var(--bg-card);border:1px solid var(--border-soft);border-radius:14px;
+  padding:1.1rem 1.2rem;margin-bottom:1rem;box-shadow:var(--shadow)}
+
+.table-wrap{overflow-x:auto;border-radius:12px;border:1px solid var(--border-soft);background:var(--bg-card)}
+table{border-collapse:collapse;width:100%}
+th,td{padding:.55rem .8rem;text-align:left;font-size:.9rem;border-bottom:1px solid var(--border-soft);vertical-align:top}
+th{color:var(--text-muted);font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;
+  background:var(--bg-elev)}
+tr:last-child td{border-bottom:none}
+tbody tr:hover td,tr:hover td{background:var(--bg-hover)}
+.card table th,.card table td{border-bottom-color:var(--border-soft)}
+.card table{border-radius:0}
+.card .table-wrap{border:none;background:transparent;border-radius:0}
+
+.badge{display:inline-block;padding:.15rem .6rem;border-radius:2rem;font-size:.78rem;font-weight:600;
+  background:var(--neutral-soft);color:var(--neutral);white-space:nowrap}
+.badge.done{background:var(--ok-soft);color:var(--ok)}
+.badge.failed{background:var(--err-soft);color:var(--err)}
+.badge.recording,.badge.processing,.badge.launching{background:var(--info-soft);color:var(--info)}
+.badge.awaiting_review,.badge.awaiting_llm,.badge.pending{background:var(--warn-soft);color:var(--warn)}
+.badge.uploading{background:var(--purple-soft);color:var(--purple)}
+.badge.upload{background:var(--info-soft);color:var(--info)}
+.badge.scheduled{background:var(--neutral-soft);color:var(--neutral)}
+.badge.cancelled{background:var(--neutral-soft);color:var(--text-faint)}
+.badge.configured{background:var(--ok-soft);color:var(--ok)}
+.badge.misconfigured{background:var(--err-soft);color:var(--err)}
+.badge.not_configured{background:var(--neutral-soft);color:var(--text-faint)}
+.badge.needs_review{background:var(--warn-soft);color:var(--warn)}
+
+button,.btn{cursor:pointer;border:1px solid var(--border);background:var(--bg-elev);color:var(--text);
+  padding:.42rem .95rem;border-radius:.55rem;font-size:.9rem;font-family:inherit;transition:background .15s,border-color .15s}
+button:hover,.btn:hover{background:var(--bg-hover);border-color:var(--accent)}
+button.primary,.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover,.btn-primary:hover{filter:brightness(1.1)}
+button.danger{color:var(--err);border-color:var(--err-soft)}
+button.danger:hover{background:var(--err-soft)}
+button:disabled{opacity:.5;cursor:not-allowed}
+
+input,select,textarea{padding:.45rem .7rem;border:1px solid var(--border);border-radius:.55rem;
+  background:var(--bg-elev);color:var(--text);font-family:inherit;font-size:.9rem}
+input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+label{font-size:.9rem;color:var(--text-muted)}
+
+.audio-block{margin:.6rem 0}
+audio{width:100%;height:36px}
+
 pre{white-space:pre-wrap}
-.log{font-family:monospace;font-size:.8rem;max-height:400px;overflow:auto}
-.muted{color:#777;font-size:.85rem}
+.log{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.8rem;max-height:400px;overflow:auto;border-radius:12px}
+.muted{color:var(--text-muted);font-size:.85rem}
+.stat-num{font-size:1.5rem;font-weight:700}
+
+.progress-row{display:flex;align-items:center;gap:.6rem}
+progress{width:100%;height:10px;accent-color:var(--accent)}
+
+@media (max-width:640px){
+  .topbar{gap:.6rem;padding:.6rem .8rem}
+  main{padding:0 .8rem}
+}
 </style>
 </head>
 <body>
-<nav>
-  <a href="/">Дашборд</a>
-  <a href="/jobs">Встречи</a>
-  <a href="/protocols">Протоколы</a>
-  <a href="/reviews">Уточнения</a>
-  <a href="/voices">Реестр голосов</a>
-  <a href="/health" target="_blank">Health</a>
-</nav>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark"></span>Mnema</div>
+  <nav>
+    <a href="/">Панель управления</a>
+    <a href="/jobs">Встречи</a>
+    <a href="/protocols">Протоколы</a>
+    <a href="/reviews">Уточнения</a>
+    <a href="/voices">Реестр голосов</a>
+    <a href="/health" target="_blank">Состояние системы</a>
+  </nav>
+  <button class="theme-toggle" id="themeToggle" type="button" title="Переключить тему">
+    <span id="themeIcon">☀️</span><span id="themeLabel">Светлая тема</span>
+  </button>
+</header>
 <main>{% block content %}{% endblock %}</main>
+<script>
+(function(){
+  var root=document.documentElement,btn=document.getElementById('themeToggle');
+  function render(){
+    var dark=root.dataset.theme!=='light';
+    document.getElementById('themeIcon').textContent=dark?'☀️':'🌙';
+    document.getElementById('themeLabel').textContent=dark?'Светлая тема':'Тёмная тема';
+  }
+  btn.addEventListener('click',function(){
+    root.dataset.theme=root.dataset.theme==='light'?'dark':'light';
+    try{localStorage.setItem('mnema-theme',root.dataset.theme);}catch(e){}
+    render();
+  });
+  render();
+})();
+</script>
+{% block scripts %}{% endblock %}
 </body>
 </html>

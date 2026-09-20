@@ -1,47 +1,52 @@
 {% extends "base.html" %}
+{% from "_macros.html" import badge %}
 {% block content %}
-<h2>Job #{{ job.id }} — {{ job.topic }} {% if job.source == 'upload' %}<span class="badge upload">архив</span>{% endif %}</h2>
+<div class="page-head">
+  <h2>Встреча №{{ job.id }} — {{ job.topic }} {% if job.source == 'upload' %}<span class="badge upload">архив</span>{% endif %}</h2>
+</div>
 <div class="card">
+  <div class="table-wrap">
   <table>
     {% if job.source == 'upload' %}
     <tr><th>Тип</th><td>Архивная запись (загружена вручную)</td></tr>
     {% if upload %}<tr><th>Файл</th><td>{{ upload.filename }}
-      {% if upload.bytes_total %} ({{ (upload.bytes_received/1048576)|round(1) }} / {{ (upload.bytes_total/1048576)|round(1) }} МБ){% endif %}
-      {% if upload.status == 'complete' %} <a href="/api/jobs/{{ job.id }}/source">скачать оригинал</a>{% endif %}
+      {% if upload.bytes_total %} ({{ (upload.bytes_received/1048576)|round(1) }} из {{ (upload.bytes_total/1048576)|round(1) }} МБ){% endif %}
+      {% if upload.status == 'complete' %} · <a href="/api/jobs/{{ job.id }}/source">скачать оригинал</a>{% endif %}
     </td></tr>{% endif %}
     {% else %}
-    <tr><th>Meeting</th><td>{{ job.zoom_meeting_id }}</td></tr>
+    <tr><th>Встреча Zoom</th><td>{{ job.zoom_meeting_id }}</td></tr>
     {% endif %}
-    <tr><th>Статус</th><td><span class="badge {{ job.status }}">{{ job.status }}</span></td></tr>
-    {% if job.source != 'upload' %}<tr><th>Пароль</th><td>{{ 'задан (скрыт)' if pwd_present else 'нет' }}</td></tr>{% endif %}
-    <tr><th>Старт</th><td>{{ job.start_at }}</td></tr>
+    <tr><th>Статус</th><td>{{ badge(job.status) }}</td></tr>
+    {% if job.source != 'upload' %}<tr><th>Пароль</th><td>{{ 'задан (скрыт)' if pwd_present else 'не задан' }}</td></tr>{% endif %}
+    <tr><th>Начало</th><td>{{ job.start_at }}</td></tr>
     <tr><th>Запись начата</th><td>{{ job.started_ts or '—' }}</td></tr>
     <tr><th>Завершено</th><td>{{ job.ended_ts or '—' }}</td></tr>
     {% if job.fail_reason %}<tr><th>Причина сбоя</th><td>{{ job.fail_reason }}</td></tr>{% endif %}
     {% if job.error %}<tr><th>Ошибка</th><td>{{ job.error }}</td></tr>{% endif %}
     {% if job.note %}<tr><th>Примечание</th><td>{{ job.note }}</td></tr>{% endif %}
   </table>
+  </div>
   {% if job.source == 'upload' and upload is not none and upload.status != 'complete' and job.status in ('uploading','failed') %}
-  <p><a href="/jobs/upload?job_id={{ job.id }}"><button type="button">Продолжить загрузку</button></a></p>
+  <p style="margin-top:.8rem"><a href="/jobs/upload?job_id={{ job.id }}"><button type="button" class="primary">Продолжить загрузку</button></a></p>
   {% endif %}
 </div>
 <div class="card">
-  <h3>Аудио (ФТ-41)</h3>
+  <h3>Аудиозаписи</h3>
   {% for a in audio %}
-    <p>{{ a.kind }} — {{ '%.0f'|format(a.duration_s) if a.duration_s else '?' }} с, {{ (a.bytes//1024 if a.bytes else '?') }} КБ
+    <p class="audio-block"><b>{{ a.kind|upper }}</b> — {{ '%.0f'|format(a.duration_s) if a.duration_s else '?' }} с, {{ (a.bytes//1024 if a.bytes else '?') }} КБ
       {% if a.kind in ('mp3','wav','webm') %}
-      <a href="/api/jobs/{{ job.id }}/audio?format={{ a.kind }}">скачать</a>
+      · <a href="/api/jobs/{{ job.id }}/audio?format={{ a.kind }}">скачать</a>
       {% if a.kind=='mp3' %}<audio controls src="/api/jobs/{{ job.id }}/audio?format=mp3"></audio>{% endif %}
       {% elif job.source == 'upload' and upload is not none and upload.path == a.path %}
-      <a href="/api/jobs/{{ job.id }}/source">скачать оригинал</a>
+      · <a href="/api/jobs/{{ job.id }}/source">скачать оригинал</a>
       {% endif %}
     </p>
-  {% else %}<p class="muted">аудио пока нет</p>{% endfor %}
+  {% else %}<p class="muted">Аудио пока нет</p>{% endfor %}
 </div>
 {% if protocol %}<p><a href="/protocols/{{ protocol.id }}">Открыть протокол →</a></p>{% endif %}
 {% if reviews %}<p><a href="/reviews">Есть нерешённые уточнения ({{ reviews|length }}) →</a></p>{% endif %}
 <div class="card">
-  <h3>Event-log (автообновление)</h3>
+  <h3>Журнал событий (обновляется автоматически)</h3>
   {% include "job_log.html" %}
 </div>
 {% endblock %}
