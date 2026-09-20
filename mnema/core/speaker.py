@@ -21,8 +21,6 @@ _backend_cache: dict = {}
 
 def _embedding_backend():
     """pyannote-embedding / SpeechBrain; None esli niedostupen (CPU stub)."""
-def _embedding_backend():
-    """pyannote-embedding / SpeechBrain; None esli niedostupen (CPU stub)."""
     if "backend" in _backend_cache:
         return _backend_cache["backend"]
     backend = None
@@ -55,10 +53,12 @@ def compute_embedding_for_file(path: Path) -> list[float] | None:
 
 
 def _pyannote_embedding(path: Path) -> list[float]:
-    from pyannote.audio import Inference
-    device = os.environ.get("ASR_DEVICE", "cpu")
-    # v prod: Model.from_pretrained("pyannote/embedding", use_auth_token=HF_TOKEN)
-    inference = Inference("pyannote/embedding", device=device)
+    from pyannote.audio import Inference, Model
+    import torch
+    device = torch.device(os.environ.get("ASR_DEVICE", "cpu"))
+    tok = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    model = Model.from_pretrained("pyannote/embedding", use_auth_token=tok)
+    inference = Inference(model, window="whole", device=device)
     import tempfile
     with tempfile.NamedTemporaryFile(suffix=".wav") as tf:
         from .audio import webm_to_wav16k
@@ -69,8 +69,9 @@ def _pyannote_embedding(path: Path) -> list[float]:
         else:
             vec = inference(p)
     import numpy as np
-    arr = np.asarray(vec).flatten().tolist()
-    return arr
+    arr = np.asarray(vec).flatten()
+    norm = float(np.linalg.norm(arr)) or 1.0
+    return (arr / norm).tolist()
 
 
 def _fallback_embedding(path: Path) -> list[float]:
