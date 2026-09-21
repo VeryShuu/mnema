@@ -21,6 +21,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.python
+      args:
+        WITH_ASR: "1"
     command: ["python", "-m", "mnema.worker.main"]
     env_file: .env
     environment:

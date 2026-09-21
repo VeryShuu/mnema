@@ -27,10 +27,11 @@ def get_queue(name: str):
     return _queues[name]
 
 
-def enqueue_job(name: str, func, *args, **kwargs) -> bool:
-    """Enqueue v RQ; esli redis niedostupen — True (vzyvatel' reshayet' sam)."""
+def enqueue_job(name: str, func, *args, depends_on=None, **kwargs):
+    """Enqueue v RQ (mozhno depends_on=Job|list); v direct mode — None.
+
+    Vozvrat: RQ Job v rq-rezhime, inache None (vyzyvatel' reshayet' sam)."""
     q, mode = get_queue(name)
     if mode == "rq":
-        q.enqueue(func, *args, **kwargs)
-        return True
-    return False
+        return q.enqueue(func, *args, depends_on=depends_on, **kwargs)
+    return None

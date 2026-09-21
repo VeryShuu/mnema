@@ -26,6 +26,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ARCHIVE_DIR", str(tmp_path / "archive"))
     monkeypatch.setenv("DIARIZER", "off")          # bez pyannote
+    monkeypatch.setenv("VAD", "energy")             # sintez. ton — ne rech' dlya silero
     monkeypatch.setenv("ASR_BASE_URL", "")         # not_configured
     monkeypatch.setenv("LLM_BASE_URL", "")         # not_configured
     monkeypatch.setenv("HF_TOKEN", "")

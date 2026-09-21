@@ -236,7 +236,7 @@ def finalize(upload_id: int) -> Job:
         s.commit()
     transition(job_id, "processing", event="upload_finished")
     from .queue import enqueue_job
-    enqueue_job("asr", "mnema.worker.tasks.run_asr_pipeline", job_id)
+    enqueue_job("asr", "mnema.worker.tasks.run_orchestrate", job_id)
     with get_session() as s:
         return s.get(Job, job_id)
 

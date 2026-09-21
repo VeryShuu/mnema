@@ -27,48 +27,154 @@ def _job_paths(job_id: int) -> dict[str, Path]:
 
 
 # ---------------------------------------------------------------- ASR (FT-11..15)
-def run_asr_pipeline(job_id: int) -> None:
-    from ..core.pipeline import transition
-    with get_session() as s:
-        job = s.get(Job, job_id)
-        if job is None:
-            return
-    p = _job_paths(job_id)
+def run_orchestrate(job_id: int) -> None:
+    """Tochka vhoda konveyera: prep+VAD, zatem parallel'nyye vetki asr/speaker,
+    zatem join (steno+structure). V direct-rezhime (bez redis) — posledovatel'no.
+
+    Vetki pisayut v raznye kolonki odnih i tekh zhe segmтов: asr — text/lang/
+    engine/confidence, speaker — speaker_*/diar_label/needs_review. Join
+    zapuskayetsya cherez RQ depends_on posle oboikh vetok (wait-all)."""
     try:
-        _prepare_wav(job_id, p)
-        _maybe_drop_raw_source(job_id, p)
-        with get_session() as s:
-            s.add(SessionEvent(job_id=job_id, event="vad_start")); s.commit()
-        from ..core.vad import segment_speech
-        wav = p["wav"]
-        raw_segs = segment_speech(wav) if wav.exists() else []
-        with get_session() as s:
-            s.add(SessionEvent(job_id=job_id, event="vad_done", detail=f"{len(raw_segs)} segm")); s.commit()
-        from ..core.diarize import diarize
-        labels = diarize(wav, raw_segs)
-        from ..core.asr_client import transcribe_segments, engine_name
-        engine = engine_name()
-        results = transcribe_segments(wav, raw_segs)
-        # reset segm (idempotentnost')
-        with get_session() as s:
-            s.query(Segment).filter(Segment.job_id == job_id).delete()
-            for seg, label, txt in zip(raw_segs, labels, results):
-                s.add(Segment(
-                    job_id=job_id, speaker_id=label, diar_label=label,
-                    raw_track="web-mix", t_start=seg["t_start"], t_end=seg["t_end"],
-                    text=txt.get("text", ""), lang=txt.get("lang"),
-                    engine=engine, confidence=txt.get("confidence"),
-                    speaker_source="unresolved"))
-            s.add(SessionEvent(job_id=job_id, event="asr_done", detail=f"engine={engine}")); s.commit()
-        # speaker step (4.6)
-        _run_speaker(job_id)
-        # steno.md (vsegda; daze esli LLM niedostupen)
-        _write_steno(job_id, p)
-        # protocol (structure)
-        _run_structure(job_id)
+        run_prep(job_id)
+        from ..core.queue import get_queue
+        _, mode = get_queue("speaker")
+        if mode == "rq":
+            from ..core.queue import enqueue_job
+            ja = enqueue_job("asr", "mnema.worker.tasks.run_asr_text", job_id)
+            js = enqueue_job("speaker", "mnema.worker.tasks.run_speaker_id", job_id)
+            deps = [d for d in (ja, js) if d is not None]
+            enqueue_job("structure", "mnema.worker.tasks.run_join", job_id,
+                        depends_on=deps)
+        else:
+            run_asr_text(job_id)
+            run_speaker_id(job_id)
+            run_join(job_id)
     except Exception as e:  # noqa: BLE001
+        from ..core.pipeline import transition
         transition(job_id, "failed", fail_reason=_classify(e),
                    error=str(e)[:1000], event="asr_error")
+        raise
+
+
+def run_prep(job_id: int) -> list[dict]:
+    """Raspadovka (wav/mp3) + VAD + sozdanie rows segmentov (idempotentno)."""
+    p = _job_paths(job_id)
+    _prepare_wav(job_id, p)
+    _maybe_drop_raw_source(job_id, p)
+    with get_session() as s:
+        s.add(SessionEvent(job_id=job_id, event="vad_start"))
+        s.commit()
+    from ..core.vad import segment_speech
+    wav = p["wav"]
+    raw_segs = segment_speech(wav) if wav.exists() else []
+    with get_session() as s:
+        s.query(Segment).filter(Segment.job_id == job_id).delete()
+        for seg in raw_segs:
+            s.add(Segment(job_id=job_id, raw_track="web-mix",
+                          t_start=seg["t_start"], t_end=seg["t_end"], text="",
+                          speaker_source="unresolved"))
+        s.add(SessionEvent(job_id=job_id, event="vad_done",
+                           detail=f"{len(raw_segs)} segm"))
+        s.commit()
+    return raw_segs
+
+
+def _job_segments(job_id: int) -> list:
+    with get_session() as s:
+        return s.scalars(select(Segment).where(Segment.job_id == job_id)
+                         .order_by(Segment.t_start, Segment.id)).all()
+
+
+def _fail_branch(job_id: int, e: Exception, event: str) -> None:
+    from ..core.pipeline import ALLOWED_TRANSITIONS, transition
+    from ..core.db import get_session as _gs
+    with _gs() as s:
+        job = s.get(Job, job_id)
+        if job is None or job.status in ("failed", "done", "cancelled") \
+                or "failed" not in ALLOWED_TRANSITIONS.get(job.status, set()):
+            return  # uzhe zahvachennoy drugoy vetkoy — ne prevrashchat' v failed->failed
+    transition(job_id, "failed", fail_reason=_classify(e),
+               error=str(e)[:1000], event=event)
+
+
+def run_asr_text(job_id: int) -> None:
+    """Vetka transkribirovaniya: VAD-segmenty -> text (gigastt/faster-whisper)."""
+    try:
+        p = _job_paths(job_id)
+        wav = p["wav"]
+        segs = _job_segments(job_id)
+        if not segs:
+            return
+        from ..core.asr_client import transcribe_segments, engine_name
+        engine = engine_name()
+        vad = [{"t_start": s.t_start, "t_end": s.t_end} for s in segs]
+        results = transcribe_segments(wav, vad) if wav.exists() else []
+        with get_session() as s:
+            rows = s.scalars(select(Segment).where(Segment.job_id == job_id)
+                             .order_by(Segment.t_start, Segment.id)).all()
+            for row, txt in zip(rows, results):
+                row.text = txt.get("text", "")
+                row.lang = txt.get("lang")
+                row.engine = engine
+                row.confidence = txt.get("confidence")
+            s.add(SessionEvent(job_id=job_id, event="asr_done",
+                               detail=f"engine={engine}"))
+            s.commit()
+    except Exception as e:  # noqa: BLE001
+        _fail_branch(job_id, e, "asr_error")
+        raise
+
+
+def run_speaker_id(job_id: int) -> None:
+    """Vetka govoraschih: diarizaciya (kak govoril) + voiceprint-matsching (kto)."""
+    try:
+        p = _job_paths(job_id)
+        wav = p["wav"]
+        segs = _job_segments(job_id)
+        if not segs:
+            return
+        vad = [{"t_start": s.t_start, "t_end": s.t_end} for s in segs]
+        from ..core.diarize import diarize
+        try:
+            labels = diarize(wav, vad)
+        except Exception as e:  # noqa: BLE001
+            print(f"diarize fail ({e}) — vse SPEAKER_UNKNOWN", flush=True)
+            labels = ["SPEAKER_UNKNOWN"] * len(segs)
+        with get_session() as s:
+            rows = s.scalars(select(Segment).where(Segment.job_id == job_id)
+                             .order_by(Segment.t_start, Segment.id)).all()
+            for row, label in zip(rows, labels):
+                row.speaker_id = label
+                row.diar_label = label
+            s.add(SessionEvent(job_id=job_id, event="diar_done",
+                               detail=f"{len(set(labels))} klaster"))
+            s.commit()
+        _run_speaker(job_id)
+    except Exception as e:  # noqa: BLE001
+        _fail_branch(job_id, e, "speaker_error")
+        raise
+
+
+def run_join(job_id: int) -> None:
+    """Sliyaniye vetok posle oboikh: steno.md + structure."""
+    try:
+        p = _job_paths(job_id)
+        _write_steno(job_id, p)
+        _run_structure(job_id)
+    except Exception as e:  # noqa: BLE001
+        _fail_branch(job_id, e, "processing_error")
+        raise
+
+
+def run_asr_pipeline(job_id: int) -> None:
+    """Posledovatel'nyy rezhim (dev/tests/bez redis): vetsi vot poryadke."""
+    try:
+        run_prep(job_id)
+        run_asr_text(job_id)
+        run_speaker_id(job_id)
+        run_join(job_id)
+    except Exception as e:  # noqa: BLE001
+        _fail_branch(job_id, e, "asr_error")
         raise
 
 
@@ -304,11 +410,23 @@ def _run_structure(job_id: int) -> None:
     try:
         _build_protocol(job_id)
     except Exception as e:  # noqa: BLE001
-        # LLm vernul neuralid Nson — posle retry zdes'
-        job = _get_job(job_id)
-        transition(job_id, "failed", fail_reason="llm_invalid_json",
-                   error=str(e)[:1000], event="structure_error")
-        raise
+        # LLMvernul neuralid Nson / otsvet ne doshol: stenogramma uzhe na
+        # diske — ne tonim job, a dosylаем v awaiting_llm (donastraivaemyj shut).
+        from ..core.llm_client import LLMError
+        if not isinstance(e, LLMError):
+            transition(job_id, "failed", fail_reason="llm_invalid_json",
+                       error=str(e)[:1000], event="structure_error")
+            raise
+        with get_session() as s:
+            proto = s.scalars(select(Protocol).where(Protocol.job_id == job_id)).first()
+            if proto is None:
+                proto = Protocol(job_id=job_id, json_data={"transcript_only": True},
+                                 steno_md_path=str(steno))
+                s.add(proto)
+            else:
+                proto.steno_md_path = str(steno)
+            s.commit()
+        transition(job_id, "awaiting_llm")
 
 
 def _get_job(job_id: int) -> Job:

@@ -128,31 +128,43 @@ def _wav_bytes(frames: bytes, nch: int, sw: int, rate: int) -> bytes:
 
 
 def _map_verbose_to_segments(payload: dict, vad_segments: list[dict]) -> list[dict]:
-    """Sootnesti segmenty ASR po vremeni k VAD-segmentam (perekrysti po maksimumu)."""
-    raw = payload.get("segments") or []
+    """Sootnesti ASR-segmenty VAD'yu: kazhdiy ASR-segment naznachaetsya odnomu
+    VAD-segmentu (maks. peresechenie), teksty one zhe VAD skleydayutsya po
+    vremeni. Ranshe bralsya tol'ko 'luchshiy' perosek — slova gubilis', a
+    odin ASR-segment popadalo v neskol'ko VAD (dubli v stenogamme)."""
+    raw = sorted(payload.get("segments") or [],
+                 key=lambda r: (r.get("start", 0), r.get("end", 0)))
     lang = payload.get("language")
+    texts: list[list[str]] = [[] for _ in vad_segments]
+    logprobs: list[list[float]] = [[] for _ in vad_segments]
+    for r in raw:
+        idx = _owner_vad(r, vad_segments)
+        if idx is None:
+            continue
+        t = (r.get("text") or "").strip()
+        if t:
+            texts[idx].append(t)
+        lp = r.get("avg_logprob")
+        if lp is not None:
+            logprobs[idx].append(lp)
     out: list[dict] = []
-    for seg in vad_segments:
-        best = _best_overlap(raw, seg["t_start"], seg["t_end"])
-        if best is not None:
-            out.append({"text": best.get("text", "").strip(),
-                        "lang": best.get("lang", lang),
-                        "confidence": best.get("avg_logprob") and _conf_from_logprob(best["avg_logprob"])})
-        else:
-            out.append({"text": "", "lang": lang, "confidence": None})
+    for i, seg in enumerate(vad_segments):
+        lp = logprobs[i]
+        conf = _conf_from_logprob(sum(lp) / len(lp)) if lp else None
+        out.append({"text": " ".join(texts[i]).strip(),
+                    "lang": lang, "confidence": conf})
     return out
 
 
-def _best_overlap(raw: list[dict], t0: float, t1: float) -> dict | None:
-    best = None
-    best_ov = 0.0
-    for r in raw:
-        rs = r.get("start", 0)
-        re = r.get("end", 0)
-        ov = max(0, min(t1, re) - max(t0, rs))
+def _owner_vad(raw_seg: dict, vad_segments: list[dict]) -> int | None:
+    """Index VAD-segmenta s naibol'shim peresecheniem (0 overlap -> None)."""
+    rs, re = raw_seg.get("start", 0), raw_seg.get("end", 0)
+    best, best_ov = None, 0.0
+    for i, seg in enumerate(vad_segments):
+        ov = min(re, seg["t_end"]) - max(rs, seg["t_start"])
         if ov > best_ov:
-            best, best_ov = r, ov
-    return best or (raw[0] if len(raw) == 1 else None)
+            best, best_ov = i, ov
+    return best
 
 
 def _conf_from_logprob(v: float) -> float:

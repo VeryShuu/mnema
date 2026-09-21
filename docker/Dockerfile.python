@@ -7,14 +7,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY requirements.txt requirements-asr.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+# Tyazhelye ASR-diarizatsii zavisimosti (torch/pyannote/faster-whisper):
+# sloy PERED kodom, chtoby rebuild koda ne persobiral ikh.
+# USTANAVLIVAYUTSYA PO TREBOVANIYU: docker build --build-arg WITH_ASR=1
+ARG WITH_ASR=0
+RUN if [ "$WITH_ASR" = "1" ]; then pip install --no-cache-dir -r requirements-asr.txt; fi
 
 COPY mnema ./mnema
 COPY alembic.ini ./alembic.ini
 COPY alembic/ ./alembic/
-# Tyazhelye ASR-diaperizatsii zavisimosti (torch/pyannote/faster-whisper)
-# USTANAVLIVAYUTSYA PO TREBOVANIYU: docker build --build-arg WITH_ASR=1
-ARG WITH_ASR=0
-RUN if [ "$WITH_ASR" = "1" ]; then pip install --no-cache-dir -r requirements-asr.txt; fi
 
 EXPOSE 8000
 CMD ["python", "-m", "mnema.api.main"]

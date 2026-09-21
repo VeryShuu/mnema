@@ -5,6 +5,7 @@ korotkie (<0.5 s) otbrossyvayutsya; dlina cel 3-15 s (razrez po maksimumu).
 """
 from __future__ import annotations
 
+import os
 import wave
 from pathlib import Path
 
@@ -13,6 +14,9 @@ MIN_SPEECH_S = 0.5
 
 
 def segment_speech(wav: Path) -> list[dict]:
+    """VAD-sogmenny; OVERRIDE: VAD=energy (tests/bez modeli), kak DIARIZER=off."""
+    if os.environ.get("VAD", "").lower() in ("energy", "off", "rms"):
+        return _energy_segments(wav)
     backend = _get_silero()
     if backend is not None and wav.exists():
         try:
@@ -40,15 +44,21 @@ def _get_silero():
 
 
 def _silero_segments(model, wav: Path) -> list[dict]:
-    import torch
-    from silero_vad import read_wave, get_speech_timestamps
-    w, sr = read_wave(str(wav))
+    from silero_vad import get_speech_timestamps, read_audio
+    w, sr = read_audio(str(wav)), 16000
     ts = get_speech_timestamps(w, model, sampling_rate=sr)
-    return _postprocess([{"t_start": t["start"] / sr, "t_end": t["end"] / sr} for t in ts])
+    return _merge_and_split(
+        _postprocess([{"t_start": t["start"] / sr, "t_end": t["end"] / sr}
+                      for t in ts]), sr)
 
 
 def _energy_segments(wav: Path) -> list[dict]:
-    """Porogovoy RMS VAD bez dependency: 30 ms shkady, porog = median*3 + epsilon."""
+    """Gistereziznyy RMS VAD bez dependency: 30 ms shkaly, porog ot noise-floor.
+
+    Median*3 lagalas' na dlinnyh zapisyah s plotnoy rech'yu (median sama
+    okazivalas' rechevoj). Noise floor = p10, urozen' rechi = p90; high/low
+    poryogi dayut uvtoychivy start/stop na shume.
+    """
     try:
         with wave.open(str(wav), "rb") as w:
             sr = w.getframerate()
@@ -72,10 +82,8 @@ def _energy_segments(wav: Path) -> list[dict]:
         energies.append((sum(s * s for s in samples) / n) ** 0.5)
     if not energies:
         return []
-    import statistics
-    med = statistics.median(energies) or 1
-    threshold = max(med * 3, 200)
-    voice = [e > threshold for e in energies]
+    hi, lo = energy_thresholds(energies)
+    voice = _hysteresis_flags(energies, hi, lo)
     segs: list[dict] = []
     start = None
     for i, v in enumerate(voice):
@@ -87,8 +95,41 @@ def _energy_segments(wav: Path) -> list[dict]:
                 segs.append({"t_start": start, "t_end": t})
             start = None
     if start is not None:
-        segs.append({"t_start": start, "t_end": samples_count * 0.03 if energies else start})
+        segs.append({"t_start": start, "t_end": len(energies) * 0.03})
     return _merge_and_split(_postprocess(segs), sr)
+
+
+def energy_thresholds(energies: list[float]) -> tuple[float, float]:
+    """(high, low) po noise-floor/rechevomu urovnyu: p10/shum, p90/rech'.
+
+    high otkryvaet rechevoy fragment, low zamykaet (gisterezi — bez drobezhka
+    na mezhsloviesh pauzah). Vylegshiy sluchay (tishina vsyu dolginu) —
+    0.5*max s podom.
+    """
+    import statistics
+    med = statistics.median(energies) or 1
+    srt = sorted(energies)
+    noise = srt[max(0, int(len(srt) * 0.10))]
+    loud = srt[min(len(srt) - 1, int(len(srt) * 0.90))]
+    top = srt[-1]
+    if loud <= noise * 2:
+        high = max(top / 3, med * 2, 200)
+    else:
+        high = max(loud / 3, noise * 6, 300)
+    lo = max(min(high / 3, med), noise * 3, 120)
+    return high, lo
+
+
+def _hysteresis_flags(energies: list[float], hi: float, lo: float) -> list[bool]:
+    out: list[bool] = []
+    on = False
+    for e in energies:
+        if not on and e >= hi:
+            on = True
+        elif on and e < lo:
+            on = False
+        out.append(on)
+    return out
 
 
 def _merge_and_split(segs: list[dict], sr: int) -> list[dict]:

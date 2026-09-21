@@ -190,9 +190,8 @@ def api_job_finished(jid: int, body: FinishedIn):
     _add("wav", body.wav_path)
     _add("mp3", body.mp3_path)
     transition(jid, "processing", event="recording_finished")
-    from rq import Queue
     from ..core.queue import enqueue_job
-    processing_started = enqueue_job("asr", "mnema.worker.tasks.run_asr_pipeline", jid)
+    processing_started = enqueue_job("asr", "mnema.worker.tasks.run_orchestrate", jid)
     if not processing_started:
         pass  # worker vzjanet sam po ocheredi statusov; v dev — run inline
     return {"ok": True}
