@@ -1,0 +1,4 @@
+<div class="stages" hx-get="/jobs/{{ job.id }}/stages" hx-trigger="every 5s"
+     hx-swap="outerHTML" id="stages">
+  {% include "_stages_list.html" %}
+</div>

@@ -46,6 +46,10 @@
 {% if protocol %}<p><a href="/protocols/{{ protocol.id }}">Открыть протокол →</a></p>{% endif %}
 {% if reviews %}<p><a href="/reviews">Есть нерешённые уточнения ({{ reviews|length }}) →</a></p>{% endif %}
 <div class="card">
+  <h3>Ход обработки</h3>
+  {% include "job_stages.html" %}
+</div>
+<div class="card">
   <h3>Журнал событий (обновляется автоматически)</h3>
   {% include "job_log.html" %}
 </div>

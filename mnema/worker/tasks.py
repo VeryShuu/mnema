@@ -107,6 +107,10 @@ def run_asr_text(job_id: int) -> None:
             return
         from ..core.asr_client import transcribe_segments, engine_name
         engine = engine_name()
+        with get_session() as s:
+            s.add(SessionEvent(job_id=job_id, event="asr_start",
+                               detail=f"engine={engine}"))
+            s.commit()
         vad = [{"t_start": s.t_start, "t_end": s.t_end} for s in segs]
         results = transcribe_segments(wav, vad) if wav.exists() else []
         with get_session() as s:
@@ -135,6 +139,10 @@ def run_speaker_id(job_id: int) -> None:
             return
         vad = [{"t_start": s.t_start, "t_end": s.t_end} for s in segs]
         from ..core.diarize import diarize
+        with get_session() as s:
+            s.add(SessionEvent(job_id=job_id, event="diar_start",
+                               detail=f"{len(segs)} segm"))
+            s.commit()
         try:
             labels = diarize(wav, vad)
         except Exception as e:  # noqa: BLE001
@@ -315,6 +323,9 @@ def _run_speaker(job_id: int) -> None:
     p = _job_paths(job_id)
     wav = p["wav"]
     with get_session() as s:
+        s.add(SessionEvent(job_id=job_id, event="voiceprint_start"))
+        s.commit()
+    with get_session() as s:
         segs = s.scalars(select(Segment).where(
             Segment.job_id == job_id).order_by(Segment.t_start)).all()
         by_cluster: dict[str, list] = {}
@@ -348,6 +359,10 @@ def _run_speaker(job_id: int) -> None:
                                     candidate_profile_id=(profile.id if verdict in ("auto", "hint") and profile else None),
                                     similarity=sim, status="pending"))
             s.commit()
+    from ..core.db import get_session as _gs
+    with _gs() as s:
+        s.add(SessionEvent(job_id=job_id, event="voiceprint_done"))
+        s.commit()
 
 
 def _cluster_embedding(wav: Path, segs: list) -> list[float] | None:
@@ -380,6 +395,10 @@ def _write_steno(job_id: int, p: dict) -> Path:
         tag = " (trebuetsya utochnenie)" if seg.needs_review else ""
         lines.append(f"{_fmt(seg.t_start)} {name}{tag}: {seg.text}")
     p["steno"].write_text("\n".join(lines), encoding="utf-8")
+    with get_session() as s:
+        s.add(SessionEvent(job_id=job_id, event="steno_done",
+                           detail=str(p["steno"])))
+        s.commit()
     return p["steno"]
 
 
@@ -444,6 +463,10 @@ def _build_protocol(job_id: int) -> None:
             Segment.job_id == job_id).order_by(Segment.t_start)).all()
         job = s.get(Job, job_id)
     transcript = _transcript_lines(segs)
+    with get_session() as s:
+        s.add(SessionEvent(job_id=job_id, event="llm_start",
+                           detail=f"{len(segs)} segm"))
+        s.commit()
     data = structure_transcript(transcript, topic=job.topic)
     archive_dir = Path(os.environ.get("ARCHIVE_DIR", "/data/archive"))
     date_str = (job.ended_ts or job.start_at)
@@ -461,6 +484,8 @@ def _build_protocol(job_id: int) -> None:
         proto.docx_path = docx
         proto.steno_md_path = str(p["steno"])
         proto.llm_model = llm_model()
+        s.add(SessionEvent(job_id=job_id, event="llm_done",
+                           detail=f"model={llm_model()}"))
         s.commit()
     # utochneniya (4.6) ili done
     _route_after_structure(job_id)

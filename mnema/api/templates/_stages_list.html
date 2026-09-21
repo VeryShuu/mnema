@@ -1,0 +1,23 @@
+<ol class="stage-list">
+  {% set state_labels = {
+    'done': 'Выполнено',
+    'running': 'Выполняется',
+    'pending': 'Ожидает',
+    'skipped': 'Пропущено',
+    'failed': 'Ошибка'
+  } %}
+  {% for st in stages %}
+  <li class="stage {{ st.state }}">
+    <span class="stage-dot"></span>
+    <div class="stage-body">
+      <div class="stage-title">{{ st.title }}
+        <span class="badge stage-{{ st.state }}">{{ state_labels.get(st.state, st.state) }}</span>
+      </div>
+      <div class="stage-desc">{{ st.description }}
+        {%- if st.ts %} · {{ st.ts.strftime('%d.%m.%Y %H:%M:%S') }}{% endif -%}
+      </div>
+      {%- if st.detail %}<div class="stage-detail">{{ st.detail }}</div>{% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ol>

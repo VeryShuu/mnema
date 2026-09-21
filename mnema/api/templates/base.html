@@ -117,6 +117,28 @@ pre{white-space:pre-wrap}
 .progress-row{display:flex;align-items:center;gap:.6rem}
 progress{width:100%;height:10px;accent-color:var(--accent)}
 
+.stage-list{list-style:none;margin:0;padding:0}
+.stage{display:flex;gap:.7rem;padding:.5rem 0;border-bottom:1px solid var(--border-soft)}
+.stage:last-child{border-bottom:none}
+.stage-dot{flex:0 0 auto;width:10px;height:10px;border-radius:50%;margin-top:.45rem;
+  background:var(--border);border:2px solid var(--border)}
+.stage.done .stage-dot{background:var(--ok);border-color:var(--ok)}
+.stage.running .stage-dot{background:var(--info);border-color:var(--info);
+  animation:stage-pulse 1.4s ease-in-out infinite}
+.stage.failed .stage-dot{background:var(--err);border-color:var(--err)}
+.stage.skipped .stage-dot{background:transparent;border-color:var(--text-faint)}
+@keyframes stage-pulse{0%,100%{box-shadow:0 0 0 0 var(--info-soft)}50%{box-shadow:0 0 0 6px var(--info-soft)}}
+.stage-body{flex:1;min-width:0}
+.stage-title{font-weight:600;font-size:.92rem;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.stage-desc{color:var(--text-muted);font-size:.82rem}
+.stage-detail{color:var(--err);font-size:.8rem;margin-top:.15rem;word-break:break-word}
+.stage.skipped .stage-title,.stage.skipped .stage-desc{color:var(--text-faint)}
+.badge.stage-done{background:var(--ok-soft);color:var(--ok)}
+.badge.stage-running{background:var(--info-soft);color:var(--info)}
+.badge.stage-pending{background:var(--neutral-soft);color:var(--neutral)}
+.badge.stage-failed{background:var(--err-soft);color:var(--err)}
+.badge.stage-skipped{background:var(--neutral-soft);color:var(--text-faint)}
+
 @media (max-width:640px){
   .topbar{gap:.6rem;padding:.6rem .8rem}
   main{padding:0 .8rem}

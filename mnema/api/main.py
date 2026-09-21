@@ -688,14 +688,16 @@ def web_job_detail(request: Request, jid: int):
         up = s.scalars(select(Upload).where(
             Upload.job_id == jid).order_by(Upload.id.desc()).limit(1)).first()
     pwd_present = job.pwd_ref is not None
+    from ..core.stages import build_stages
     return templates.TemplateResponse(request, "job_detail.html", {
         "request": request, "job": job, "events": events, "audio": audio,
         "protocol": proto, "reviews": reviews, "pwd_present": pwd_present,
-        "upload": up})
+        "upload": up, "stages": build_stages(jid)})
 
 
 @app.get("/jobs/{jid}/log", response_class=HTMLResponse)
 def web_job_log(request: Request, jid: int):
+    from ..core.stages import build_stages
     with get_session() as s:
         job = s.get(Job, jid)
         if job is None:
@@ -703,7 +705,19 @@ def web_job_log(request: Request, jid: int):
         events = s.scalars(select(SessionEvent).where(
             SessionEvent.job_id == jid).order_by(SessionEvent.ts.desc()).limit(300)).all()
     return templates.TemplateResponse(request, "job_log.html", {
-        "request": request, "job": job, "events": events})
+        "request": request, "job": job, "events": events,
+        "stages": build_stages(jid)})
+
+
+@app.get("/jobs/{jid}/stages", response_class=HTMLResponse)
+def web_job_stages(request: Request, jid: int):
+    from ..core.stages import build_stages
+    with get_session() as s:
+        job = s.get(Job, jid)
+        if job is None:
+            raise HTTPException(404)
+    return templates.TemplateResponse(request, "job_stages.html", {
+        "request": request, "job": job, "stages": build_stages(jid)})
 
 
 @app.get("/protocols", response_class=HTMLResponse)

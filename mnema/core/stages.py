@@ -1,0 +1,237 @@
+"""Sborka etapov konveyera dlya otobrazheniya v web-interfeyse.
+
+Etapy vyvoditsya iz zhurnala SessionEvent + tekushchego statusa joba;
+sostoyaniya: done | running | pending | skipped | failed.
+Logika vyvoderesistente: dlya starykh jobov (bez sobytiy asr_start/llm_start
+it.d.) sostoyanie vnovitsya po minimumu iz dostupnykh priznakov.
+"""
+from __future__ import annotations
+
+from sqlalchemy import select
+
+from .db import get_session
+from .models import Job, Protocol, ReviewRequest, SessionEvent
+
+STAGE_DEFS: list[tuple[str, str, str]] = [
+    ("created", "Создание встречи", "Регистрация встречи в системе"),
+    ("upload", "Загрузка файла", "Приём архивной записи (для загруженных встреч)"),
+    ("recording", "Запись встречи", "Захват аудио с видеоконференции"),
+    ("prep", "Подготовка аудио", "Распаковка в wav/mp3 и сегментация речи (VAD)"),
+    ("asr", "Распознавание речи", "Транскрибирование сегментов (ASR-движок)"),
+    ("speaker", "Анализ голосов", "Диаризация — разделение на спикеров"),
+    ("voiceprint", "Узнавание спикеров", "Сопоставление кластеров с реестром голосов"),
+    ("steno", "Сборка стенограммы", "Формирование steno.md из сегментов"),
+    ("llm", "Анализ LLM", "Структурирование протокола через LLM"),
+    ("review", "Уточнение спикеров", "Проверка нераспознанных голосов человеком"),
+    ("done", "Протокол готов", "Итоговый протокол сформирован"),
+]
+
+
+def build_stages(job_id: int) -> list[dict]:
+    with get_session() as s:
+        job = s.get(Job, job_id)
+        events = s.scalars(select(SessionEvent).where(
+            SessionEvent.job_id == job_id).order_by(SessionEvent.ts.desc())).all()
+        proto = s.scalars(select(Protocol).where(
+            Protocol.job_id == job_id)).first()
+        reviews_open = bool(s.scalars(select(ReviewRequest).where(
+            ReviewRequest.job_id == job_id,
+            ReviewRequest.status == "pending")).first())
+        reviews_answered = bool(s.scalars(select(ReviewRequest).where(
+            ReviewRequest.job_id == job_id,
+            ReviewRequest.status.in_(("confirmed", "timeout")))).first())
+
+    first: dict[str, dict] = {}
+    for e in reversed(events):
+        if e.event not in first:
+            first[e.event] = {"ts": e.ts, "detail": e.detail or ""}
+
+    status = job.status if job else "scheduled"
+    is_upload = job is not None and job.source == "upload"
+    failed = status == "failed"
+    failed_stage = _failed_stage(job.fail_reason if job else None, first)
+    proto_structured = proto is not None and not (
+        proto.json_data or {}).get("transcript_only") and (
+        proto.md_path or proto.docx_path)
+    steno_exists = proto is not None or "steno_done" in first
+
+    def has(*names: str) -> bool:
+        return any(n in first for n in names)
+
+    vad_done = has("vad_done")
+    asr_done = has("asr_done")
+    diar_done = has("diar_done")
+    vp_done = has("voiceprint_done")
+
+    states: dict[str, str] = {}
+    states["created"] = "done"
+    if is_upload:
+        if has("upload_complete"):
+            states["upload"] = "done"
+        elif failed:
+            states["upload"] = "failed" if failed_stage == "upload" else "running"
+        elif status == "uploading":
+            states["upload"] = "running"
+        else:
+            states["upload"] = "pending"
+    else:
+        states["upload"] = "skipped"
+    if is_upload:
+        states["recording"] = "skipped"
+    elif failed_stage == "recording":
+        states["recording"] = "failed"
+    elif has("media", "joined", "recording_started") or status in (
+            "recording", "processing", "awaiting_llm", "awaiting_review", "done"):
+        states["recording"] = "done"
+    elif status == "launching":
+        states["recording"] = "running"
+    else:
+        states["recording"] = "pending"
+
+    if vad_done:
+        states["prep"] = "done"
+    elif failed and failed_stage == "prep":
+        states["prep"] = "failed"
+    elif status == "processing":
+        states["prep"] = "running"
+    else:
+        states["prep"] = "pending"
+
+    if asr_done:
+        states["asr"] = "done"
+    elif failed and failed_stage == "asr":
+        states["asr"] = "failed"
+    elif status == "processing" and vad_done:
+        states["asr"] = "running"
+    else:
+        states["asr"] = "pending"
+
+    if diar_done:
+        states["speaker"] = "done"
+    elif failed and failed_stage == "speaker":
+        states["speaker"] = "failed"
+    elif status == "processing" and vad_done:
+        states["speaker"] = "running"
+    else:
+        states["speaker"] = "pending"
+
+    if vp_done:
+        states["voiceprint"] = "done"
+    elif failed_stage == "speaker":
+        states["voiceprint"] = "failed"
+    elif diar_done and (status in ("awaiting_review", "done") or reviews_open):
+        states["voiceprint"] = "done"
+    elif status == "processing" and diar_done:
+        states["voiceprint"] = "running"
+    else:
+        states["voiceprint"] = "pending"
+
+    if steno_exists:
+        states["steno"] = "done"
+    elif failed and failed_stage == "steno":
+        states["steno"] = "failed"
+    elif status == "processing" and asr_done:
+        states["steno"] = "running"
+    else:
+        states["steno"] = "pending"
+
+    if proto_structured:
+        states["llm"] = "done"
+    elif status in ("awaiting_review", "done"):
+        states["llm"] = "done"
+    elif status == "awaiting_llm":
+        states["llm"] = "running"
+    elif failed and failed_stage == "llm":
+        states["llm"] = "failed"
+    elif status == "processing" and has("llm_start"):
+        states["llm"] = "running"
+    else:
+        states["llm"] = "pending"
+
+    if status == "awaiting_review":
+        states["review"] = "running"
+    elif status == "done":
+        states["review"] = "done" if reviews_open or reviews_answered or has("review_resolved") else "skipped"
+    elif reviews_answered:
+        states["review"] = "done"
+    else:
+        states["review"] = "pending"
+
+    if status == "done":
+        states["done"] = "done"
+    elif failed:
+        states["done"] = "failed"
+    else:
+        states["done"] = "pending"
+
+    stages = []
+    for key, title, desc in STAGE_DEFS:
+        st = states.get(key, "pending")
+        ts = None
+        detail = None
+        if st == "done":
+            ev = _pick(first, _done_events(key, vad_done, asr_done, diar_done,
+                                           vp_done, steno_exists, proto_structured))
+            if ev:
+                ts = ev["ts"]
+        elif st == "failed":
+            ev = _pick(first, ("asr_error", "speaker_error", "structure_error",
+                               "llm_error"))
+            if ev:
+                ts, detail = ev["ts"], (ev["detail"] or None)
+        stages.append({"key": key, "title": title, "description": desc,
+                       "state": st, "ts": ts, "detail": detail})
+    return stages
+
+
+def _done_events(key: str, vad_done: bool, asr_done: bool, diar_done: bool,
+                 vp_done: bool, steno_exists: bool, proto_structured: bool):
+    return {
+        "created": ("created",),
+        "upload": ("upload_complete",),
+        "recording": ("media", "joined", "recording_started"),
+        "prep": ("vad_done",),
+        "asr": ("asr_done",),
+        "speaker": ("diar_done",),
+        "voiceprint": ("voiceprint_done",),
+        "steno": ("steno_done",),
+        "llm": ("llm_done",),
+        "review": ("review_resolved",),
+        "done": ("status->done",),
+    }.get(key, ())
+
+
+def _pick(ev: dict, names) -> dict | None:
+    for n in names:
+        if n in ev:
+            return ev[n]
+    return None
+
+
+def _failed_stage(fail_reason: str | None, ev: dict) -> str | None:
+    if not fail_reason:
+        return None
+    direct = {"asr_error": "asr", "llm_invalid_json": "llm",
+              "llm_unavailable": "llm", "llm_error": "llm",
+              "speaker_error": "voiceprint", "vad_error": "prep",
+              "audio_error": "prep", "upload_failed": "upload",
+              "launch_failed": "recording", "join_failed": "recording"}
+    if fail_reason in direct:
+        return direct[fail_reason]
+    txt = fail_reason.lower()
+    for token, stage in (("asr", "asr"), ("llm", "llm"), ("speaker", "voiceprint"),
+                         ("vad", "prep"), ("audio", "prep"), ("upload", "upload"),
+                         ("launch", "recording"), ("zoom", "recording"),
+                         ("join", "recording")):
+        if token in txt:
+            return stage
+    if txt in ("processing_error", "processing"):
+        if "llm_start" in ev:
+            return "llm"
+        if "asr_done" in ev:
+            return "steno"
+        if "vad_done" in ev and "diar_done" not in ev:
+            return "speaker"
+        if "vad_done" not in ev:
+            return "prep"
+    return None
