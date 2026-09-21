@@ -639,8 +639,10 @@ async def web_job_create(request: Request):
     link = form.get("meeting_link", "")
     topic = form.get("topic", "")
     start_raw = form.get("start_at", "")
+    start_now = str(form.get("start_now", "")).lower() in ("1", "true", "on") \
+        or form.get("mode") == "start_now"
     start_at = None
-    if start_raw:
+    if start_raw and not start_now:
         try:
             start_at = dt.datetime.fromisoformat(start_raw)
         except ValueError:

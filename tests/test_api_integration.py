@@ -166,6 +166,39 @@ def test_web_pages_render(client):
         assert r.status_code == 200, path
 
 
+def test_jobs_page_renamed_and_start_now_option(client):
+    r = client.get("/jobs")
+    assert "Запланировать задачу" in r.text
+    assert "Создать задачу" not in r.text
+    assert 'name="start_now"' in r.text
+
+
+def test_web_job_create_start_now_ignores_start_at(client):
+    future = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=2)).isoformat()
+    r = client.post("/jobs/create", data={
+        "meeting_link": "https://us05web.zoom.us/j/123123123",
+        "topic": "Idushchaya", "start_now": "1", "start_at": future})
+    assert r.status_code == 200
+    jobs = client.get("/api/jobs").json()
+    j = next(x for x in jobs if x["zoom_meeting_id"] == "123123123")
+    started = dt.datetime.fromisoformat(j["start_at"])
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=dt.timezone.utc)
+    assert abs((started - dt.datetime.now(dt.timezone.utc)).total_seconds()) < 300
+
+
+def test_web_job_create_schedule_keeps_start_at(client):
+    future = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=2)).replace(microsecond=0)
+    r = client.post("/jobs/create", data={
+        "meeting_link": "https://us05web.zoom.us/j/456456456",
+        "topic": "Pozzhe", "start_at": future.isoformat()})
+    assert r.status_code == 200
+    jobs = client.get("/api/jobs").json()
+    j = next(x for x in jobs if x["zoom_meeting_id"] == "456456456")
+    started = dt.datetime.fromisoformat(j["start_at"]).replace(tzinfo=dt.timezone.utc)
+    assert started == future
+
+
 def test_reviews_page_with_pending(client):
     """Regres: .limit() na scalars lomali stranicy /reviews pri nepustoich ochenereyah."""
     from mnema.core.db import get_session

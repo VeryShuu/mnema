@@ -3,16 +3,26 @@
 {% block content %}
 <h2>Встречи и расписание</h2>
 <div class="card">
-  <h3>Создать задачу</h3>
+  <h3>Запланировать задачу</h3>
   <form method="post" action="/jobs/create" style="display:flex;gap:.5rem;flex-wrap:wrap">
     <input name="meeting_link" placeholder="Ссылка-приглашение Zoom или номер встречи" size="50" required>
     <input name="topic" placeholder="Тема">
     <input name="start_at" type="datetime-local" title="Пусто — записать сейчас">
-    <button type="submit" class="primary">Создать</button>
+    <button type="submit" class="primary">Запланировать</button>
   </form>
   <form method="post" action="/jobs/import-ics" enctype="multipart/form-data" style="margin-top:.7rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
     <input type="file" name="file" accept=".ics">
-    <button type="submit">Импорт календаря (.ics)</button>
+    <button type="submit">Импорт из календаря (.ics)</button>
+  </form>
+</div>
+<div class="card">
+  <h3>Начать встречу</h3>
+  <p class="muted">Принудительно сразу запустить запись уже идущей встречи.</p>
+  <form method="post" action="/jobs/create" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+    <input type="hidden" name="start_now" value="1">
+    <input name="meeting_link" placeholder="Ссылка уже идущей встречи" size="50" required>
+    <input name="topic" placeholder="Тема">
+    <button type="submit" class="primary">Начать запись сейчас</button>
   </form>
 </div>
 <div class="card">
