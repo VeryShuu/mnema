@@ -83,6 +83,14 @@ def _conf_from_logprob(v: float) -> float:
 _whisper = None
 
 
+def _whisper_compute_type(device: str) -> str:
+    """float16 na GPU, int8 na CPU; OVERRIDE: WHISPER_COMPUTE_TYPE."""
+    override = os.environ.get("WHISPER_COMPUTE_TYPE", "").strip()
+    if override:
+        return override
+    return "float16" if device.startswith("cuda") else "int8"
+
+
 def _faster_whisper_transcribe(wav: Path, vad_segments: list[dict]) -> list[dict]:
     global _whisper
     model_id = os.environ.get("ASR_MODEL", "large-v3")
@@ -91,7 +99,9 @@ def _faster_whisper_transcribe(wav: Path, vad_segments: list[dict]) -> list[dict
     if _whisper is None:
         try:
             from faster_whisper import WhisperModel
-            _whisper = WhisperModel(model_id, device=os.environ.get("ASR_DEVICE", "cpu"))
+            device = os.environ.get("ASR_DEVICE", "cpu")
+            _whisper = WhisperModel(model_id, device=device,
+                                    compute_type=_whisper_compute_type(device))
         except Exception as e:  # noqa: BLE001
             print(f"faster-whisper niedostupen ({e}) — pustaya stenogramma", flush=True)
             return [{"text": "", "lang": None, "confidence": None} for _ in vad_segments]

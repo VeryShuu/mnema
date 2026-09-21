@@ -1,0 +1,41 @@
+# Vtoraya (GPU) versiya python-obrazа: worker s CUDA-uskoreniem.
+# Baza — nvidia/cuda runtime: torch 2.4.1+cu124 beretsya iz index-cu124 (neset
+# tol'ko runtime-biblioteki, ne kompiler). api-mozhet rabotat' i na etom obraze,
+# no lyogchiy Dockerfile.python dlya nego ostayotsya.
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PATH=/opt/venv/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 python3.12-venv python3.12-dev \
+    ffmpeg mkvtoolnix \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3.12 -m venv /opt/venv
+
+WORKDIR /app
+COPY requirements.txt requirements-asr.txt ./
+
+# Snaсala baza+asr (podtyagivayutsya zavisimosti), zatem poverh — CUDA-sborki
+# torch/torchaudio: pip schitaet 2.4.1+cu124 ne udovletvoryayushchim ==2.4.1,
+# poetomu perestanavlivaem imenno ikh, a ne CPU-varianty, --no-deps.
+# Iskluchayem CPU-piniki torch/torchaudio iz requirements-asr (inache pull
+# ~2 GB CPU-wheels): snachala zavisimosti, zatem CUDA-sborki torch iz cu124.
+RUN grep -vE '^torch(audio)?==' requirements-asr.txt > /tmp/asr-notorch.txt \
+    && pip install --no-cache-dir -r requirements.txt -r /tmp/asr-notorch.txt \
+    && pip install --no-cache-dir torch==2.4.1+cu124 torchaudio==2.4.1+cu124 \
+        --index-url https://download.pytorch.org/whl/cu124
+
+COPY mnema ./mnema
+COPY alembic.ini ./alembic.ini
+COPY alembic/ ./alembic/
+
+# Dostupnost' CUDA proveryaetsya v runtime (worker log: torch.cuda.is_available()).
+
+EXPOSE 8000
+CMD ["python", "-m", "mnema.api.main"]

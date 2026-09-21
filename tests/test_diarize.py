@@ -23,9 +23,11 @@ def _reset_caches():
     from mnema.core import speaker as sp
     dz._pipe = None
     sp._backend_cache.clear()
+    sp._inference_cache.clear()
     yield
     dz._pipe = None
     sp._backend_cache.clear()
+    sp._inference_cache.clear()
 
 
 def _espeak(path: Path, pitch: int, speed: int, text: str):

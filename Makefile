@@ -1,4 +1,6 @@
-.PHONY: up down build test lint example login migrate
+.PHONY: up down build test lint example login migrate gpu-up gpu-build gpu-down gpu-logs
+
+COMPOSE_GPU = docker compose -f docker-compose.yml -f docker-compose.gpu.yml
 
 up:            ## podnyat' ves' stack (dev)
 	docker compose up -d --build
@@ -20,3 +22,16 @@ login:         ## headful perelogin Zoom-sessii (pervyy raz i kazhdye ~2 nedeli)
 
 migrate:       ## primenit' alembic-migracii
 	DATABASE_URL=sqlite:////data/db.sqlite ./venv/bin/alembic upgrade head
+
+# --- GPU-versiya (worker s CUDA; nuzhen nvidia-container-toolkit) --------------
+gpu-build:     ## sobrat' GPU-obraz workera
+	$(COMPOSE_GPU) build worker
+
+gpu-up:        ## podnyat' stack, worker na GPU
+	$(COMPOSE_GPU) up -d --build
+
+gpu-down:      ## ostanovit' GPU-stack
+	$(COMPOSE_GPU) down
+
+gpu-logs:      ## logi GPU-workera
+	$(COMPOSE_GPU) logs -f worker

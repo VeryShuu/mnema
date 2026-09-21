@@ -52,13 +52,27 @@ def compute_embedding_for_file(path: Path) -> list[float] | None:
     return _fallback_embedding(path)
 
 
-def _pyannote_embedding(path: Path) -> list[float]:
+_inference_cache: dict = {}
+
+
+def _get_inference(device_str: str):
+    """Kesh Inference po ustroystvu: zagruzka modeli ~20 s, povtornaya na kazhdy
+    srez klastera — glavnyy proigrysh po skornosti speaker-shaga."""
+    key = device_str
+    if key in _inference_cache:
+        return _inference_cache[key]
     from pyannote.audio import Inference, Model
     import torch
-    device = torch.device(os.environ.get("ASR_DEVICE", "cpu"))
     tok = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
     model = Model.from_pretrained("pyannote/embedding", use_auth_token=tok)
-    inference = Inference(model, window="whole", device=device)
+    inference = Inference(model, window="whole", device=torch.device(device_str))
+    _inference_cache[key] = inference
+    return inference
+
+
+def _pyannote_embedding(path: Path) -> list[float]:
+    device_str = os.environ.get("ASR_DEVICE", "cpu")
+    inference = _get_inference(device_str)
     import tempfile
     with tempfile.NamedTemporaryFile(suffix=".wav") as tf:
         from .audio import webm_to_wav16k

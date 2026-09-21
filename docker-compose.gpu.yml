@@ -1,0 +1,22 @@
+# GPU-override: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# Trebuyutsya: NVIDIA driver + nvidia-container-toolkit na khoste.
+# Worker (diarizatsiya/ASR) perекluchaetsya na CUDA-obraz i ASR_DEVICE=cuda:0;
+# api/web-bot ostayutsya na lyogkom CPU-obraze.
+
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python.gpu
+    environment:
+      - ASR_DEVICE=cuda:0
+      # whisper na GPU: float16 bystree float32 v ~2 raza, kachestvo tozhe
+      - WHISPER_COMPUTE_TYPE=float16
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
