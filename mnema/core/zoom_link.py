@@ -40,6 +40,15 @@ def extract_meeting_id(link_or_id: str) -> tuple[str, str | None]:
     return mid, (pwd[0] if pwd else None)
 
 
+def link_valid(candidate: str) -> bool:
+    """True esli strokeka - korektnaya ssylka Zoom ili syroi ID vstrechi."""
+    try:
+        extract_meeting_id(candidate or "")
+        return True
+    except ValueError:
+        return False
+
+
 def normalize_join_link(link: str) -> str:
     """Ssylka bez parolya dlya hrineniya (pwd - v secrets store)."""
     if not link or "://" not in link:

@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -27,6 +27,7 @@ from ..core.notify import NotifyService
 from ..core.pipeline import review_requests_resolved, transition
 from ..core.scheduler import import_ics, start_default_jobs
 from ..core.secrets_store import get_pwd
+from ..core.zoom_link import link_valid
 from ..core import uploads as uploads_svc
 
 app = FastAPI(title="Mnema", version="0.1.0")
@@ -639,14 +640,18 @@ def _status_counts() -> dict:
 
 
 @app.get("/jobs", response_class=HTMLResponse)
-def web_jobs(request: Request, status: str | None = None):
+def web_jobs(request: Request, status: str | None = None, error: str | None = None):
     with get_session() as s:
         q = select(Job).order_by(Job.start_at.desc()).limit(200)
         if status:
             q = q.where(Job.status == status)
         jobs = s.scalars(q).all()
+    error_text = {"link": "Некорректная ссылка Zoom: нужна ссылка вида "
+                          "https://us06web.zoom.us/j/123456789?pwd=... или ID встречи (9–11 цифр)",
+                  "date": "Некорректная дата начала"}.get(error or "", None)
     return templates.TemplateResponse(request, "jobs.html", {
-        "request": request, "jobs": jobs, "status_filter": status})
+        "request": request, "jobs": jobs, "status_filter": status,
+        "error_text": error_text})
 
 
 class WebJobForm(BaseModel):
@@ -658,21 +663,21 @@ class WebJobForm(BaseModel):
 @app.post("/jobs/create")
 async def web_job_create(request: Request):
     form = await request.form()
-    link = form.get("meeting_link", "")
-    topic = form.get("topic", "")
+    link = str(form.get("meeting_link", "")).strip()
+    topic = str(form.get("topic", "")).strip()
     start_raw = form.get("start_at", "")
     start_now = str(form.get("start_now", "")).lower() in ("1", "true", "on") \
         or form.get("mode") == "start_now"
+    if not link_valid(link):
+        return RedirectResponse("/jobs?error=link", status_code=303)
     start_at = None
     if start_raw and not start_now:
         try:
             start_at = dt.datetime.fromisoformat(start_raw)
         except ValueError:
-            raise HTTPException(400, "NEKORREKTNAYA DATA")
+            return RedirectResponse("/jobs?error=date", status_code=303)
     job = create_job(meeting_link=link, topic=topic, start_at=start_at, created_by="web")
-    return HTMLResponse(
-        f"<script>window.location='/jobs/{job.id}'</script>"
-        if request.headers.get("hx-request") else f"Job {job.id} sozdan")
+    return RedirectResponse(f"/jobs/{job.id}", status_code=303)
 
 
 @app.post("/jobs/{jid}/cancel")

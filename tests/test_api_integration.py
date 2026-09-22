@@ -217,8 +217,10 @@ def test_web_job_create_start_now_ignores_start_at(client):
     future = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=2)).isoformat()
     r = client.post("/jobs/create", data={
         "meeting_link": "https://us05web.zoom.us/j/123123123",
-        "topic": "Idushchaya", "start_now": "1", "start_at": future})
-    assert r.status_code == 200
+        "topic": "Idushchaya", "start_now": "1", "start_at": future},
+        follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/jobs/")
     jobs = client.get("/api/jobs").json()
     j = next(x for x in jobs if x["zoom_meeting_id"] == "123123123")
     started = dt.datetime.fromisoformat(j["start_at"])
@@ -231,12 +233,45 @@ def test_web_job_create_schedule_keeps_start_at(client):
     future = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=2)).replace(microsecond=0)
     r = client.post("/jobs/create", data={
         "meeting_link": "https://us05web.zoom.us/j/456456456",
-        "topic": "Pozzhe", "start_at": future.isoformat()})
-    assert r.status_code == 200
+        "topic": "Pozzhe", "start_at": future.isoformat()},
+        follow_redirects=False)
+    assert r.status_code == 303
     jobs = client.get("/api/jobs").json()
     j = next(x for x in jobs if x["zoom_meeting_id"] == "456456456")
     started = dt.datetime.fromisoformat(j["start_at"]).replace(tzinfo=dt.timezone.utc)
     assert started == future
+
+
+def test_web_job_create_invalid_link_redirects_with_error(client):
+    r = client.post("/jobs/create", data={
+        "meeting_link": "https://example.com/not-zoom",
+        "topic": "Bad", "start_now": "1"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/jobs?error=link"
+    jobs = client.get("/api/jobs").json()
+    assert all(x.get("topic") != "Bad" for x in jobs)
+
+
+def test_web_job_create_invalid_link_empty(client):
+    r = client.post("/jobs/create", data={"meeting_link": "", "start_now": "1"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/jobs?error=link"
+
+
+def test_web_jobs_shows_link_error_banner(client):
+    r = client.get("/jobs?error=link")
+    assert r.status_code == 200
+    assert "Некорректная ссылка Zoom" in r.text
+
+
+def test_web_job_create_plain_meeting_id_accepted(client):
+    r = client.post("/jobs/create", data={
+        "meeting_link": "4383506695", "start_now": "1", "topic": "OnlyId"},
+        follow_redirects=False)
+    assert r.status_code == 303
+    jobs = client.get("/api/jobs").json()
+    assert any(x["zoom_meeting_id"] == "4383506695" for x in jobs)
 
 
 def test_reviews_page_with_pending(client):

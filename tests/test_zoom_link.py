@@ -51,3 +51,18 @@ def test_template_without_pwd_strips_param():
 def test_structural_reasons_match_tz():
     assert STRUCTURAL_FAIL_REASONS == {
         "zoom_requires_rtms", "auth_session_missing", "waiting_room_stuck"}
+
+from mnema.core.zoom_link import link_valid
+
+
+def test_link_valid_accepts_examples():
+    assert link_valid("https://us06web.zoom.us/j/4383506695?pwd=bJvhKUiTAtZqxKmcrkq2UltXepH7Ya.1")
+    assert link_valid("9814832357")
+    assert link_valid("zoom.us/my/john.doe-1")
+
+
+def test_link_valid_rejects_garbage():
+    assert not link_valid("")
+    assert not link_valid("   ")
+    assert not link_valid("hello world")
+    assert not link_valid("https://example.com/j/123456789")
