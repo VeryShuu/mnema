@@ -13,6 +13,7 @@ data/
 archive/
 logs/
 *.wav
+!templates/announce.wav
 *.pcm
 node_modules/
 .kilo/

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Mnema{% endblock %}</title>
+<link rel="icon" type="image/png" href="/static/favicon-64.png">
 <script>
 (function(){try{var t=localStorage.getItem('mnema-theme');if(t){document.documentElement.dataset.theme=t;}}catch(e){}})();
 </script>
@@ -47,7 +48,7 @@ a:hover{text-decoration:underline}
 .topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:1.4rem;
   padding:.7rem 1.4rem;background:var(--nav-bg);border-bottom:1px solid var(--border);flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:.55rem;color:#fff;font-weight:700;font-size:1.05rem;letter-spacing:.02em}
-.brand-mark{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#5b9dff,#a78bfa)}
+.brand-mark{width:32px;height:32px;border-radius:50%;object-fit:cover;flex:0 0 auto}
 .topbar nav{display:flex;gap:.2rem;flex-wrap:wrap;flex:1}
 .topbar nav a{color:#c6cfdd;padding:.35rem .7rem;border-radius:.5rem;font-size:.92rem}
 .topbar nav a:hover{background:rgba(255,255,255,.08);color:#fff;text-decoration:none}
@@ -147,7 +148,7 @@ progress{width:100%;height:10px;accent-color:var(--accent)}
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><span class="brand-mark"></span>Mnema</div>
+  <div class="brand"><img class="brand-mark" src="/static/mnema-256.png" alt="Mnema">Mnema</div>
   <nav>
     <a href="/">Панель управления</a>
     <a href="/jobs">Встречи</a>
