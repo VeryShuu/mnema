@@ -47,7 +47,9 @@
  <td>{{ j.topic }}</td><td>{{ j.zoom_meeting_id or 'архив' }}</td><td>{{ j.start_at }}</td>
  <td>{{ badge(j.status) }}</td>
  <td>{% if j.status in ('scheduled','launching','recording','processing','uploading') %}
-    <button hx-post="/jobs/{{ j.id }}/cancel" hx-on="click: location.reload()">Отменить</button>{% endif %}</td>
+    <button hx-post="/jobs/{{ j.id }}/cancel" hx-on="click: location.reload()">Отменить</button>{% endif %}
+ {% if j.status in ('launching','recording') %}
+    <button hx-post="/jobs/{{ j.id }}/leave" hx-confirm="Бот выйдет из созвона, запись будет обработана. Завершить встречу?" hx-on="click: location.reload()">Выйти из созвона</button>{% endif %}</td>
 </tr>
 {% else %}
 <tr><td colspan="6" class="muted">Встреч пока нет</td></tr>

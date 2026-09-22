@@ -69,10 +69,13 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
   const page = await ctx.newPage();
 
   const state = {
-    stopRequested: false, reloads: 0, joinedAt: null, lastChunksTs: Date.now(),
-    lastNavTs: Date.now(), chunksSaved: 0,
+    stopRequested: false, stopReason: null, reloads: 0, joinedAt: null,
+    lastChunksTs: Date.now(), lastNavTs: Date.now(), chunksSaved: 0,
   };
-  holder.requestStop = () => { state.stopRequested = true; };
+  holder.requestStop = (reason) => {
+    state.stopRequested = true;
+    state.stopReason = reason || "stop";
+  };
 
   await page.addInitScript(INIT_SCRIPT);
 
@@ -128,7 +131,14 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
     await playAnnouncement(page, cfg, onEvent);
 
     // uzhol konca vstrechi / tihi / hard-limit (FT-4)
-    const end = await waitForEnd(page, cfg, state, onEvent);
+    let end;
+    try {
+      end = await waitForEnd(page, cfg, state, onEvent);
+    } catch (e) {
+      onEvent(EVENT.ERROR, `nablyudenie prervalos': ${e.message}`);
+      // stranitsa/browser zakhrylis' v hoze zapisi — sohranyaem nakoopolnuyu zapis'
+      end = { reason: "page_closed" };
+    }
 
     // ostannie chanki iz vseh freymov
     for (const fr of page.frames()) {
@@ -421,6 +431,7 @@ function alertOperator(subject, body) {
 // -------------------------------------------------------------- konets zapiši
 async function waitForEnd(page, cfg, state, onEvent) {
   const hardMs = cfg.maxDurationMin * 60 * 1000;
+  let leaveClicked = false;
   while (!state.stopRequested) {
     await page.waitForTimeout(10000);
     // prinyuditelny limit
@@ -428,7 +439,7 @@ async function waitForEnd(page, cfg, state, onEvent) {
       onEvent(EVENT.ENDED, "max duration");
       return { reason: "max_duration" };
     }
-    if (state.stopRequested) return { reason: "stopped" };
+    if (state.stopRequested) break;
     const v = await classifyPage(page);
     if (v === "meeting_ended") {
       onEvent(EVENT.ENDED, "page: meeting ended");
@@ -460,6 +471,30 @@ async function waitForEnd(page, cfg, state, onEvent) {
       }
       state.lastChunksTs = Date.now(); // esli v zone — prodolzhaem zhidat'
     }
+  }
+  // Ruchnaya ostanovka: graceful-wyhod iz sozwona (Leave -> подтверждение),
+  // dam vremya na poslednie chanki, posle chego finalize soberaet zapis'.
+  if (state.stopReason === "manual_leave") {
+    try {
+      leaveClicked = await clickAnyFrame(page, /leave meeting|выйти с встречи|оставить встречу|leave|выйти из встречи/i, 8000);
+      onEvent("leaving", leaveClicked ? "nahata knopka Leave" : "knopka Leave nie naydena");
+      if (leaveClicked) {
+        await page.waitForTimeout(2500);
+        // dialog podtverzhdeniya: «Leave meeting» / «Disconnect»
+        await clickAnyFrame(page, /leave meeting|выйти с встречи|disconnect|ottepit'sya/i, 4000);
+      }
+    } catch (e) {
+      onEvent(EVENT.ERROR, `leave: ${e.message}`);
+    }
+    // zhём zatichiyu (recorder dosbiraet ostatnie chanki) do 10 s
+    const quietUntil = Date.now() + 10000;
+    while (Date.now() < quietUntil) {
+      const silenceS = (Date.now() - state.lastChunksTs) / 1000;
+      if (silenceS > 4) break;
+      try { await page.waitForTimeout(1000); } catch { break; }
+    }
+    onEvent(EVENT.ENDED, "ruchnoe zavershenie: vyhod iz sozwona");
+    return { reason: "manual_leave" };
   }
   return { reason: "stopped" };
 }

@@ -200,6 +200,26 @@ def api_job_finished(jid: int, body: FinishedIn):
     return {"ok": True}
 
 
+@app.post("/api/jobs/{jid}/leave")
+def api_job_leave(jid: int):
+    """Ruchnoe zavershenie vstrechi: web-bot vyhodit iz sozwona (knopka v WEB).
+    Zapis' korrectno zavershaetsya i uhoit v processing (recording) /
+    otfmenyaetsya (launching, esli bot eshche ne vshe)."""
+    from ..core.jobs_launch import request_stop
+    with get_session() as s:
+        job = s.get(Job, jid)
+        if job is None:
+            raise HTTPException(404)
+        if job.status not in ("launching", "recording"):
+            raise HTTPException(409, f"vyhod nemozhno dlya statusa: {job.status}")
+        s.add(SessionEvent(job_id=jid, event="leave_requested",
+                           detail="ruchnoe zavershenie operatorom"))
+        s.commit()
+        status = job.status
+    stop_queued = request_stop(jid, reason="manual_leave")
+    return {"ok": True, "status": status, "stop_queued": stop_queued}
+
+
 @app.get("/api/protocols/{pid}")
 def api_protocol(pid: int, format: str = "md"):
     with get_session() as s:
@@ -659,6 +679,12 @@ async def web_job_create(request: Request):
 async def web_job_cancel(jid: int, request: Request):
     cancel_job(jid)
     return HTMLResponse("ok")
+
+
+@app.post("/jobs/{jid}/leave")
+async def web_job_leave(jid: int):
+    r = api_job_leave(jid)
+    return JSONResponse(r)
 
 
 @app.post("/jobs/import-ics")

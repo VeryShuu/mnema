@@ -29,6 +29,12 @@
   {% if job.source == 'upload' and upload is not none and upload.status != 'complete' and job.status in ('uploading','failed') %}
   <p style="margin-top:.8rem"><a href="/jobs/upload?job_id={{ job.id }}"><button type="button" class="primary">Продолжить загрузку</button></a></p>
   {% endif %}
+  {% if job.status in ('launching','recording') %}
+  <p style="margin-top:.8rem">
+    <button type="button" id="leave-btn" onclick="leaveMeeting({{ job.id }})">Завершить встречу и выйти из созвона</button>
+    <span id="leave-status" class="muted"></span>
+  </p>
+  {% endif %}
 </div>
 <div class="card">
   <h3>Аудиозаписи</h3>
@@ -53,4 +59,32 @@
   <h3>Журнал событий (обновляется автоматически)</h3>
   {% include "job_log.html" %}
 </div>
+{% endblock %}
+{% block scripts %}
+{% if job.status in ('launching','recording') %}
+<script>
+function leaveMeeting(jid) {
+  const btn = document.getElementById('leave-btn');
+  const st = document.getElementById('leave-status');
+  if (!confirm('Завершить встречу: бот выйдет из созвона и запись будет обработана?')) return;
+  btn.disabled = true;
+  st.textContent = 'Выхожу из созвона…';
+  fetch('/jobs/' + jid + '/leave', { method: 'POST' })
+    .then(async (r) => {
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        st.textContent = 'Не удалось: ' + (e.detail || r.status);
+        btn.disabled = false;
+        return;
+      }
+      const j = await r.json();
+      st.textContent = j.stop_queued
+        ? 'Сигнал отправлен — бот выходит, запись завершится автоматически…'
+        : 'Ошибка: web-bot nie dostupen (redis niedostupen)';
+      if (j.stop_queued) setTimeout(() => location.reload(), 8000);
+    })
+    .catch((e) => { st.textContent = 'Oshibka: ' + e.message; btn.disabled = false; });
+}
+</script>
+{% endif %}
 {% endblock %}

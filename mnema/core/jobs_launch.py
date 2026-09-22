@@ -46,13 +46,17 @@ def enqueue_launch(job_id: int, run_at: dt.datetime) -> bool:
     return True
 
 
-def request_stop(job_id: int) -> None:
+def request_stop(job_id: int, reason: str | None = None) -> bool:
     try:
         from redis import Redis
         from .queue import redis_url
-        Redis.from_url(redis_url()).lpush(STOP_QUEUE_KEY, json.dumps({"job_id": job_id}))
+        payload = {"job_id": job_id}
+        if reason:
+            payload["reason"] = reason
+        Redis.from_url(redis_url()).lpush(STOP_QUEUE_KEY, json.dumps(payload))
+        return True
     except Exception:
-        pass
+        return False
 
 
 def request_session_healthcheck() -> None:

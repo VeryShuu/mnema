@@ -31,8 +31,8 @@ async function main() {
       const stop = await redis.rPop("mnema:stop");
       if (stop) {
         const s = JSON.parse(stop);
-        console.log("[web-bot] stop requested for", s.job_id);
-        recorders.get(s.job_id)?.requestStop();
+        console.log("[web-bot] stop requested for", s.job_id, s.reason || "");
+        recorders.get(s.job_id)?.requestStop(s.reason);
       }
       const hc = await redis.rPop("mnema:session_healthcheck");
       if (hc) {
@@ -62,6 +62,8 @@ async function runTask(task, redis) {
     const run = await launchAndRecord(job_id, cfg, recordersHolder, onEvent);
     if (run.ok) {
       await postFinished(job_id, run);
+    } else if (run.fail_reason === "cancelled") {
+      await postStatus(job_id, "cancelled", "manual_leave", run.error).catch(() => {});
     } else {
       await postStatus(job_id, "failed", run.fail_reason, run.error);
     }

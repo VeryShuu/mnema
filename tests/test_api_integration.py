@@ -90,6 +90,46 @@ def test_cancel_scheduled(client):
     assert r.status_code == 200 and r.json()["status"] == "cancelled"
 
 
+def test_leave_job_not_found(client):
+    r = client.post("/api/jobs/999999/leave")
+    assert r.status_code == 404
+
+
+def test_leave_rejected_for_wrong_status(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "321321321"}).json()["id"]
+    r = client.post(f"/api/jobs/{jid}/leave")  # scheduled -> ne dolzhno razreshatsya
+    assert r.status_code == 409
+
+
+def test_leave_recording_queues_stop_and_logs_event(client, monkeypatch):
+    from mnema.core.db import get_session
+    from mnema.core.models import SessionEvent
+    stops = []
+    monkeypatch.setattr("mnema.core.jobs_launch.request_stop",
+                        lambda job_id, reason=None: stops.append((job_id, reason)) or True)
+    jid = client.post("/api/jobs", json={"meeting_id": "654654654"}).json()["id"]
+    client.post(f"/api/jobs/{jid}/status", json={"status": "launching"})
+    client.post(f"/api/jobs/{jid}/status", json={"status": "recording"})
+    r = client.post(f"/api/jobs/{jid}/leave")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "status": "recording", "stop_queued": True}
+    assert stops == [(jid, "manual_leave")]
+    with get_session() as s:
+        evs = s.scalars(__import__("sqlalchemy").select(SessionEvent)).all()
+        assert any(e.event == "leave_requested" for e in evs)
+
+
+def test_web_leave_endpoint(client, monkeypatch):
+    stops = []
+    monkeypatch.setattr("mnema.core.jobs_launch.request_stop",
+                        lambda job_id, reason=None: stops.append(job_id) or True)
+    jid = client.post("/api/jobs", json={"meeting_id": "987987987"}).json()["id"]
+    client.post(f"/api/jobs/{jid}/status", json={"status": "launching"})
+    r = client.post(f"/jobs/{jid}/leave")
+    assert r.status_code == 200 and r.json()["stop_queued"] is True
+    assert stops == [jid]
+
+
 def test_health_bad_request_bad_format(client):
     # sozdaem job s audio bez fila -> 404 na razdache
     r = client.get("/api/jobs/999999/audio")
