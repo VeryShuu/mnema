@@ -16,6 +16,24 @@ function cleanSingletonLocks(profileDir) {
   }
 }
 
+// Fake-audio-device Chrome (fake-device-for-media-stream) generiruet
+// periodicheskiye bip-y — ik slishat vse uchastniki vstrechi, i oni zhe
+// popadayut v zapis'. Podminkaem fake-mikrofon bezmolvnym WAV-faylom.
+function ensureSilenceWav(dataDir) {
+  const p = path.join(dataDir, "silence_mic.wav");
+  try {
+    if (!fs.existsSync(p)) {
+      execFileSync("ffmpeg", ["-y", "-f", "lavfi", "-i",
+        "anullsrc=r=48000:cl=mono", "-t", "1", "-c:a", "pcm_s16le", p],
+        { stdio: "pipe" });
+    }
+    return fs.statSync(p).size > 0 ? p : null;
+  } catch (e) {
+    console.error("[mic] ne udalos' sozdat' bezmolvnyy wav:", e.message);
+    return null;
+  }
+}
+
 // Health-check Zoom-сессии (FT-24): otkryt' app.zoom.us persistent-profilem i
 // proverdity, ne trebuetsya li login (sessiya iva ~2 nedeli). Vozvr. true ok.
 export async function healthCheckSession(cfg) {
@@ -56,10 +74,17 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
   const wavPath = path.join(jobDir, "meeting.wav");
   const mp3Path = path.join(jobDir, "meeting.mp3");
 
+  // Fake-audio-device Chrome generiruet periodicheskiye bip-y (gromkiye shchelki
+  // slishat' vse uchastniki). Zamenyaem ego bezmolvnyym faylom: Chrome
+  // istsiklyayet ego po krugu kakmikrofornyy vzork.
+  const silenceWav = ensureSilenceWav(cfg.dataDir);
+  const fakeArgs = ["--use-fake-device-for-media-stream"];
+  if (silenceWav) fakeArgs.push(`--use-file-for-fake-audio-capture=${silenceWav}`);
+
   const ctx = await chromium.launchPersistentContext(cfg.zoomProfileDir, {
     headless: !cfg.headful,
     args: [
-      "--use-fake-device-for-media-stream",
+      ...fakeArgs,
       "--use-fake-ui-for-media-stream",
       "--autoplay-policy=no-user-gesture-required",
     ],
@@ -79,36 +104,61 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
 
   await page.addInitScript(INIT_SCRIPT);
 
-  // --- vykachivanie chankov kazhdye N s (FT-1): iz VSEH freymov (vstrecha
-  //     Zoom zhivyot v dochernem iframe — v main frame audio net)
+  // --- vykachivanie chankov kazhdye N s (FT-1). Okonnyy protokol:
+  //     okno 0 (do arma, privetstviye) VYTRASYVAETSA; kazhdyy sekhnny khlopnul
+  //     okno W>=1 (freym x okno) pishetsya v raw.<n>_w<W>.webm epoha = Date.now
+  //     real'nogo rec.start() (running AudioContext + anchor-blip 17.5k 8 ms v
+  //     nachale). Na finalize okna sravnivayutsya adelay+amix — bez atrimov po
+  //     lozhnym epoham, kotorye syedali nachalo fraz.
   let recording = false;
-  let lastOffset = 0;
-  const frameOffsets = new Map(); // frame -> kol-vo vykachannyh bait
-  const file = fs.openSync(webmPath, "a");
+  const frameFiles = new Map(); // `${fr}|w<W>` -> {n, p, fd, bytes, epochMs}
+  let frameSeq = 0;
+  const ensureSegFor = (fr, w) => {
+    const key = `${fr.url()}#${fr.name()}|w${w}`;
+    let rec = frameFiles.get(key);
+    if (!rec) {
+      const n = frameSeq++;
+      const p = path.join(jobDir, `raw.${n}_w${w}.webm`);
+      rec = { n, key, p, fd: fs.openSync(p, "w"), bytes: 0 };
+      frameFiles.set(key, rec);
+    }
+    return rec;
+  };
   const flushTimer = setInterval(async () => {
     if (!recording) return;
+    let gotAny = false;
     try {
-      let gotAny = false;
       let tracks = 0;
-      for (const fr of page.frames()) {
-        const off = frameOffsets.get(fr) || 0;
-        let b64 = null;
-        try {
-          b64 = await fr.evaluate((o) =>
-            (window.__mnemaDrain ? window.__mnemaDrain(o) : null), [off]);
-        } catch (e) { frameOffsets.set(fr, 0); continue; }
-        if (!b64) continue;
-        const st = await fr.evaluate(() => window.__mnemaStatus ? window.__mnemaStatus() : null).catch(() => null);
-        if (st && st.tracks > tracks) tracks = st.tracks;
-        if (b64.data && b64.data.length) {
-          fs.writeSync(file, Buffer.from(b64.data, "base64"));
-          frameOffsets.set(fr, b64.total);
-          lastOffset = (lastOffset || 0) + b64.data.length;
-          state.chunksSaved += b64.total - off;
+      const statuses = await Promise.all(page.frames().map(async (fr) => {
+        const st = await fr.evaluate(() => {
+          // posle reload novyy kontekst nie armed — re-arm (okno 1 s novoy epohoy)
+          if (window.__mnemaDrain && !window.__mnemaGlobalArm && window.__mnemaArm) {
+            try { window.__mnemaArm(); } catch (e) { /* */ }
+          }
+          if (!window.__mnemaDrain) return null;
+          const d = window.__mnemaDrain();
+          const s = window.__mnemaStatus ? window.__mnemaStatus() : {};
+          return { d, s };
+        }).catch(() => null);
+        return { fr, st };
+      }));
+      for (const { fr, st } of statuses) {
+        if (!st || !st.d || !st.d.wins) continue;
+        for (const [wStr, chunks] of Object.entries(st.d.wins)) {
+          const w = parseInt(wStr, 10);
+          if (!w || !chunks || !chunks.length) continue; // okno 0 (pre-arm) - v korzinku; w>=1: otdalnoe fail
+          const rec = ensureSegFor(fr, w);
+          if (rec.epochMs === undefined)
+            rec.epochMs = (st.d.epochs && st.d.epochs[w]) || Date.now();
+          const buf = Buffer.from(chunks.join(''), "base64");
+          fs.writeSync(rec.fd, buf);
+          rec.bytes += buf.length;
+          state.chunksSaved += buf.length;
           gotAny = true;
-          state.lastChunksTs = Date.now();
         }
+        if (st.s && st.s.tracks > tracks) tracks = st.s.tracks;
       }
+      if (gotAny) state.lastChunksTs = Date.now();
       state.liveTracks = tracks;
       if (tracks > 0 && (flushTimer.counter = (flushTimer.counter || 0) + 1) % 6 === 0)
         onEvent(EVENT.TRACK_ADDED, `live_tracks=${tracks}`);
@@ -125,10 +175,18 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
       return { ok: false, fail_reason: attemptRes.reason, error: attemptRes.error };
     }
     state.joinedAt = Date.now();
-    recording = true;
 
-    // Audio-obyavlenie (FT-10) srazu posle vhoda
+    // Audio-obyavlenie (FT-10) sygraet DO zapisi: pre-arm okno 0 v kazhdom
+    // freyme vytrasyvaetsya; posleokonchaniya frazy __mnemaArm otkryvaet
+    // okno 1 (nastoyashchaya zapis') s tochnoy epohoy rec.start().
     await playAnnouncement(page, cfg, onEvent);
+    for (const fr of page.frames()) {
+      await fr.evaluate(() => {
+        try { if (window.__mnemaArm) window.__mnemaArm(); } catch (e) { /* */ }
+      }).catch(() => {});
+    }
+    recording = true;
+    state.lastChunksTs = Date.now();
 
     // uzhol konca vstrechi / tihi / hard-limit (FT-4)
     let end;
@@ -140,15 +198,21 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
       end = { reason: "page_closed" };
     }
 
-    // ostannie chanki iz vseh freymov
+    // ostannie chanki iz vseh payplaynov (route po oknam, okno 0 v korzinku)
     for (const fr of page.frames()) {
       try {
-        const off = frameOffsets.get(fr) || 0;
-        const b64 = await fr.evaluate(([o]) =>
-          window.__mnemaDrain ? window.__mnemaDrain(o) : null, [off]);
-        if (b64 && b64.data?.length) {
-          fs.writeSync(file, Buffer.from(b64.data, "base64"));
-          frameOffsets.set(fr, b64.total);
+        const d = await fr.evaluate(() =>
+          window.__mnemaDrain ? window.__mnemaDrain() : null).catch(() => null);
+        if (!d || !d.wins) continue;
+        for (const [wStr, chunks] of Object.entries(d.wins)) {
+          const w = parseInt(wStr, 10);
+          if (!w || !chunks || !chunks.length) continue;
+          const rec = ensureSegFor(fr, w);
+          if (rec.epochMs === undefined)
+            rec.epochMs = (d.epochs && d.epochs[w]) || Date.now();
+          const buf = Buffer.from(chunks.join(''), "base64");
+          fs.writeSync(rec.fd, buf);
+          rec.bytes += buf.length;
         }
       } catch { /* stranitsa uzhe mohla utochn */ }
     }
@@ -157,10 +221,12 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
       return { ok: false, fail_reason: "page_crash",
                error: "stranitsa utochen posle vseh reloadov", webm: webmPath };
     }
-    return finalize(jobId, webmPath, wavPath, mp3Path, state, end);
+    const segs = [...frameFiles.values()];
+    for (const rec of segs) { try { fs.closeSync(rec.fd); } catch { /* */ } }
+    return finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end);
   } finally {
     clearInterval(flushTimer);
-    try { fs.closeSync(file); } catch { /* already */ }
+    for (const rec of frameFiles.values()) { try { fs.closeSync(rec.fd); } catch { /* already */ } }
     await cleanupContext(ctx, jobId, cfg, onEvent);
   }
 }
@@ -500,8 +566,33 @@ async function waitForEnd(page, cfg, state, onEvent) {
 }
 
 // ------------------------------------------------------------- finalize FT-6/41
-function finalize(jobId, webmPath, wavPath, mp3Path, state, end) {
+// segs: [{p, bytes, epochMs}] — po odnomu webm-potoku na freym-payplayn;
+// rekordery ne ostanavlivayutsya nichego, kogoда (migraciya trekov mezhdu
+// freymami nie dayet propadov). Obshchiy khronometrazh — epochMs sozdaniya
+// payplayna po chasu konteynera. Baza shkly — armEpochMs (momet po完成
+// privetstviya): khvosty do nego (sam privetstviye/hold) otrezayutsya atrimom,
+// boleye polozhennye segmenty sdvigayutsya adelay. Odin segament bez shvona —
+// prosto kopiruem.
+function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end) {
   let durationS = null;
+  const real = segs.filter((s) => s.bytes > 0 && fs.existsSync(s.p)
+    && fs.statSync(s.p).size > 0)
+    .sort((a, b) => (a.epochMs || 0) - (b.epochMs || 0));
+  const base = (real[0] && real[0].epochMs) || Date.now();
+  try {
+    if (real.length === 1) {
+      fs.copyFileSync(real[0].p, webmPath);
+    } else if (real.length >= 1) {
+      mixSegments(real, base, webmPath);
+    }
+  } catch (e) {
+    /* bolshe vsego potokov — beriem naibolee polnyy bez shkly */
+    if (!fs.existsSync(webmPath) || fs.statSync(webmPath).size === 0) {
+      const biggest = [...real].sort((a, b) => b.bytes - a.bytes)[0];
+      if (biggest) { try { fs.copyFileSync(biggest.p, webmPath); } catch { /* */ } }
+    }
+  }
+
   // pocinka povrezhdёnogo webm (FT-6), yesli nuzno
   if (!probeDuration(webmPath)) {
     try {
@@ -530,6 +621,7 @@ function finalize(jobId, webmPath, wavPath, mp3Path, state, end) {
     mp3Ok = fs.existsSync(mp3Path);
   } catch (e) { /* mp3 encoder niedostupen — razresheno vydat webm */ }
   const sizes = {};
+  for (const p of segs) { try { fs.rmSync(p.p, { force: true }); } catch { /* */ } }
   for (const [k, p] of [["webm", webmPath], ["wav", wavPath], ["mp3", mp3Path]])
     if (fs.existsSync(p)) sizes[k] = fs.statSync(p).size;
   return {
@@ -537,6 +629,29 @@ function finalize(jobId, webmPath, wavPath, mp3Path, state, end) {
     mp3: mp3Ok ? mp3Path : null, duration_s: durationS, sizes,
     end_reason: end.reason,
   };
+}
+
+// atrim do armEpoch + adelay posle nego + amix v odin webm (normalize=0 —
+// bez padaniya levelya). Vse segmenty na odnoy globalnoy shkalе vremeni.
+function mixSegments(real, base, outPath) {
+  const args = ["-y"];
+  for (const s of real) args.push("-i", s.p);
+  const parts = [];
+  const labels = [];
+  real.forEach((s, i) => {
+    const epoch = s.epochMs ?? base;
+    const delayMs = Math.max(0, Math.round(epoch - base));
+    parts.push(`[${i}:a]aresample=48000,adelay=${delayMs}|${delayMs}[a${i}]`);
+    labels.push(`[a${i}]`);
+  });
+  const chain = labels.length === 1
+    ? `${labels[0]}anull[out]`
+    : `${labels.join("")}amix=inputs=${real.length}:duration=longest:normalize=0[out]`;
+  parts.push(chain);
+  execFileSync("ffmpeg", [...args,
+    "-filter_complex", parts.join(";"),
+    "-map", "[out]", "-c:a", "libopus", "-b:a", "64k", outPath],
+  { stdio: "pipe", timeout: 600000 });
 }
 
 function probeDuration(p) {
@@ -558,16 +673,53 @@ async function playAnnouncement(page, cfg, onEvent) {
     onEvent(EVENT.ERROR, "announce.wav nie nayden — propusk");
     return;
   }
-  try {
-    const buf = fs.readFileSync(wavPath);
-    await page.evaluate(async (b64) => {
-      if (!window.__mnemaPlayAnnouncement) return;
-      await window.__mnemaPlayAnnouncement(b64);
-    }, buf.toString("base64"));
-    onEvent("announce", "obyavlenie vosproizvedeno");
-  } catch (e) {
-    onEvent(EVENT.ERROR, `announce: ${e.message}`);
+  const b64 = fs.readFileSync(wavPath).toString("base64");
+  // Obyavlenie dolzhno sygrat' ROVNO ODIN RAZ. Fraym s virtual-miksherom
+  // (micMixer) poyavlyaetsya Togda, cda Zoom vyzval getUserMedia — zhdyom jego,
+  // chtoby fraza ushla v konferentsiyu; povtornyye vstryevaniya other freymov
+  // pogloshchayetsya flagom __mnemaAnnPlayed na storone stranitsy.
+  const until = Date.now() + 60000;
+  let fired = false, fallbackUsed = false;
+  while (Date.now() < until && !fired) {
+    for (const fr of page.frames()) {
+      let res = null;
+      try {
+        res = await fr.evaluate(async ([data]) => {
+          if (window.__mnemaAnnPlayed) return { played: false, already: true, mixer: !!(window.__mnemaStatus && window.__mnemaStatus().micMixer) };
+          const st = window.__mnemaStatus ? window.__mnemaStatus() : null;
+          if (!st || !st.micMixer) return null; // net virtual'nogo mikrofona — ne signalim
+          return window.__mnemaPlayAnnouncement(data);
+        }, [b64]).catch(() => null);
+      } catch { continue; }
+      if (!res) continue;
+      fired = true;
+      if (res.played) {
+        onEvent("announce", res.viaMic
+          ? "obyavlenie sygrano cherez virtual'nyy mikrofon"
+          : "obyavlenie sygrano, no mikrofon nie nayden — slishno tol'ko v zapisi");
+      } else if (res.already) {
+        onEvent("announce", "obyavlenie uzhe bylo sygrano ranee");
+      }
+      break;
+    }
+    if (fired) break;
+    // 40 s bez mikshera: Zoom ne ispolzuet nahu gUM-dorozhku — sygraem hotya by v zapis'
+    if (!fallbackUsed && Date.now() > until - 20000) {
+      fallbackUsed = true;
+      for (const fr of page.frames()) {
+        const res = await fr.evaluate(async ([data]) =>
+          (window.__mnemaPlayAnnouncement && !window.__mnemaAnnPlayed
+            ? window.__mnemaPlayAnnouncement(data) : null), [b64]).catch(() => null);
+        if (res) {
+          fired = true;
+          onEvent("announce", "virtual'nyy mikrofon ne nayden — obyavlenie tol'ko v zapisi");
+          break;
+        }
+      }
+    }
+    await page.waitForTimeout(2000);
   }
+  if (!fired) onEvent(EVENT.ERROR, "announce: ni v odnom freyme nie sygrano");
 }
 
 // ============================================================ INIT SCRIPT
@@ -581,30 +733,91 @@ const INIT_SCRIPT = `
   window.__mnemaTracks = 0;
   const OrigPC = window.RTCPeerConnection;
   let ctx = null, dest = null, rec = null;
+  // Okonnyy rekord: okno 0 — pre-arm (privetstviye), po komande __mnemaArm —
+  // okno 1, koteroye i yest' nastoyashchaya zapis'. Epoha okna — Date.now v
+  // moment REAL'nogo rec.start() pri UZHE RUNNING AudioContext (ranshe epoha
+  // fijirovalas' v moment sozdaniya payplayna: poka Zoom ne derzhal gUM,
+  // AudioContext visel suspended, i atrim po lozhnoy epoke syedal nachalo frazy).
+  let win = 0;
+  const winEpochs = {};
+  window.__mnemaGlobalArm = false;
+
+  function startWin() {
+    if (!ctx) return;
+    if (ctx.state === 'suspended') { ctx.resume().then(startWin).catch(() => {}); return; }
+    const begin = () => {
+      win += 1;
+      winEpochs[win] = Date.now();
+      const w = win;
+      rec = new MediaRecorder(dest.stream, { mimeType: 'audio/webm' });
+      rec.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) {
+          ev.data.arrayBuffer().then((ab) => {
+            const u8 = new Uint8Array(ab);
+            let bin = '';
+            const slice = 0x8000;
+            for (let i = 0; i < u8.length; i += slice)
+              bin += String.fromCharCode.apply(null, u8.subarray(i, i + slice));
+            window.__mnemaChunks.push({ b64: btoa(bin), len: u8.byteLength, w });
+            window.__mnemaTotal += u8.byteLength;
+          });
+        }
+      };
+      rec.start(4000);
+    };
+    if (rec && rec.state === 'recording') {
+      rec.onstop = begin;
+      try { rec.stop(); } catch (e) { begin(); }
+    } else begin();
+  }
+
+  window.__mnemaArm = function () {
+    // arm odin raz na kontekst: esli uzhe pishem okno >=1 — nie pieriezazhyvat'
+    if (window.__mnemaGlobalArm) return win;
+    window.__mnemaGlobalArm = true;
+    startWin();
+    return win;
+  };
 
   function ensurePipeline() {
     if (ctx) return;
     ctx = new AudioContext();
     dest = ctx.createMediaStreamDestination();
-    rec = new MediaRecorder(dest.stream, { mimeType: 'audio/webm' });
-    rec.ondataavailable = (ev) => {
-      if (ev.data && ev.data.size > 0) {
-        ev.data.arrayBuffer().then((ab) => {
-          const u8 = new Uint8Array(ab);
-          let bin = '';
-          const slice = 0x8000;
-          for (let i = 0; i < u8.length; i += slice)
-            bin += String.fromCharCode.apply(null, u8.subarray(i, i + slice));
-          window.__mnemaChunks.push({ b64: btoa(bin), len: u8.byteLength });
-          window.__mnemaTotal += u8.byteLength;
-        });
-      }
-    };
-    rec.start(4000);
+    if (window.__mnemaGlobalArm) startWin(); // payplayn sozdan posle arma (migraciya trekov)
   }
 
+  // VIRTUAL-NYY MIKROFON: vyvod getUserMedia podmenyaemsya mikshu
+  // [fake-mikrofon + obyavlenie], chtoby frazu slishat' uchastniki cherez
+  // shtatnyi kanal mikrofona Zoom (replaceTrack send-track nie sрабатывал).
+  // Obe audiodorozhki vyvoda (i fake-mikrofon s tishinoy, i miksh) ne idut v
+  // zapis' (_mnemaLocal) — obyavlenie kladyom v zapis' otdelno pri igre.
+  let micMixerDest = null;
+  try {
+    const md = navigator.mediaDevices;
+    const wrap = (orig) => function (...a) {
+      return orig.apply(md, a).then((s) =>
+        new Promise((res) => {
+          try {
+            const inAudio = s.getAudioTracks();
+            if (!inAudio.length) return res(s);
+            ensurePipeline();
+            if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+            const mix = ctx.createMediaStreamDestination();
+            ctx.createMediaStreamSource(new MediaStream(inAudio)).connect(mix);
+            for (const t of mix.stream.getAudioTracks()) t._mnemaLocal = true;
+            for (const t of s.getVideoTracks()) t._mnemaLocal = true;
+            micMixerDest = mix;
+            return res(new MediaStream([...s.getVideoTracks(),
+              ...mix.stream.getAudioTracks()]));
+          } catch (e) { res(s); }
+        }));
+    };
+    if (md && md.getUserMedia) md.getUserMedia = wrap(md.getUserMedia);
+    if (md && md.getDisplayMedia) md.getDisplayMedia = wrap(md.getDisplayMedia);
+  } catch (e) { /* net mediaDevices — ladno */ }
+
   function attachTrack(track) {
-    if (track.kind !== 'audio' || track._mnemaHooked) return;
+    if (track.kind !== 'audio' || track._mnemaHooked || track._mnemaLocal) return;
     track._mnemaHooked = true;
     ensurePipeline();
     try {
@@ -621,9 +834,9 @@ const INIT_SCRIPT = `
     } catch (e) { /* */ }
   }
 
-  // Zapis' audio idyot cherez WebAudio: lovimsya ksozdaniya istochnikov
-  // MediaStream v Lyubom AudioContext (createMediaStreamSource), a takzhe
-  // HTMLMediaElement.srcObject — eto lovit dorozhki daie bez sobytiy PC.
+  // Zapis' audio idyot cherez WebAudio: lovimsya k sozdanii istochnikov
+  // MediaStream v lyubom AudioContext (createMediaStreamSource), a takzhe
+  // HTMLMediaElement.srcObject — eto lovit dorozhki davje bez sobytiy PC.
   const AC = window.AudioContext || window.webkitAudioContext;
   if (AC) {
     const origCss = AC.prototype.createMediaStreamSource;
@@ -647,9 +860,8 @@ const INIT_SCRIPT = `
     const origAddTrack = pc.addTrack.bind(pc);
     pc.addTrack = function (track, ...rest) { return origAddTrack(track, ...rest); };
     pc.addEventListener('track', (ev) => {
-      if (ev.track && ev.transceiver && ev.transceiver.direction === 'recvonly') {
-        attachTrack(ev.track);
-      } else if (ev.track) attachTrack(ev.track);
+      if (ev.transceiver && ev.transceiver.direction === 'sendonly') return; // nashi ne pishem
+      attachTrack(ev.track);
     });
     const origOnTrack = Object.getOwnPropertyDescriptor(OrigPC.prototype, 'ontrack');
     Object.defineProperty(pc, 'ontrack', {
@@ -660,37 +872,62 @@ const INIT_SCRIPT = `
   };
   window.RTCPeerConnection.prototype = OrigPC.prototype;
 
-  // Vyachka VSEH nakoplennyh chanov (destruktivno): massiv ochishchaetsya,
-  // vne shnit offset nie nuzhen — pishmo v fajl pridetaet porcyami.
-  window.__mnemaDrain = function (offsetBytes) {
-    const out = window.__mnemaChunks.map(function (c) { return c.b64; });
+  // Vyachka VSEH nakoplennyh chanov (destruktivno): massiv ochishchaetscha.
+  // Vozvraschaet ih po oknam (w): okno 0 (pre-arm) Node vytrasyvaet,
+  // kazhdoye okno >=1 pishetsya v svoy fail raw.<n>_<w>.webm.
+  window.__mnemaDrain = function () {
+    const out = {};
+    for (const c of window.__mnemaChunks) {
+      (out[c.w] = out[c.w] || []).push(c.b64);
+    }
     window.__mnemaChunks = [];
-    return { data: out.join(''), total: window.__mnemaTotal };
+    return { wins: out, epochs: winEpochs, total: window.__mnemaTotal, startMs: winEpochs[win] };
   };
   window.__mnemaStatus = function () {
     return { tracks: window.__mnemaTracks, bytes: window.__mnemaTotal,
-             recording: rec && rec.state === 'recording' };
+             recording: rec && rec.state === 'recording',
+             micMixer: !!micMixerDest, win, startMs: winEpochs[win] || 0 };
   };
 
-  // FT-10: proigrat wav v isodshiy audiotrek (miksh v MediaStreamDestination ne
-  // podhodit — idёт v udalennoyu storonu; ispolzuem isodshiy send-track yesli on yest).
+  // FT-10: odin raz vlit' wav v kanal mikrofona (micMixerDest -> Zoom ->
+  // uchastniki). V NASHU zapis' nikuda ne ljem: zapis' otrezaetsya do kontsa
+  // privetstviya (armEpoch) i privetstviye v nie nie dolzhno popadat'.
+  // Povtornyye vyzy NE proigryvayut: flag __mnemaAnnPlayed. Gain-ramp 20 ms
+  // chtoby start/stop nie davali shchelchkov amplitudoy.
+  let annPlaying = false;
+  window.__mnemaAnnPlayed = false;
   window.__mnemaPlayAnnouncement = async function (b64) {
+    if (window.__mnemaAnnPlayed || annPlaying)
+      return { played: false, already: window.__mnemaAnnPlayed, mixer: !!micMixerDest };
     ensurePipeline();
+    if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) { /* */ } }
     const bin = atob(b64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     const audioBuf = await ctx.decodeAudioData(bytes.buffer);
+
+    annPlaying = true;
+    window.__mnemaAnnPlayed = true;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    if (micMixerDest) gain.connect(micMixerDest); // v konferentsiyu kak 'mikrofon'
+
     const srcNode = ctx.createBufferSource();
     srcNode.buffer = audioBuf;
-    // v udaliyu storonu: my mychim, no obyavlenie dolzhno slishat' uchastniki.
-    // Vexa-style: vslivaem v khod, chto idyot kak 'mikrofon' (fake device).
-    // Dostavka: sozdayem otdelny MediaStream-track i probuem zamenit send-track.
-    const annDest = ctx.createMediaStreamDestination();
-    srcNode.connect(annDest);
-    srcNode.start();
-    // best-effort: podyaem na yavnuyu globalnuyu funktsiyu dlya vneshney zameny
-    window.__mnemaAnnouncementStream = annDest.stream;
-    return true;
+    srcNode.connect(gain);
+    const t0 = ctx.currentTime + 0.05;
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(1, t0 + 0.02);
+    gain.gain.setValueAtTime(1, t0 + audioBuf.duration);
+    gain.gain.linearRampToValueAtTime(0, t0 + audioBuf.duration + 0.02);
+    srcNode.start(t0);
+    await new Promise((res) => {
+      srcNode.onended = res;
+      setTimeout(res, (audioBuf.duration + 1) * 1000);
+    });
+    try { srcNode.disconnect(); gain.disconnect(); } catch (e) { /* */ }
+    annPlaying = false;
+    return { played: true, viaMic: !!micMixerDest, duration: audioBuf.duration };
   };
 })();
 `;
