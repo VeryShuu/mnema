@@ -32,17 +32,17 @@
 </div>
 {% else %}<p class="muted">Нет ожидающих уточнений.</p>{% endfor %}
 <script>
-async function answer(rid, employeeId, employeeName){
-  const body = {employee_id: employeeId, employee_name: employeeName};
+async function answer(rid, employeeId, employeeName, createNew){
+  const body = {employee_id: employeeId, employee_name: employeeName, create_new: !!createNew};
   await fetch('/api/reviews/'+rid, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   location.reload();
 }
 function createFor(rid){
   const sel = document.getElementById('sel_'+rid);
-  if (sel && sel.value){ answer(rid, parseInt(sel.value), null); return false; }
+  if (sel && sel.value){ answer(rid, parseInt(sel.value), null, false); return false; }
   const nm = document.getElementById('name_'+rid).value.trim();
   if(!nm){ alert('Укажите ФИО'); return false; }
-  answer(rid, null, nm); return false;
+  answer(rid, null, nm, true); return false;
 }
 </script>
 {% endblock %}

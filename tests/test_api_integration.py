@@ -255,3 +255,93 @@ def test_reviews_page_with_pending(client):
     assert "SPEAKER_UNKNOWN" in r.text
     api = client.get("/api/reviews?status=pending").json()
     assert api and api[0]["cluster_label"] == "SPEAKER_UNKNOWN"
+
+
+def _make_review_fixture(client):
+    """Job v awaiting_review + pending review + segmenty + meeting.wav (3 s)."""
+    from mnema.core.db import get_session
+    from mnema.core.models import ReviewRequest, Segment
+    jid = client.post("/api/jobs", json={"meeting_id": "900900900"}).json()["id"]
+    for st in ("launching", "recording", "processing", "awaiting_review"):
+        assert client.post(f"/api/jobs/{jid}/status", json={"status": st}).status_code == 200
+    import os
+    wav_dir = Path(os.environ["DATA_DIR"]) / "jobs" / str(jid)
+    wav_dir.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(wav_dir / "meeting.wav"), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(struct.pack("<51200h", *([100] * 51200)))
+    with get_session() as s:
+        rid_row = ReviewRequest(job_id=jid, cluster_label="SPEAKER_00", similarity=0.2)
+        s.add(rid_row)
+        s.add(Segment(job_id=jid, speaker_id="SPEAKER_00", diar_label="SPEAKER_00",
+                      t_start=0.0, t_end=3.0, text="привет", speaker_source="unresolved",
+                      needs_review=True))
+        s.commit()
+        return jid, rid_row.id
+
+
+def test_review_create_new_makes_voice_profile(client):
+    """Regres: 'Создать нового' v /reviews bez flaga create_new ne sozdaval profil'."""
+    from sqlalchemy import select
+    from mnema.core.db import get_session
+    from mnema.core.models import ReviewRequest, Segment
+    jid, rid = _make_review_fixture(client)
+    r = client.post(f"/api/reviews/{rid}",
+                    json={"employee_name": "Иванов И. И.", "create_new": True})
+    assert r.status_code == 200
+    lst = client.get("/api/voice-profiles").json()
+    assert any(p["employee_name"] == "Иванов И. И." for p in lst)
+    with get_session() as s:
+        rev = s.get(ReviewRequest, rid)
+        assert rev.status == "confirmed" and rev.candidate_profile_id is not None
+        seg = s.scalars(select(Segment).where(Segment.job_id == jid)).first()
+        assert seg.speaker_name == "Иванов И. И."
+        assert seg.needs_review is False
+
+
+def test_review_create_new_embeds_cluster(client):
+    """Novyĭ profil' poluchaet embedding klastera, inache on nikogda ne smatsitsya."""
+    from sqlalchemy import select
+    from mnema.core.db import get_session
+    from mnema.core.models import VoiceProfile
+    jid, rid = _make_review_fixture(client)
+    r = client.post(f"/api/reviews/{rid}",
+                    json={"employee_name": "Петрова А. П.", "create_new": True})
+    assert r.status_code == 200
+    with get_session() as s:
+        v = s.scalars(select(VoiceProfile).where(
+            VoiceProfile.employee_name == "Петрова А. П.")).first()
+        assert v is not None
+        assert v.embedding, "embedding klastera ne vypolsen"
+
+
+def test_review_name_only_without_create_new_makes_no_profile(client):
+    """Staroe povedenie: bez create_new imenuetsegmty, no profil' v reestr ne popadaet."""
+    from mnema.core.db import get_session
+    from mnema.core.models import VoiceProfile
+    from sqlalchemy import select
+    before = len(client.get("/api/voice-profiles").json())
+    jid, rid = _make_review_fixture(client)
+    r = client.post(f"/api/reviews/{rid}", json={"employee_name": "Сидоров В. В."})
+    assert r.status_code == 200
+    assert len(client.get("/api/voice-profiles").json()) == before
+    with get_session() as s:
+        assert s.scalars(select(VoiceProfile).where(
+            VoiceProfile.employee_name == "Сидоров В. В.")).first() is None
+
+
+def test_review_create_new_reuses_profile_with_same_name(client):
+    """Povtornoe 'Создать novo' s tem zhe FIO ne sozdaet dubl v reestre."""
+    jid1, rid1 = _make_review_fixture(client)
+    client.post(f"/api/reviews/{rid1}",
+                json={"employee_name": "Дубль Д. Д.", "create_new": True})
+    cnt1 = sum(1 for p in client.get("/api/voice-profiles").json()
+               if p["employee_name"] == "Дубль Д. Д.")
+    jid2, rid2 = _make_review_fixture(client)
+    client.post(f"/api/reviews/{rid2}",
+                json={"employee_name": "Дубль Д. Д.", "create_new": True})
+    cnt2 = sum(1 for p in client.get("/api/voice-profiles").json()
+               if p["employee_name"] == "Дубль Д. Д.")
+    assert cnt1 == 1 and cnt2 == 1

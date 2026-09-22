@@ -147,6 +147,20 @@ def match_cluster(embedding: list[float]) -> tuple[str, VoiceProfile | None, flo
     return "unresolved", None, best_sim
 
 
+def _cluster_embedding_for(s, job_id: int, cluster_label: str) -> list[float] | None:
+    """Embedding klastera iz zapisi vstrechi, chtoby novyy profil' matsilsya."""
+    try:
+        from ..worker.tasks import _cluster_embedding, _job_paths
+        wav = _job_paths(job_id)["wav"]
+        if not wav.exists():
+            return None
+        segs = list(s.scalars(select(Segment).where(
+            Segment.job_id == job_id, Segment.speaker_id == cluster_label)).all())
+        return _cluster_embedding(wav, segs)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def apply_review_answer(rid: int, employee_id: int | None, employee_name: str | None,
                         create_new: bool, answered_by: str) -> str | None:
     """FT-28/FT-32: otvet primenyaetsya ko vsemu klasteryu + dokuchaet profil'."""
@@ -156,12 +170,20 @@ def apply_review_answer(rid: int, employee_id: int | None, employee_name: str | 
             return None
         job_id, cluster = r.job_id, r.cluster_label
         if create_new and employee_name:
-            v = VoiceProfile(employee_name=employee_name,
-                             consent_ts=dt.datetime.now(dt.timezone.utc))
-            s.add(v)
-            s.flush()
+            v = s.scalars(select(VoiceProfile).where(
+                VoiceProfile.employee_name == employee_name)).first()
+            reused = v is not None
+            if v is None:
+                v = VoiceProfile(employee_name=employee_name,
+                                 consent_ts=dt.datetime.now(dt.timezone.utc))
+                s.add(v)
+                s.flush()
             name = employee_name
             r.candidate_profile_id = v.id
+            if not reused and v.embedding is None:
+                emb = _cluster_embedding_for(s, job_id, cluster)
+                if emb:
+                    v.embedding = emb
         elif employee_id:
             v = s.get(VoiceProfile, employee_id)
             name = v.employee_name if v else employee_name
