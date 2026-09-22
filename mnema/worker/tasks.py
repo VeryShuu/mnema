@@ -164,14 +164,34 @@ def run_speaker_id(job_id: int) -> None:
 
 
 def run_join(job_id: int) -> None:
-    """Sliyaniye vetok posle oboikh: steno.md + structure."""
+    """Sliyaniye vetok posle oboikh: steno.md, zatem LLM — tol'ko kogda vse
+    govoryashchiye opredeleny. Pri neraspznannyh golosakh stop v awaiting_review
+    (analiz LLM idet POSLE utochneniya lyudey, a ne do nego)."""
     try:
         p = _job_paths(job_id)
         _write_steno(job_id, p)
+        if _route_awaiting_review_if_unresolved(job_id):
+            return
         _run_structure(job_id)
     except Exception as e:  # noqa: BLE001
         _fail_branch(job_id, e, "processing_error")
         raise
+
+
+def _route_awaiting_review_if_unresolved(job_id: int) -> bool:
+    """True esli est' pending review-request: status -> awaiting_review s deadlaynom."""
+    from ..core.pipeline import review_requests_resolved, transition
+    if review_requests_resolved(job_id):
+        return False
+    import datetime as dt
+    hours = int(os.environ.get("REVIEW_TIMEOUT_HOURS", "48") or 48)
+    with get_session() as s:
+        job = s.get(Job, job_id)
+        job.review_deadline = (dt.datetime.now(dt.timezone.utc)
+                               + dt.timedelta(hours=hours))
+        s.commit()
+    transition(job_id, "awaiting_review")
+    return True
 
 
 def run_asr_pipeline(job_id: int) -> None:
@@ -313,7 +333,13 @@ def _register_audio_files(job_id: int, p: dict, dur: float) -> None:
 
 
 def run_structure(job_id: int) -> None:
-    _run_structure(job_id)
+    """Vozvrat posle utochneniya spikero: steno.md s itogovymi imenami + LLM."""
+    try:
+        _write_steno(job_id, _job_paths(job_id))
+        _run_structure(job_id)
+    except Exception as e:  # noqa: BLE001
+        _fail_branch(job_id, e, "processing_error")
+        raise
 
 
 def _run_speaker(job_id: int) -> None:
@@ -492,17 +518,8 @@ def _build_protocol(job_id: int) -> None:
 
 
 def _route_after_structure(job_id: int) -> None:
-    from ..core.pipeline import review_requests_resolved, transition
-    resolved = review_requests_resolved(job_id)
-    if not resolved:
-        import datetime as dt
-        hours = int(os.environ.get("REVIEW_TIMEOUT_HOURS", "48") or 48)
-        with get_session() as s:
-            job = s.get(Job, job_id)
-            job.review_deadline = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=hours)
-            s.commit()
-        transition(job_id, "awaiting_review")
-    else:
+    from ..core.pipeline import transition
+    if not _route_awaiting_review_if_unresolved(job_id):
         transition(job_id, "done")
 
 

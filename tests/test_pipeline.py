@@ -93,11 +93,11 @@ def test_pipeline_full_offline(env):
         rrs = s.scalars(select(ReviewRequest).where(ReviewRequest.job_id == job.id)).all()
         assert rrs, "net review-request dlya neraspoznannyh golosov"
         j = s.get(Job, job.id)
-        # LLM nie konfiguriran -> awaiting_llm, no steno.md yest'
-        assert j.status == "awaiting_llm"
+        # golosa ne raspznany -> stop v awaiting_review DO LLM-analiza; steno.md yest'
+        assert j.status == "awaiting_review"
         proto = s.scalars(select(Protocol).where(Protocol.job_id == job.id)).first()
-        assert proto is not None
-        assert proto.steno_md_path and Path(proto.steno_md_path).exists()
+        assert proto is None  # LLM eshche ne zapuskalsya
+        assert Path(p["steno"]).exists()
         afs = s.scalars(select(AudioFile).where(AudioFile.job_id == job.id)).all()
         kinds = {a.kind for a in afs}
         assert {"wav", "mp3"} <= kinds

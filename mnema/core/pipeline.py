@@ -106,6 +106,22 @@ def register_recording_finished(job_id: int, *, webm_path: str | None,
         s.commit()
 
 
+def resume_after_reviews(job_id: int) -> bool:
+    """Vse utochneniya zakryty (otvet operatora ili taym-aut) -> vozvrat v
+    processing i zapusk LLM-analiza. Vozvraschaet False, esli ostalis' pending
+    review-request ili status ne pozvolyayet vozvrat v processing."""
+    if not review_requests_resolved(job_id):
+        return False
+    with get_session() as s:
+        job = s.get(Job, job_id)
+        if job is None or job.status != "awaiting_review":
+            return False
+    transition(job_id, "processing", event="reviews_done")
+    from .queue import enqueue_job
+    enqueue_job("structure", "mnema.worker.tasks.run_structure", job_id)
+    return True
+
+
 def review_timeout_check() -> int:
     """FT-28: neta otvetov po REVIEW_TIMEOUT_HOURS — publikuem s 'Golos N'."""
     hours = int(os.environ.get("REVIEW_TIMEOUT_HOURS", "48") or 48)
@@ -113,6 +129,7 @@ def review_timeout_check() -> int:
     done = 0
     with get_session() as s:
         jobs = s.scalars(select(Job).where(Job.status == "awaiting_review")).all()
+        ids = []
         for j in jobs:
             deadline = j.review_deadline
             if deadline is None:
@@ -125,11 +142,19 @@ def review_timeout_check() -> int:
                     ReviewRequest.status == "pending")).all()
                 for r in rr:
                     r.status = "timeout"
-                j.status = "done"
-                j.note = "opublikovano po taym-autu bezutochneniya (FT-28)"
-                j.ended_ts = now
-                done += 1
+                    r.answered_ts = now
+                    r.answered_by = "timeout"
+                j.note = "utochnenie po taym-autu (FT-28): publikuem kak opredeleno"
+                ids.append(j.id)
         s.commit()
+    # 5.1: posle taym-atau LLM-analiz vse ravno vypolnyaetsya (nezavershonnyy
+    # protokol — ne rezultat); pri utochnenii "Golos N" imena ostayutsya kak est'.
+    for jid in ids:
+        try:
+            if resume_after_reviews(jid):
+                done += 1
+        except Exception:  # noqa: BLE001 — ne lonim maintenance
+            pass
     return done
 
 

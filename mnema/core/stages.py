@@ -21,8 +21,8 @@ STAGE_DEFS: list[tuple[str, str, str]] = [
     ("speaker", "Анализ голосов", "Диаризация — разделение на спикеров"),
     ("voiceprint", "Узнавание спикеров", "Сопоставление кластеров с реестром голосов"),
     ("steno", "Сборка стенограммы", "Формирование steno.md из сегментов"),
-    ("llm", "Анализ LLM", "Структурирование протокола через LLM"),
     ("review", "Уточнение спикеров", "Проверка нераспознанных голосов человеком"),
+    ("llm", "Анализ LLM", "Структурирование протокола через LLM"),
     ("done", "Протокол готов", "Итоговый протокол сформирован"),
 ]
 
@@ -135,27 +135,30 @@ def build_stages(job_id: int) -> list[dict]:
     else:
         states["steno"] = "pending"
 
-    if proto_structured:
-        states["llm"] = "done"
-    elif status in ("awaiting_review", "done"):
+    if reviews_open or status == "awaiting_review":
+        states["review"] = "running"
+    elif reviews_answered or has("review_resolved", "reviews_done"):
+        states["review"] = "done"
+    elif status == "done":
+        states["review"] = "skipped"
+    else:
+        states["review"] = "pending"
+
+    # LLM idet POSLE opredeleniya golosov: pri otkrytom review on eshche nie
+    # zapuskalsya (pending), krome starykh jobov s uzhe gotovym protokolom.
+    if proto_structured or has("llm_done") or (
+            status in ("awaiting_review", "done")) and proto:
         states["llm"] = "done"
     elif status == "awaiting_llm":
         states["llm"] = "running"
     elif failed and failed_stage == "llm":
         states["llm"] = "failed"
+    elif status == "awaiting_review" and reviews_open:
+        states["llm"] = "pending"
     elif status == "processing" and has("llm_start"):
         states["llm"] = "running"
     else:
         states["llm"] = "pending"
-
-    if status == "awaiting_review":
-        states["review"] = "running"
-    elif status == "done":
-        states["review"] = "done" if reviews_open or reviews_answered or has("review_resolved") else "skipped"
-    elif reviews_answered:
-        states["review"] = "done"
-    else:
-        states["review"] = "pending"
 
     if status == "done":
         states["done"] = "done"
@@ -196,7 +199,7 @@ def _done_events(key: str, vad_done: bool, asr_done: bool, diar_done: bool,
         "voiceprint": ("voiceprint_done",),
         "steno": ("steno_done",),
         "llm": ("llm_done",),
-        "review": ("review_resolved",),
+        "review": ("reviews_done", "review_resolved"),
         "done": ("status->done",),
     }.get(key, ())
 

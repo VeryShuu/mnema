@@ -381,15 +381,8 @@ def api_answer_review(rid: int, body: ReviewAnswer):
         cluster = r.cluster_label
     name = apply_review_answer(rid, body.employee_id, body.employee_name,
                                body.create_new, body.answered_by or "web")
-    with get_session() as s:
-        pending = s.scalars(select(ReviewRequest).where(
-            ReviewRequest.job_id == job_id,
-            ReviewRequest.status == "pending")).first()
-        done_now = pending is None
-    if done_now:
-        transition(job_id, "processing", event="reviews_done")
-        from ..core.queue import enqueue_job
-        enqueue_job("structure", "mnema.worker.tasks.run_structure", job_id)
+    from ..core.pipeline import resume_after_reviews
+    done_now = resume_after_reviews(job_id)
     return {"ok": True, "name": name, "job_done": done_now}
 
 
