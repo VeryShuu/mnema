@@ -3,14 +3,27 @@
 pyannote davlaet segmety s SPEAKER_XX. Bez ney (dev/CPU) vse segmety poluchayut
 odin klubter 'SPEAKER_UNKNOWN' — sistema prodolzhaet rabotat' (kholodny start),
 no utochneniya idut v review. Peremennaya DIARIZER=off vypykaet pyannote.
+
+Sboy zagruzki pipeline bol'she ne memoiziruetsya navsegda: prichina vsegda
+logirruetsya, a popytka zagruzki povtoryaetsya cherez DIAR_RETRY_SEC
+(po defaulte 600 s), chtoby vremenno nedostupny HF (gated-modeli, setevoj
+sboy) ne otklyuchal diariizatsiyu v processe workera do samogo restarta.
 """
 from __future__ import annotations
 
 import os
+import time
 import warnings
 from pathlib import Path
 
 warnings.filterwarnings("ignore")
+
+
+def _retry_sec() -> float:
+    try:
+        return max(0.0, float(os.environ.get("DIAR_RETRY_SEC", "600")))
+    except ValueError:
+        return 600.0
 
 
 def diarize(wav: Path, vad_segments: list[dict]) -> list[str]:
@@ -19,31 +32,50 @@ def diarize(wav: Path, vad_segments: list[dict]) -> list[str]:
         return ["SPEAKER_UNKNOWN"] * len(vad_segments)
     try:
         return _pyannote_labels(backend, wav, vad_segments)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        print(f"pyannote: vypolnenie sdalosya s oshibkoy ({e!r}) — "
+              f"{len(vad_segments)} segm kak SPEAKER_UNKNOWN", flush=True)
         return ["SPEAKER_UNKNOWN"] * len(vad_segments)
 
 
+# Sostoyanie _pipe:
+#   None    — eshche ne pytalis' zagruzit'
+#   False   — popytka sdalas'; povtor cherez DIAR_RETRY_SEC
+#   "off"   — otklyucheno cherez DIARIZER (povtorov net)
+#   Pipeline — uspesno zagruzhen
 _pipe = None
+_failed_ts = 0.0
 
 
 def _get_pyannote():
-    global _pipe
-    if _pipe is not None:
-        return _pipe
+    global _pipe, _failed_ts
     if os.environ.get("DIARIZER", "").lower() in ("off", "none", "energy"):
-        _pipe = False
+        if _pipe is not False and _pipe != "off":
+            print("pyannote: otklyuchen cherez DIARIZER — vse segmy "
+                  "SPEAKER_UNKNOWN", flush=True)
+        _pipe = "off"
+        return None
+    if _pipe == "off":
+        return None
+    if _pipe:
+        return _pipe
+    if _pipe is False and time.monotonic() - _failed_ts < _retry_sec():
         return None
     try:
         from pyannote.audio import Pipeline
         import torch
         tok = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+        if not tok:
+            print("pyannote: HF_TOKEN ne zadan — zagruzka gated-modeli "
+                  "pyannote/speaker-diarization-3.1 mozhet pagibnut'",
+                  flush=True)
         use_gpu = (os.environ.get("ASR_DEVICE", "cpu").startswith("cuda")
                    and torch.cuda.is_available())
         pipe = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1",
                                         use_auth_token=tok)
         if pipe is None:
-            _pipe = False
-            return None
+            raise RuntimeError("Pipeline.from_pretrained vernul None "
+                               "(net HF_TOKEN / net access k gated-modeli)")
         # v pyannote 3.x batch-razmery ne prokhodyat cherez from_pretrained:
         # vyznachaem ih posle zagruzki (segmentation — vnutrenniy Inference,
         # embedding chitaetsya v execute() kak samostoyatel'nyy atribut).
@@ -62,8 +94,12 @@ def _get_pyannote():
                   f"batch={batch}", flush=True)
         _pipe = pipe
         return _pipe
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        print(f"pyannote: zagruzka pipeline sdalasya ({e!r}) — "
+              f"povtor spustya {_retry_sec():.0f} s; do nego vse segmy "
+              "SPEAKER_UNKNOWN", flush=True)
         _pipe = False
+        _failed_ts = time.monotonic()
         return None
 
 
