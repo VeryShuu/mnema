@@ -39,7 +39,8 @@ def build_stages(job_id: int) -> list[dict]:
             ReviewRequest.status == "pending")).first())
         reviews_answered = bool(s.scalars(select(ReviewRequest).where(
             ReviewRequest.job_id == job_id,
-            ReviewRequest.status.in_(("confirmed", "timeout")))).first())
+            ReviewRequest.status.in_(
+                ("confirmed", "timeout", "excluded", "superseded")))).first())
 
     first: dict[str, dict] = {}
     for e in reversed(events):

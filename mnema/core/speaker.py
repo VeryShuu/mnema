@@ -155,7 +155,8 @@ def _cluster_embedding_for(s, job_id: int, cluster_label: str) -> list[float] | 
         if not wav.exists():
             return None
         segs = list(s.scalars(select(Segment).where(
-            Segment.job_id == job_id, Segment.speaker_id == cluster_label)).all())
+            Segment.job_id == job_id, Segment.speaker_id == cluster_label,
+            Segment.excluded.is_(False))).all())
         return _cluster_embedding(wav, segs)
     except Exception:  # noqa: BLE001
         return None

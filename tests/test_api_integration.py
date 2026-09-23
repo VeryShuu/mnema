@@ -470,12 +470,122 @@ def test_exclude_segment_twice_creates_one_duplicate_request(client):
     rid2 = next(x["id"] for x in new if x["cluster_label"] == first)
     r = client.delete(f"/api/reviews/{rid2}/segments/{s2}")
     assert r.status_code == 200
+    new_label = r.json()["cluster_label"]
+    assert r.json()["review_closed"] is True
     with get_session() as s:
         cnt = s.scalar(select(func.count()).select_from(ReviewRequest).where(
             ReviewRequest.job_id == jid,
             ReviewRequest.cluster_label == first,
             ReviewRequest.status == "pending"))
-        assert cnt == 1
+        assert cnt == 0
+        pending_new = s.scalars(select(ReviewRequest).where(
+            ReviewRequest.job_id == jid,
+            ReviewRequest.cluster_label == new_label,
+            ReviewRequest.status == "pending")).all()
+        assert len(pending_new) == 1
+
+
+def test_delete_last_segment_closes_empty_review(client, monkeypatch):
+    """Regres: udalenie edinstvennogo fragmenta zakryvaet pustuyu zayavku
+    (inache zayavka bez etalonnyh fragmentov naveschno visit v ocheredi)."""
+    from mnema.core.db import get_session
+    from sqlalchemy import select
+    from mnema.core.models import Job, ReviewRequest
+    monkeypatch.setattr("mnema.core.queue.enqueue_job", lambda *a, **k: None)
+    jid, rid, sid = _make_single_segment_cluster(client)
+    r = client.delete(f"/api/reviews/{rid}/segments/{sid}")
+    assert r.status_code == 200
+    assert r.json()["review_closed"] is True
+    with get_session() as s:
+        assert s.get(ReviewRequest, rid).status == "superseded"
+        # fragmentysh v novom podklaster — zhov zhdyot utochneniya po nemu
+        assert s.get(Job, jid).status == "awaiting_review"
+        assert len(s.scalars(select(ReviewRequest).where(
+            ReviewRequest.job_id == jid,
+            ReviewRequest.status == "pending")).all()) == 1
+
+
+def _make_single_segment_cluster(client):
+    """Job v awaiting_review + pending review + odin segment (posle exclusions)."""
+    from mnema.core.db import get_session
+    from mnema.core.models import ReviewRequest, Segment
+    jid = client.post("/api/jobs", json={"meeting_id": "720720720"}).json()["id"]
+    for st in ("launching", "recording", "processing", "awaiting_review"):
+        client.post(f"/api/jobs/{jid}/status", json={"status": st})
+    with get_session() as s:
+        r = ReviewRequest(job_id=jid, cluster_label="SPEAKER_01", similarity=0.1)
+        s.add(r)
+        s.commit()
+        seg = Segment(job_id=jid, speaker_id="SPEAKER_01", diar_label="SPEAKER_01",
+                      t_start=0.0, t_end=3.0, text="dva golosa",
+                      speaker_source="unresolved", needs_review=True)
+        s.add(seg)
+        s.commit()
+        return jid, r.id, seg.id
+
+
+def test_exclude_from_analysis_marks_segment(client):
+    """POST .../exclude: segment excluded, needs_review snyat, klaster zhiv."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Segment
+    jid, rid, _s1, s2 = _make_two_segment_cluster(client)
+    r = client.post(f"/api/reviews/{rid}/segments/{s2}/exclude")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "cluster_closed": False, "job_done": False}
+    with get_session() as s:
+        seg = s.get(Segment, s2)
+        assert seg.excluded is True
+        assert seg.needs_review is False
+        assert seg.speaker_source == "excluded"
+
+
+def test_exclude_from_analysis_closes_last_review_and_resumes(client, monkeypatch):
+    """Posledniy fragment klastera iskluchen — zakryvaet review i vozobnovlyaet LLM."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Job, ReviewRequest, Segment
+    calls = []
+    monkeypatch.setattr("mnema.core.queue.enqueue_job",
+                        lambda *a, **k: calls.append(a))
+    jid, rid, sid = _make_single_segment_cluster(client)
+    r = client.post(f"/api/reviews/{rid}/segments/{sid}/exclude")
+    assert r.status_code == 200
+    assert r.json()["cluster_closed"] is True and r.json()["job_done"] is True
+    with get_session() as s:
+        assert s.get(Segment, sid).excluded is True
+        rev = s.get(ReviewRequest, rid)
+        assert rev.status == "excluded"
+        assert s.get(Job, jid).status == "processing"
+    assert ("structure", "mnema.worker.tasks.run_structure", jid) in calls
+
+
+def test_exclude_from_analysis_not_found_and_confirmed(client):
+    jid, rid, s1, _s2 = _make_two_segment_cluster(client)
+    assert client.post(f"/api/reviews/{rid}/segments/999999/exclude").status_code == 404
+    client.post(f"/api/reviews/{rid}", json={"employee_name": "Petrov P. P."})
+    assert client.post(f"/api/reviews/{rid}/segments/{s1}/exclude").status_code == 409
+
+
+def test_excluded_segments_skip_steno_and_protocol(client):
+    """Isklyuchennyy segment ne popadaet v steno.md i protokol'nyy transkript."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Segment
+    from sqlalchemy import select
+    from mnema.worker import tasks
+    jid, rid, _s1, s2 = _make_two_segment_cluster(client)
+    with get_session() as s:
+        s.get(Segment, s2).text = "чужой"
+        s.commit()
+    client.post(f"/api/reviews/{rid}/segments/{s2}/exclude")
+    p = tasks._job_paths(jid)
+    tasks._write_steno(jid, p)
+    steno = p["steno"].read_text(encoding="utf-8")
+    assert "остался" in steno and "чужой" not in steno
+    with get_session() as s:
+        segs = s.scalars(select(Segment).where(
+            Segment.job_id == jid, Segment.excluded.is_(False)
+        ).order_by(Segment.t_start)).all()
+    lines = tasks._transcript_lines(segs)
+    assert "чужой" not in lines and "остался" in lines
 
 
 def _to_status(client, jid, chain):

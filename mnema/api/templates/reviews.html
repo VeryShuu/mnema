@@ -29,7 +29,9 @@
     <p><audio controls preload="none" src="/api/jobs/{{ r.job_id }}/audio?format=wav#t={{ seg.t_start }},{{ seg.t_end }}"></audio>
     <span class="muted">{{ '%.0f'|format(seg.t_start) }}–{{ '%.0f'|format(seg.t_end) }} с: {{ seg.text[:80] }}</span>
     <button type="button" style="margin-left:.5rem" title="Убрать этот фрагмент из кластера"
-            onclick="removeSegment({{ r.id }}, {{ seg.id }})">Удалить из кластера</button></p>
+            onclick="removeSegment({{ r.id }}, {{ seg.id }})">Удалить из кластера</button>
+    <button type="button" style="margin-left:.3rem" title="Фрагмент с двумя голосами/посторонними звуками — не анализировать"
+            onclick="excludeSegment({{ r.id }}, {{ seg.id }})">Исключить из анализа</button></p>
   {% endfor %}
 </div>
 {% else %}<p class="muted">Нет ожидающих уточнений.</p>{% endfor %}
@@ -50,6 +52,12 @@ async function removeSegment(rid, segId){
   if(!confirm('Убрать этот фрагмент из кластера? Он станет отдельным голосом в очереди уточнений.')) return;
   const r = await fetch('/api/reviews/'+rid+'/segments/'+segId, {method:'DELETE'});
   if(!r.ok){ alert('Не удалось убрать фрагмент: ' + r.status); return; }
+  location.reload();
+}
+async function excludeSegment(rid, segId){
+  if(!confirm('Исключить этот фрагмент из анализа полностью? Он не попадёт в стенограмму и протокол.')) return;
+  const r = await fetch('/api/reviews/'+rid+'/segments/'+segId+'/exclude', {method:'POST'});
+  if(!r.ok){ alert('Не удалось исключить фрагмент: ' + r.status); return; }
   location.reload();
 }
 </script>

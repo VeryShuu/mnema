@@ -413,7 +413,8 @@ def _cluster_embedding(wav: Path, segs: list) -> list[float] | None:
 def _write_steno(job_id: int, p: dict) -> Path:
     with get_session() as s:
         segs = s.scalars(select(Segment).where(
-            Segment.job_id == job_id).order_by(Segment.t_start)).all()
+            Segment.job_id == job_id, Segment.excluded.is_(False)
+        ).order_by(Segment.t_start)).all()
         job = s.get(Job, job_id)
     lines = [f"# Protocol (transkript): {job.topic}", ""]
     for seg in segs:
@@ -486,7 +487,8 @@ def _build_protocol(job_id: int) -> None:
     p = _job_paths(job_id)
     with get_session() as s:
         segs = s.scalars(select(Segment).where(
-            Segment.job_id == job_id).order_by(Segment.t_start)).all()
+            Segment.job_id == job_id, Segment.excluded.is_(False)
+        ).order_by(Segment.t_start)).all()
         job = s.get(Job, job_id)
     transcript = _transcript_lines(segs)
     with get_session() as s:

@@ -110,6 +110,7 @@ class Segment(Base):
     diar_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
     raw_track: Mapped[str | None] = mapped_column(String(64), nullable=True)
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    excluded: Mapped[bool] = mapped_column(Boolean, default=False)
     t_start: Mapped[float] = mapped_column(Float)
     t_end: Mapped[float] = mapped_column(Float)
     text: Mapped[str] = mapped_column(Text, default="")

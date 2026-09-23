@@ -390,6 +390,7 @@ def api_answer_review(rid: int, body: ReviewAnswer):
 def api_exclude_review_segment(rid: int, seg_id: int):
     """Udalit' fragment iz klastera: segment perenositsya v sobstvennyy
     podklaster i poluchaet shtuknyun pending review-request."""
+    from ..core.pipeline import resume_after_reviews
     with get_session() as s:
         r = s.get(ReviewRequest, rid)
         seg = s.get(Segment, seg_id)
@@ -402,14 +403,63 @@ def api_exclude_review_segment(rid: int, seg_id: int):
         seg.speaker_name = None
         seg.speaker_source = "unresolved"
         seg.needs_review = True
+        s.add(SessionEvent(job_id=r.job_id, event="segment_detached",
+                           detail=f"seg {seg.id} -> {new_label}"))
+        left = s.scalars(select(Segment).where(
+            Segment.job_id == r.job_id,
+            Segment.speaker_id == r.cluster_label,
+            Segment.excluded.is_(False))).first()
+        review_closed = False
+        if left is None:
+            r.status = "superseded"
+            r.answered_by = "web"
+            r.answered_ts = dt.datetime.now(dt.timezone.utc)
+            review_closed = True
         dup = s.scalars(select(ReviewRequest).where(
             ReviewRequest.job_id == r.job_id,
             ReviewRequest.cluster_label == new_label,
             ReviewRequest.status == "pending")).first()
         if dup is None:
             s.add(ReviewRequest(job_id=r.job_id, cluster_label=new_label))
+        job_id = r.job_id
         s.commit()
-        return {"ok": True, "cluster_label": new_label}
+    done_now = resume_after_reviews(job_id) if review_closed else False
+    return {"ok": True, "cluster_label": new_label, "review_closed": review_closed,
+            "job_done": done_now}
+
+
+@app.post("/api/reviews/{rid}/segments/{seg_id}/exclude")
+def api_exclude_segment_from_analysis(rid: int, seg_id: int):
+    """Isklyuchit' fragment iz analiza polnost'yu (dva golosa/postoronnaya
+    zvuki): segment otmechaetsya excluded i ne popadaet v steno/protokol.
+    Esli v klastere ne ostalos' neisklyuchennykh fragmentov — review-request
+    zakryvaetsya i analiz vozobnovlyaetsya."""
+    from ..core.pipeline import resume_after_reviews
+    with get_session() as s:
+        r = s.get(ReviewRequest, rid)
+        seg = s.get(Segment, seg_id)
+        if r is None or seg is None or seg.job_id != r.job_id or seg.speaker_id != r.cluster_label:
+            raise HTTPException(404)
+        if r.status != "pending":
+            raise HTTPException(409, "review uzhe otvechen")
+        seg.excluded = True
+        seg.needs_review = False
+        seg.speaker_source = "excluded"
+        s.add(SessionEvent(job_id=r.job_id, event="segment_excluded",
+                           detail=f"seg {seg.id} (klaster {r.cluster_label})"))
+        remaining = s.scalars(select(Segment).where(
+            Segment.job_id == r.job_id,
+            Segment.speaker_id == r.cluster_label,
+            Segment.excluded.is_(False))).first()
+        cluster_closed = remaining is None
+        if cluster_closed:
+            r.status = "excluded"
+            r.answered_by = "web"
+            r.answered_ts = dt.datetime.now(dt.timezone.utc)
+        job_id = r.job_id
+        s.commit()
+    done_now = resume_after_reviews(job_id) if cluster_closed else False
+    return {"ok": True, "cluster_closed": cluster_closed, "job_done": done_now}
 
 
 @app.get("/api/voice-profiles")
@@ -803,7 +853,8 @@ def web_protocol(request: Request, pid: int):
             raise HTTPException(404)
         job = s.get(Job, p.job_id)
         segs = s.scalars(select(Segment).where(
-            Segment.job_id == p.job_id).order_by(Segment.t_start)).all()
+            Segment.job_id == p.job_id, Segment.excluded.is_(False)
+        ).order_by(Segment.t_start)).all()
     md = ""
     if p.md_path and Path(p.md_path).exists():
         md = Path(p.md_path).read_text(encoding="utf-8")
@@ -823,7 +874,8 @@ def web_reviews(request: Request):
         for r in pending:
             seg = s.scalars(select(Segment).where(
                 Segment.job_id == r.job_id,
-                Segment.speaker_id == r.cluster_label).limit(5))
+                Segment.speaker_id == r.cluster_label,
+                Segment.excluded.is_(False)).limit(5))
             refsegs[r.id] = list(seg)
     return templates.TemplateResponse(request, "reviews.html", {
         "request": request, "pending": pending, "profiles": profiles,
