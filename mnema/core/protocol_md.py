@@ -106,3 +106,34 @@ def assemble_protocol(job, data: dict, segments: list, out_dir: Path) -> tuple[s
     except Exception:  # noqa: BLE001 — docx nie kritichen (md glavnyy)
         docx_path = None
     return str(md), docx_path
+
+
+def refresh_protocol(pid: int) -> bool:
+    """Perepishi md/docx protokola po teperishnim dannym BDB (imena govoryashchih,
+    source_ts). Fix: faily generirovalis' odnokratno v `_build_protocol` i ostavalis'
+    s 'Golos SPEAKER_XX' posle utochneniya imen operatorom."""
+    from sqlalchemy import select
+
+    from .db import get_session
+    from .models import Job, Protocol, Segment
+    with get_session() as s:
+        p = s.get(Protocol, pid)
+        if p is None or not p.md_path:
+            return False
+        job = s.get(Job, p.job_id)
+        segs = list(s.scalars(select(Segment).where(
+            Segment.job_id == p.job_id, Segment.excluded.is_(False)
+        ).order_by(Segment.t_start)).all())
+        data = dict(p.json_data or {})
+        md_path = Path(p.md_path)
+        docx_path_str = p.docx_path
+    if job is None:
+        return False
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(render_markdown(job, data, segs), encoding="utf-8")
+    if docx_path_str:
+        try:
+            write_docx(job, data, segs, Path(docx_path_str))
+        except Exception:  # noqa: BLE001 — docx nie kritichen (md glavnyy)
+            pass
+    return True

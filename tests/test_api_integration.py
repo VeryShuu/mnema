@@ -646,3 +646,101 @@ def test_running_detail_page_has_no_rerun_button(client):
     jid = client.post("/api/jobs", json={"meeting_id": "555666778"}).json()["id"]
     r = client.get(f"/jobs/{jid}")
     assert "Перезапустить анализ" not in r.text
+
+
+# ---- protocol detail: source_ts + fresh names in export (FF: markdown fix) --
+
+def _make_done_protocol(client, meeting_id):
+    """Job done + Protocol s zaranee zapisannym md (kak iz _build_protocol):
+    v faile 'Golos SPEAKER_00', v BDB imena utochneny."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Job, Protocol, Segment
+    jid = client.post("/api/jobs", json={"meeting_id": meeting_id,
+                                         "topic": "Soveshchanie"}).json()["id"]
+    _to_status(client, jid, ["launching", "recording", "processing", "done"])
+    with get_session() as s:
+        job = s.get(Job, jid)
+        s.add_all([
+            Segment(job_id=jid, speaker_id="SPEAKER_00", diar_label="SPEAKER_00",
+                    t_start=125.0, t_end=130.0, text="pervaya replika",
+                    speaker_name="Ivanov I. I.", speaker_source="voiceprint"),
+            Segment(job_id=jid, speaker_id="SPEAKER_00", diar_label="SPEAKER_00",
+                    t_start=3725.0, t_end=3730.0, text="vtoraya replika",
+                    speaker_name="Ivanov I. I.", speaker_source="voiceprint"),
+        ])
+        proto = Protocol(job_id=jid, json_data={
+            "topic": "Soveshchanie",
+            "action_items": [{"task": "Sdelat X", "owner": "Ivanov I. I.",
+                              "due": "piatnica", "source_ts": "01:02:05"}],
+        })
+        s.add(proto)
+        s.flush()
+        pid = proto.id
+        md_path = Path(tempfile.mkdtemp()) / "protocol.md"
+        job_dir = str(md_path)
+        proto.md_path = job_dir
+        s.commit()
+    md_path.write_text("# Protocol: Soveshchanie\n\n## Stenogramma\n\n"
+                       "`00:02:05` **Golos SPEAKER_00**: pervaya replika\n",
+                       encoding="utf-8")
+    return jid, pid, md_path
+
+
+def test_protocol_md_download_refreshes_speaker_names(client):
+    _jid, pid, md_path = _make_done_protocol(client, "810810810")
+    r = client.get(f"/api/protocols/{pid}?format=md")
+    assert r.status_code == 200
+    assert "Ivanov I. I." in r.text
+    assert "Golos SPEAKER_00" not in r.text
+    # fail na diske toze perezapisan
+    assert "Ivanov I. I." in md_path.read_text(encoding="utf-8")
+
+
+def test_protocol_md_keeps_source_ts_with_names(client):
+    _jid, pid, _md = _make_done_protocol(client, "820820820")
+    text = client.get(f"/api/protocols/{pid}?format=md").text
+    assert "01:02:05" in text  # Source kolonka sokhranena
+
+
+def test_patch_segments_refreshes_protocol_md(client):
+    from mnema.core.db import get_session
+    from mnema.core.models import Segment
+    jid, pid, md_path = _make_done_protocol(client, "830830830")
+    with get_session() as s:
+        seg = s.scalars(__import__("sqlalchemy").select(Segment).where(
+            Segment.job_id == jid)).first()
+        sid = seg.id
+    r = client.patch(f"/api/protocols/{pid}/segments",
+                     json={"segments": [{"id": sid, "speaker_name": "Petrov P. P."}]})
+    assert r.status_code == 200 and r.json()["updated"] >= 1
+    txt = md_path.read_text(encoding="utf-8")
+    assert "Petrov P. P." in txt
+    assert "Golos SPEAKER_00" not in txt
+
+
+def test_protocol_detail_page_has_source_links_and_playat(client):
+    _jid, pid, _md = _make_done_protocol(client, "840840841")
+    r = client.get(f"/protocols/{pid}")
+    assert r.status_code == 200
+    assert "Источник" in r.text          # kolonka Source v tablice zadach
+    assert "playAt(1,2,5)" in r.text     # ssylka source_ts 01:02:05
+    assert "playAt(0,2,5)" in r.text     # ssylka na segment 125 s
+    assert "playAt(1,2,5)" in r.text and "pervaya replika" in r.text
+
+
+def test_protocol_detail_page_bad_source_ts_not_a_link(client):
+    from mnema.core.db import get_session
+    from mnema.core.models import Protocol
+    _jid, pid, _md = _make_done_protocol(client, "850850850")
+    with get_session() as s:
+        p = s.get(Protocol, pid)
+        data = dict(p.json_data)
+        data["action_items"] = [{"task": "Y", "source_ts": "??"}]
+        p.json_data = data
+        s.commit()
+    r = client.get(f"/protocols/{pid}")
+    assert "??</a>" not in r.text  # ne validnoe vremya — ne ssylka
+
+
+def test_protocol_download_missing_still_404(client):
+    assert client.get("/api/protocols/999999?format=md").status_code == 404

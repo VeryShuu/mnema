@@ -223,6 +223,9 @@ def api_job_leave(jid: int):
 
 @app.get("/api/protocols/{pid}")
 def api_protocol(pid: int, format: str = "md"):
+    from ..core.protocol_md import refresh_protocol
+    if format in ("md", "docx"):
+        refresh_protocol(pid)  # imena mogut utochnitsya posle publikacii
     with get_session() as s:
         p = s.get(Protocol, pid)
         if p is None:
@@ -344,6 +347,9 @@ def api_patch_segments(pid: int, body: SegmentPatch):
                 seg.needs_review = False
                 updated += 1
         s.commit()
+    if updated:
+        from ..core.protocol_md import refresh_protocol
+        refresh_protocol(pid)  # imena v vygruzkah dolzhnybyt' aktual'nymi
     return {"updated": updated}
 
 

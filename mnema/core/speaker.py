@@ -209,4 +209,14 @@ def apply_review_answer(rid: int, employee_id: int | None, employee_name: str | 
                 stats["confirmed"] = stats.get("confirmed", 0) + 1
                 v.match_stats = stats
         s.commit()
-        return name
+    try:
+        from .protocol_md import refresh_protocol
+        from .models import Protocol
+        with get_session() as s:
+            proto = s.scalars(select(Protocol).where(Protocol.job_id == job_id)).first()
+            pid = proto.id if proto else None
+        if pid:
+            refresh_protocol(pid)
+    except Exception:  # noqa: BLE001 — vygruzki nie kritichny dlya otveta review
+        pass
+    return name

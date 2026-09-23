@@ -1,8 +1,16 @@
 {% extends "base.html" %}
 {% from "_macros.html" import badge %}
 {% block content %}
+{% macro tsec(t) %}{{ (t // 3600)|int }}:{{ ((t % 3600) // 60)|int }}:{{ (t % 60)|int }}{% endmacro %}
 <div class="page-head"><h2>Протокол №{{ protocol.id }} — {{ job.topic }}</h2></div>
 <audio id="player" controls src="/api/jobs/{{ job.id }}/audio?format=mp3"></audio>
+<script>
+function playAt(h, m, s) {
+  var p = document.getElementById('player');
+  p.currentTime = h * 3600 + m * 60 + s;
+  p.play();
+}
+</script>
 <div class="card" style="margin-top:1rem">
   <h3>Структурированная часть</h3>
   <div class="table-wrap">
@@ -11,16 +19,22 @@
   <tr><th>Повестка</th><td>{% for a in (protocol.json_data.agenda or []) %}{{ a }}<br>{% endfor %}</td></tr>
   <tr><th>Решения</th><td>{% for d in (protocol.json_data.decisions or []) %}{{ d }}<br>{% endfor %}</td></tr>
   <tr><th>Задачи</th><td>
-    <table><tr><th>Задача</th><th>Ответственный</th><th>Срок</th></tr>
-    {% for ai in (protocol.json_data.action_items or []) %}<tr><td>{{ ai.task }}</td><td>{{ ai.owner or '—' }}</td><td>{{ ai.due or '—' }}</td></tr>{% endfor %}
+    <table><tr><th>Задача</th><th>Ответственный</th><th>Срок</th><th>Источник</th></tr>
+    {% for ai in (protocol.json_data.action_items or []) %}<tr><td>{{ ai.task }}</td><td>{{ ai.owner or '—' }}</td><td>{{ ai.due or '—' }}</td><td>
+      {% set st = ai.source_ts or '' %}
+      {% set parts = st.split(':') %}
+      {% if st and parts|length == 3 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit() %}
+      <a href="#" onclick="playAt({{ parts[0]|int }},{{ parts[1]|int }},{{ parts[2]|int }});return false;">{{ st }}</a>
+      {% else %}{{ st or '—' }}{% endif %}
+    </td></tr>{% endfor %}
     </table></td></tr>
   </table>
   </div>
 </div>
 <div class="card">
-  <h3>Стенограмма <span class="muted" style="font-weight:400">(нажмите на время, чтобы перемотать аудио)</span></h3>
+  <h3>Стенограмма <span class="muted" style="font-weight:400">(нажмите на время, чтобы перемотать и прослушать фрагмент)</span></h3>
   {% for s in segments %}
-  <p><a href="#" onclick="document.getElementById('player').currentTime={{ s.t_start }};return false;">{{ '%02d:%02d:%02d'|format((s.t_start//3600)|int, (s.t_start%3600//60)|int, (s.t_start%60)|int) }}</a>
+  <p><a href="#" onclick="playAt({{ (s.t_start // 3600)|int }},{{ ((s.t_start % 3600) // 60)|int }},{{ (s.t_start % 60)|int }});return false;">{{ '%02d:%02d:%02d'|format((s.t_start//3600)|int, (s.t_start%3600//60)|int, (s.t_start%60)|int) }}</a>
   <b>{{ s.speaker_name or ('Голос ' ~ (s.speaker_id or '?')) }}</b>: {{ s.text }}
   {% if s.needs_review %}{{ badge('needs_review') }}{% endif %}</p>
   {% endfor %}
