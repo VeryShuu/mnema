@@ -386,6 +386,32 @@ def api_answer_review(rid: int, body: ReviewAnswer):
     return {"ok": True, "name": name, "job_done": done_now}
 
 
+@app.delete("/api/reviews/{rid}/segments/{seg_id}")
+def api_exclude_review_segment(rid: int, seg_id: int):
+    """Udalit' fragment iz klastera: segment perenositsya v sobstvennyy
+    podklaster i poluchaet shtuknyun pending review-request."""
+    with get_session() as s:
+        r = s.get(ReviewRequest, rid)
+        seg = s.get(Segment, seg_id)
+        if r is None or seg is None or seg.job_id != r.job_id or seg.speaker_id != r.cluster_label:
+            raise HTTPException(404)
+        if r.status != "pending":
+            raise HTTPException(409, "review uzhe otvechen")
+        new_label = f"{r.cluster_label}-x{seg.id}"
+        seg.speaker_id = new_label
+        seg.speaker_name = None
+        seg.speaker_source = "unresolved"
+        seg.needs_review = True
+        dup = s.scalars(select(ReviewRequest).where(
+            ReviewRequest.job_id == r.job_id,
+            ReviewRequest.cluster_label == new_label,
+            ReviewRequest.status == "pending")).first()
+        if dup is None:
+            s.add(ReviewRequest(job_id=r.job_id, cluster_label=new_label))
+        s.commit()
+        return {"ok": True, "cluster_label": new_label}
+
+
 @app.get("/api/voice-profiles")
 def api_profiles():
     with get_session() as s:

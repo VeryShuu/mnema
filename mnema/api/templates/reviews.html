@@ -27,7 +27,9 @@
   <p><b>Эталонные фрагменты:</b></p>
   {% for seg in refsegs.get(r.id, []) %}
     <p><audio controls preload="none" src="/api/jobs/{{ r.job_id }}/audio?format=wav#t={{ seg.t_start }},{{ seg.t_end }}"></audio>
-    <span class="muted">{{ '%.0f'|format(seg.t_start) }}–{{ '%.0f'|format(seg.t_end) }} с: {{ seg.text[:80] }}</span></p>
+    <span class="muted">{{ '%.0f'|format(seg.t_start) }}–{{ '%.0f'|format(seg.t_end) }} с: {{ seg.text[:80] }}</span>
+    <button type="button" style="margin-left:.5rem" title="Убрать этот фрагмент из кластера"
+            onclick="removeSegment({{ r.id }}, {{ seg.id }})">Удалить из кластера</button></p>
   {% endfor %}
 </div>
 {% else %}<p class="muted">Нет ожидающих уточнений.</p>{% endfor %}
@@ -43,6 +45,12 @@ function createFor(rid){
   const nm = document.getElementById('name_'+rid).value.trim();
   if(!nm){ alert('Укажите ФИО'); return false; }
   answer(rid, null, nm, true); return false;
+}
+async function removeSegment(rid, segId){
+  if(!confirm('Убрать этот фрагмент из кластера? Он станет отдельным голосом в очереди уточнений.')) return;
+  const r = await fetch('/api/reviews/'+rid+'/segments/'+segId, {method:'DELETE'});
+  if(!r.ok){ alert('Не удалось убрать фрагмент: ' + r.status); return; }
+  location.reload();
 }
 </script>
 {% endblock %}

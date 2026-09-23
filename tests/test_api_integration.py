@@ -380,3 +380,99 @@ def test_review_create_new_reuses_profile_with_same_name(client):
     cnt2 = sum(1 for p in client.get("/api/voice-profiles").json()
                if p["employee_name"] == "Дубль Д. Д.")
     assert cnt1 == 1 and cnt2 == 1
+
+
+def _make_two_segment_cluster(client):
+    """Job v awaiting_review + pending review + dva segmenta klastera."""
+    from mnema.core.db import get_session
+    from mnema.core.models import ReviewRequest, Segment
+    jid = client.post("/api/jobs", json={"meeting_id": "710710710"}).json()["id"]
+    for st in ("launching", "recording", "processing", "awaiting_review"):
+        client.post(f"/api/jobs/{jid}/status", json={"status": st})
+    with get_session() as s:
+        r = ReviewRequest(job_id=jid, cluster_label="SPEAKER_00", similarity=0.2)
+        s.add(r)
+        s.commit()
+        rid = r.id
+        seg1 = Segment(job_id=jid, speaker_id="SPEAKER_00", diar_label="SPEAKER_00",
+                       t_start=0.0, t_end=3.0, text="остался", speaker_source="unresolved",
+                       needs_review=True)
+        seg2 = Segment(job_id=jid, speaker_id="SPEAKER_00", diar_label="SPEAKER_00",
+                       t_start=5.0, t_end=8.0, text="чужой", speaker_source="unresolved",
+                       needs_review=True)
+        s.add_all([seg1, seg2])
+        s.commit()
+        return jid, rid, seg1.id, seg2.id
+
+
+def test_exclude_segment_moves_it_to_new_cluster(client):
+    """Удаление фрагмента из кластера: сегмент уходит в отдельный кластер + своя pending заявка."""
+    from mnema.core.db import get_session
+    from sqlalchemy import select
+    from mnema.core.models import Segment, ReviewRequest
+    jid, rid, _s1, s2 = _make_two_segment_cluster(client)
+    r = client.delete(f"/api/reviews/{rid}/segments/{s2}")
+    assert r.status_code == 200
+    new_label = r.json()["cluster_label"]
+    assert new_label.startswith("SPEAKER_00-x")
+    with get_session() as s:
+        seg = s.get(Segment, s2)
+        assert seg.speaker_id == new_label
+        assert seg.needs_review is True and seg.speaker_name is None
+        remaining = s.scalars(select(Segment).where(
+            Segment.job_id == jid, Segment.speaker_id == "SPEAKER_00")).all()
+        assert [x.id for x in remaining] and s2 not in [x.id for x in remaining]
+        nr = s.scalars(select(ReviewRequest).where(
+            ReviewRequest.job_id == jid,
+            ReviewRequest.cluster_label == new_label,
+            ReviewRequest.status == "pending")).first()
+        assert nr is not None
+
+
+def test_exclude_segment_answer_applies_only_to_remaining(client):
+    """После удаления сегмента ответ по review переименоывает только остальные."""
+    from mnema.core.db import get_session
+    from sqlalchemy import select
+    from mnema.core.models import Segment
+    jid, rid, s1, s2 = _make_two_segment_cluster(client)
+    assert client.delete(f"/api/reviews/{rid}/segments/{s2}").status_code == 200
+    r = client.post(f"/api/reviews/{rid}", json={"employee_name": "Иванов И. И."})
+    assert r.status_code == 200
+    with get_session() as s:
+        seg1 = s.get(Segment, s1)
+        seg2 = s.get(Segment, s2)
+        assert seg1.speaker_name == "Иванов И. И." and seg1.needs_review is False
+        assert seg2.speaker_name is None and seg2.needs_review is True
+
+
+def test_exclude_segment_not_found_wrong_job_or_cluster(client):
+    jid, rid, s1, _s2 = _make_two_segment_cluster(client)
+    assert client.delete(f"/api/reviews/{rid}/segments/999999").status_code == 404
+    other = jid + 1000
+    assert client.delete(f"/api/reviews/{other}/segments/{s1}").status_code == 404
+
+
+def test_exclude_segment_confirmed_review_rejected(client):
+    """Нельзя вырвать фрагмент из уже отвеченного review-request."""
+    jid, rid, _s1, s2 = _make_two_segment_cluster(client)
+    client.post(f"/api/reviews/{rid}", json={"employee_name": "Orlov O. O."})
+    assert client.delete(f"/api/reviews/{rid}/segments/{s2}").status_code == 409
+
+
+def test_exclude_segment_twice_creates_one_duplicate_request(client):
+    """Повторное удаление фрагмента из уже выделенного кластера не создаёт second дублей заявок."""
+    from mnema.core.db import get_session
+    from sqlalchemy import func, select
+    from mnema.core.models import ReviewRequest
+    jid, rid, _s1, s2 = _make_two_segment_cluster(client)
+    first = client.delete(f"/api/reviews/{rid}/segments/{s2}").json()["cluster_label"]
+    new = client.get("/api/reviews?status=pending").json()
+    rid2 = next(x["id"] for x in new if x["cluster_label"] == first)
+    r = client.delete(f"/api/reviews/{rid2}/segments/{s2}")
+    assert r.status_code == 200
+    with get_session() as s:
+        cnt = s.scalar(select(func.count()).select_from(ReviewRequest).where(
+            ReviewRequest.job_id == jid,
+            ReviewRequest.cluster_label == first,
+            ReviewRequest.status == "pending"))
+        assert cnt == 1
