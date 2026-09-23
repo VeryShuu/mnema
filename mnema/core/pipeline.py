@@ -23,7 +23,7 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "processing": {"awaiting_llm", "awaiting_review", "done", "failed"},
     "awaiting_llm": {"processing", "done", "failed"},
     "awaiting_review": {"done", "processing", "failed"},
-    "done": set(),
+    "done": {"processing"},
     "failed": {"processing", "uploading"},
     "cancelled": set(),
 }
@@ -164,3 +164,20 @@ def review_requests_resolved(job_id: int) -> bool:
             ReviewRequest.job_id == job_id,
             ReviewRequest.status == "pending")).first()
         return unresolved is None
+
+
+def rerun_llm_analysis(job_id: int) -> bool:
+    """Ruchnoy perezapusk LLM-analiza (knopka v WEB): steno.md s itogovymi
+    imenami spikero + LLM strukturirovanie. Dostupno iz done/awaiting_llm.
+    Vozvraschaet False, esli status ne pozvolyayet perezapusk."""
+    with get_session() as s:
+        job = s.get(Job, job_id)
+        if job is None:
+            raise KeyError(job_id)
+        st = job.status
+    if st not in ("done", "awaiting_llm"):
+        return False
+    transition(job_id, "processing", event="llm_rerun")
+    from .queue import enqueue_job
+    enqueue_job("structure", "mnema.worker.tasks.run_structure", job_id)
+    return True

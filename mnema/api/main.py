@@ -711,6 +711,19 @@ async def web_job_leave(jid: int):
     return JSONResponse(r)
 
 
+@app.post("/jobs/{jid}/rerun-llm")
+def web_job_rerun_llm(jid: int):
+    """Ruchnoy perezapusk LLM-analiza posle utochneniya spikero (knopka v WEB)."""
+    from ..core.pipeline import rerun_llm_analysis
+    try:
+        started = rerun_llm_analysis(jid)
+    except KeyError:
+        raise HTTPException(404)
+    if not started:
+        raise HTTPException(409, "perezapusk dopustim tol'ko dlya done/awaiting_llm")
+    return {"ok": True, "status": "processing"}
+
+
 @app.post("/jobs/import-ics")
 async def web_import_ics(file: UploadFile = File(...)):
     text = (await file.read()).decode("utf-8", errors="replace")

@@ -476,3 +476,63 @@ def test_exclude_segment_twice_creates_one_duplicate_request(client):
             ReviewRequest.cluster_label == first,
             ReviewRequest.status == "pending"))
         assert cnt == 1
+
+
+def _to_status(client, jid, chain):
+    for st in chain:
+        assert client.post(f"/api/jobs/{jid}/status",
+                           json={"status": st}).status_code == 200
+
+
+def test_rerun_llm_from_done_requeues_analysis(client, monkeypatch):
+    """done -> rerun-llm: zhov vozvraschaetsya v processing i stavitsya run_structure."""
+    from mnema.core.db import get_session
+    from mnema.core.models import SessionEvent
+    enq = []
+    monkeypatch.setattr("mnema.core.queue.enqueue_job",
+                        lambda name, func, *a, **kw: enq.append((name, func, a)) or object())
+    jid = client.post("/api/jobs", json={"meeting_id": "111222333"}).json()["id"]
+    _to_status(client, jid, ["launching", "recording", "processing", "done"])
+    r = client.post(f"/jobs/{jid}/rerun-llm")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "status": "processing"}
+    assert enq == [("structure", "mnema.worker.tasks.run_structure", (jid,))]
+    assert client.get(f"/api/jobs/{jid}").json()["status"] == "processing"
+    with get_session() as s:
+        evs = s.scalars(__import__("sqlalchemy").select(SessionEvent)).all()
+        assert any(e.event == "llm_rerun" for e in evs)
+
+
+def test_rerun_llm_from_awaiting_llm(client, monkeypatch):
+    enq = []
+    monkeypatch.setattr("mnema.core.queue.enqueue_job",
+                        lambda name, func, *a, **kw: enq.append((name, func, a)) or object())
+    jid = client.post("/api/jobs", json={"meeting_id": "222333445"}).json()["id"]
+    _to_status(client, jid, ["launching", "recording", "processing", "awaiting_llm"])
+    r = client.post(f"/jobs/{jid}/rerun-llm")
+    assert r.status_code == 200
+    assert enq and enq[0][0] == "structure"
+
+
+def test_rerun_llm_rejected_wrong_status(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "333444555"}).json()["id"]
+    r = client.post(f"/jobs/{jid}/rerun-llm")  # scheduled
+    assert r.status_code == 409
+
+
+def test_rerun_llm_not_found(client):
+    assert client.post("/jobs/999999/rerun-llm").status_code == 404
+
+
+def test_done_detail_page_shows_rerun_button(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "444555666"}).json()["id"]
+    _to_status(client, jid, ["launching", "recording", "processing", "done"])
+    r = client.get(f"/jobs/{jid}")
+    assert "Перезапустить анализ" in r.text
+    assert "rerun-llm" in r.text
+
+
+def test_running_detail_page_has_no_rerun_button(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "555666778"}).json()["id"]
+    r = client.get(f"/jobs/{jid}")
+    assert "Перезапустить анализ" not in r.text

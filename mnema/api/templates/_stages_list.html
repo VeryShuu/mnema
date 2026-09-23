@@ -12,6 +12,10 @@
     <div class="stage-body">
       <div class="stage-title">{{ st.title }}
         <span class="badge stage-{{ st.state }}">{{ state_labels.get(st.state, st.state) }}</span>
+        {%- if st.key == 'llm' and job.status in ('done', 'awaiting_llm') %}
+        <button type="button" class="rerun-llm-btn" onclick="rerunLlm({{ job.id }})">Перезапустить анализ</button>
+        <span class="muted rerun-llm-status"></span>
+        {%- endif %}
       </div>
       <div class="stage-desc">{{ st.description }}
         {%- if st.ts %} · {{ st.ts.strftime('%d.%m.%Y %H:%M:%S') }}{% endif -%}

@@ -61,6 +61,31 @@
 </div>
 {% endblock %}
 {% block scripts %}
+{% if job.status in ('done', 'awaiting_llm') %}
+<script>
+function rerunLlm(jid) {
+  if (!confirm('Перезапустить LLM-анализ с уточнёнными именами спикеров?')) return;
+  document.querySelectorAll('.rerun-llm-btn').forEach((b) => { b.disabled = true; });
+  fetch('/jobs/' + jid + '/rerun-llm', { method: 'POST' })
+    .then(async (r) => {
+      const st = document.querySelector('.rerun-llm-status');
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        if (st) st.textContent = 'Не удалось: ' + (e.detail || r.status);
+        document.querySelectorAll('.rerun-llm-btn').forEach((b) => { b.disabled = false; });
+        return;
+      }
+      if (st) st.textContent = 'Анализ перезапущен…';
+      setTimeout(() => location.reload(), 2000);
+    })
+    .catch((e) => {
+      const st = document.querySelector('.rerun-llm-status');
+      if (st) st.textContent = 'Ошибка: ' + e.message;
+      document.querySelectorAll('.rerun-llm-btn').forEach((b) => { b.disabled = false; });
+    });
+}
+</script>
+{% endif %}
 {% if job.status in ('launching','recording') %}
 <script>
 function leaveMeeting(jid) {
