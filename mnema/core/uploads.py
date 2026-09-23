@@ -104,7 +104,8 @@ def create_upload(*, filename: str, bytes_total: int | None = None,
                 raise ValueError("dlya etoy vstrechi uzhe idyot zagruzka")
         else:
             if meeting_date is not None and meeting_date.tzinfo is None:
-                meeting_date = meeting_date.replace(tzinfo=dt.timezone.utc)
+                from .tz import local_to_utc
+                meeting_date = local_to_utc(meeting_date)
             _check_free_space(bytes_total)
             job = Job(zoom_meeting_id=None, source="upload", topic=topic.strip(),
                       start_at=(meeting_date

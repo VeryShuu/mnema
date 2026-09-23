@@ -1,7 +1,7 @@
 FROM node:20-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg mkvtoolnix xvfb x11vnc novnc websockify \
+    ffmpeg mkvtoolnix tzdata xvfb x11vnc novnc websockify \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

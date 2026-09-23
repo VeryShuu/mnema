@@ -29,10 +29,15 @@ from ..core.scheduler import import_ics, start_default_jobs
 from ..core.secrets_store import get_pwd
 from ..core.zoom_link import link_valid
 from ..core import uploads as uploads_svc
+from ..core.tz import app_tz_label, fmt_local, local_to_utc, local_utc_offset, to_local
 
 app = FastAPI(title="Mnema", version="0.1.0")
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.filters["msk"] = lambda v: fmt_local(v)
+templates.env.filters["msk_sec"] = lambda v: fmt_local(v, "%d.%m.%Y %H:%M:%S")
+templates.env.globals["app_tz_label"] = app_tz_label
+templates.env.globals["local_utc_offset"] = local_utc_offset
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -751,6 +756,7 @@ async def web_job_create(request: Request):
             start_at = dt.datetime.fromisoformat(start_raw)
         except ValueError:
             return RedirectResponse("/jobs?error=date", status_code=303)
+        start_at = local_to_utc(start_at)  # datetime-local = время оператора (МСК)
     job = create_job(meeting_link=link, topic=topic, start_at=start_at, created_by="web")
     return RedirectResponse(f"/jobs/{job.id}", status_code=303)
 

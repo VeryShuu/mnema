@@ -49,6 +49,11 @@ REGISTRY: tuple[Block, ...] = (
         Key("MNEMA_PUBLIC_URL", DEFAULTED, "http://localhost:8000",
             readers="notifier/api", when="ssylki v pishmah (FT-35b)",
             if_empty="http://localhost:8000"),
+        Key("APP_TZ", DEFAULTED, "Europe/Moscow",
+            readers="api/worker/web-bot (UI, uvedomleniya, cron)",
+            when="otobrazenie i vzor daty (FT-22)",
+            if_empty="Europe/Moscow",
+            comment="poyas veb-interfeysa i pisen; hranenie vsegda UTC"),
     )),
     Block("recorder (web-bot chitaet vsyo)", (
         Key("ZOOM_PROFILE_DIR", REQUIRED,

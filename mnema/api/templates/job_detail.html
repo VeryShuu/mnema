@@ -18,9 +18,9 @@
     {% endif %}
     <tr><th>Статус</th><td>{{ badge(job.status) }}</td></tr>
     {% if job.source != 'upload' %}<tr><th>Пароль</th><td>{{ 'задан (скрыт)' if pwd_present else 'не задан' }}</td></tr>{% endif %}
-    <tr><th>Начало</th><td>{{ job.start_at }}</td></tr>
-    <tr><th>Запись начата</th><td>{{ job.started_ts or '—' }}</td></tr>
-    <tr><th>Завершено</th><td>{{ job.ended_ts or '—' }}</td></tr>
+    <tr><th>Начало (МСК)</th><td>{{ job.start_at|msk }}</td></tr>
+    <tr><th>Запись начата (МСК)</th><td>{{ job.started_ts|msk }}</td></tr>
+    <tr><th>Завершено (МСК)</th><td>{{ job.ended_ts|msk }}</td></tr>
     {% if job.fail_reason %}<tr><th>Причина сбоя</th><td>{{ job.fail_reason }}</td></tr>{% endif %}
     {% if job.error %}<tr><th>Ошибка</th><td>{{ job.error }}</td></tr>{% endif %}
     {% if job.note %}<tr><th>Примечание</th><td>{{ job.note }}</td></tr>{% endif %}

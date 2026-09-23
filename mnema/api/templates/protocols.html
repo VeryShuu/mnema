@@ -3,14 +3,14 @@
 <h2>Протоколы</h2>
 <div class="table-wrap">
 <table>
-<tr><th>№</th><th>Встреча</th><th>Тема</th><th>Модель ИИ</th><th>Создан</th><th>Скачать</th></tr>
+<tr><th>№</th><th>Встреча</th><th>Тема</th><th>Модель ИИ</th><th>Создан (МСК)</th><th>Скачать</th></tr>
 {% for p in protocols %}
 <tr>
  <td><a href="/protocols/{{ p.id }}">{{ p.id }}</a></td>
  <td><a href="/jobs/{{ p.job_id }}">{{ p.job_id }}</a></td>
  <td>{{ jobs[p.job_id].topic if p.job_id in jobs else '' }}</td>
  <td>{{ p.llm_model or '—' }}</td>
- <td>{{ p.created_ts }}</td>
+ <td>{{ p.created_ts|msk }}</td>
  <td>
    <a href="/api/protocols/{{ p.id }}?format=md">Markdown</a> ·
    <a href="/api/protocols/{{ p.id }}?format=docx">DOCX</a> ·

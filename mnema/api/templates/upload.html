@@ -5,7 +5,7 @@
   <div id="form">
     {% if upload_job_id is none %}
     <p><label>Тема встречи<br><input id="topic" size="60" placeholder="Например: Планёрка 12.09"></label></p>
-    <p><label>Дата прошедшей встречи<br><input id="meeting_date" type="datetime-local"></label></p>
+    <p><label>Дата прошедшей встречи (МСК)<br><input id="meeting_date" type="datetime-local"></label></p>
     <p><label>Примечание<br><input id="note" size="60" placeholder="необязательно"></label></p>
     {% else %}
     <p class="muted">Продолжение загрузки для встречи #{{ upload_job_id }}. Выберите тот же файл — загрузка продолжится с последней принятой позиции.</p>
@@ -42,7 +42,7 @@ async function initUpload(file) {
   const md = mdObj ? mdObj.value : '';
   const body = {filename: file.name, bytes_total: file.size, topic, note: note || null};
   if (JOB_ID) body.job_id = JOB_ID;
-  if (md) body.meeting_date = new Date(md).toISOString();
+  if (md) body.meeting_date = (md.length === 16 ? md + ':00' : md) + '{{ local_utc_offset() }}';
   const r = await fetch('/api/uploads', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   const j = await r.json();
   if (!r.ok) throw new Error(j.detail || ('HTTP '+r.status));

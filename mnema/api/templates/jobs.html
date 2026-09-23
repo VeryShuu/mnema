@@ -8,7 +8,7 @@
   <form method="post" action="/jobs/create" style="display:flex;gap:.5rem;flex-wrap:wrap" onsubmit="return validateZoomLink(this)">
     <input name="meeting_link" placeholder="Ссылка-приглашение Zoom или номер встречи" size="50" required>
     <input name="topic" placeholder="Тема">
-    <input name="start_at" type="datetime-local" title="Пусто — записать сейчас">
+    <input name="start_at" type="datetime-local" title="Пусто — записать сейчас. Время московское">
     <button type="submit" class="primary">Запланировать</button>
   </form>
   <form method="post" action="/jobs/import-ics" enctype="multipart/form-data" style="margin-top:.7rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
@@ -41,11 +41,11 @@
 </p>
 <div class="table-wrap">
 <table>
-<tr><th>№</th><th>Тема</th><th>Встреча Zoom</th><th>Начало</th><th>Статус</th><th></th></tr>
+<tr><th>№</th><th>Тема</th><th>Встреча Zoom</th><th>Начало (МСК)</th><th>Статус</th><th></th></tr>
 {% for j in jobs %}
 <tr>
  <td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td>
- <td>{{ j.topic }}</td><td>{{ j.zoom_meeting_id or 'архив' }}</td><td>{{ j.start_at }}</td>
+ <td>{{ j.topic }}</td><td>{{ j.zoom_meeting_id or 'архив' }}</td><td>{{ j.start_at|msk }}</td>
  <td>{{ badge(j.status) }}</td>
  <td>{% if j.status in ('scheduled','launching','recording','processing','uploading') %}
     <button hx-post="/jobs/{{ j.id }}/cancel" hx-on="click: location.reload()">Отменить</button>{% endif %}

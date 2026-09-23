@@ -2,7 +2,7 @@
      hx-swap="outerHTML" id="log">
   <div class="table-wrap">
   <table><tr><th>Время</th><th>Событие</th><th>Детали</th></tr>
-  {% for e in events %}<tr><td>{{ e.ts }}</td><td>{{ e.event }}</td><td>{{ e.detail }}</td></tr>{% endfor %}
+  {% for e in events %}<tr><td>{{ e.ts|msk_sec }}</td><td>{{ e.event }}</td><td>{{ e.detail }}</td></tr>{% endfor %}
   </table>
   </div>
 </div>

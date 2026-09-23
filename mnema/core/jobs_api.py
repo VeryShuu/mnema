@@ -24,7 +24,8 @@ def create_job(*, meeting_link: str | None = None, meeting_id: str | None = None
     pwd = pwd or extracted_pwd
     join_link = normalize_join_link(meeting_link) if meeting_link else None
     if start_at is not None and start_at.tzinfo is None:
-        start_at = start_at.replace(tzinfo=dt.timezone.utc)
+        from .tz import local_to_utc
+        start_at = local_to_utc(start_at)  # naivnyj vzor = lokal'noe vremya operatora
     immediate = start_at is None
     if immediate:
         start_at = dt.datetime.now(dt.timezone.utc)

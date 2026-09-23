@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from .db import get_session
 from .models import Notification
+from .tz import app_tz_label, fmt_local
 
 RECOMMENDED_ACTION = {
     "zoom_requires_rtms": "hост vstrechi razreshil vhod iz brauzera (ne 'tol'ko RTMS'); svyazat'sya s adminom host-akkaunta",
@@ -60,7 +61,8 @@ def build_job_failed_body(*, topic: str, meeting_id: str, job_id: int,
                           attempted_at: dt.datetime | None, fail_reason: str,
                           attempts: int, job_url: str) -> str:
     """FT-35b. PWd v pishme NE ukazyvaetsya."""
-    ts = (attempted_at or dt.datetime.now(dt.timezone.utc)).strftime("%Y-%m-%d %H:%M UTC")
+    ts = fmt_local(attempted_at or dt.datetime.now(dt.timezone.utc),
+                   "%Y-%m-%d %H:%M") + " (" + app_tz_label() + ")"
     action = RECOMMENDED_ACTION.get(fail_reason, "smotretet' detali zachi")
     lines = [
         f"Vstrecha: {topic or '(bez teby)'}",

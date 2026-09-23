@@ -252,6 +252,19 @@ def test_web_job_create_invalid_link_redirects_with_error(client):
     assert all(x.get("topic") != "Bad" for x in jobs)
 
 
+def test_web_job_create_start_at_is_moscow_time(client):
+    """datetime-local bez offset = vremya operatora (MSC), ne UTC."""
+    naive = "2026-10-01T16:00"
+    r = client.post("/jobs/create", data={
+        "meeting_link": "https://us05web.zoom.us/j/777777771",
+        "topic": "MskTime", "start_at": naive}, follow_redirects=False)
+    assert r.status_code == 303
+    j = next(x for x in client.get("/api/jobs").json()
+             if x["zoom_meeting_id"] == "777777771")
+    started = dt.datetime.fromisoformat(j["start_at"]).replace(tzinfo=dt.timezone.utc)
+    assert started == dt.datetime(2026, 10, 1, 13, 0, tzinfo=dt.timezone.utc)
+
+
 def test_web_job_create_invalid_link_empty(client):
     r = client.post("/jobs/create", data={"meeting_link": "", "start_now": "1"},
                     follow_redirects=False)

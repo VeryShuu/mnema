@@ -18,7 +18,7 @@
         {%- endif %}
       </div>
       <div class="stage-desc">{{ st.description }}
-        {%- if st.ts %} · {{ st.ts.strftime('%d.%m.%Y %H:%M:%S') }}{% endif -%}
+        {%- if st.ts %} · {{ st.ts|msk_sec }}{% endif -%}
       </div>
       {%- if st.detail %}<div class="stage-detail">{{ st.detail }}</div>{% endif %}
     </div>

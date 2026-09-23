@@ -37,7 +37,8 @@ def parse_ics(text: str) -> list[dict]:
             continue
         start_dt = start.dt
         if start_dt.tzinfo is None:
-            start_dt = start_dt.replace(tzinfo=dt.timezone.utc)
+            from .tz import local_to_utc
+            start_dt = local_to_utc(start_dt)
         end = comp.get("DTEND")
         dur_min = None
         if end is not None:
@@ -75,7 +76,8 @@ def schedule_job_for(job_id: int) -> None:
         run_at = nowts
     else:
         if start_at.tzinfo is None:
-            start_at = start_at.replace(tzinfo=dt.timezone.utc)
+            from .tz import local_to_utc
+            start_at = local_to_utc(start_at)
         run_at = max(start_at - dt.timedelta(seconds=prejoin), nowts)
     jobs_launch.enqueue_launch(job_id, run_at)
 
@@ -86,7 +88,9 @@ _scheduler: BackgroundScheduler | None = None
 def get_scheduler() -> BackgroundScheduler:
     global _scheduler
     if _scheduler is None:
-        _scheduler = BackgroundScheduler(timezone="UTC")
+        from .tz import app_tz
+        # cron (digest 09:00, health 09:00) — po lokal'nomu poyasu, ne po UTC
+        _scheduler = BackgroundScheduler(timezone=app_tz())
     return _scheduler
 
 

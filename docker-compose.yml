@@ -8,6 +8,8 @@ services:
     environment:
       - DATABASE_URL=sqlite:////data/db.sqlite
       - ARCHIVE_DIR=/data/archive
+      - TZ=Europe/Moscow
+      - APP_TZ=Europe/Moscow
     volumes:
       - data:/data
       - ./templates:/app/templates:ro
@@ -28,6 +30,8 @@ services:
     environment:
       - DATABASE_URL=sqlite:////data/db.sqlite
       - ARCHIVE_DIR=/data/archive
+      - TZ=Europe/Moscow
+      - APP_TZ=Europe/Moscow
     volumes:
       - data:/data
       - hf-cache:/root/.cache/huggingface
@@ -44,6 +48,7 @@ services:
       - ZOOM_PROFILE_DIR=/data/zoom-profile
       - DATA_DIR=/data
       - HEADFUL=1   # Chromium pod Xvfb, noVNC dlya vruchnuyu prokhoda reCAPTCHA (§12)
+      - TZ=Europe/Moscow
     volumes:
       - data:/data
       - ./templates:/app/templates:ro
