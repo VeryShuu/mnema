@@ -197,6 +197,9 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
     // freyme vytrasyvaetsya; posleokonchaniya frazy __mnemaArm otkryvaet
     // okno 1 (nastoyashchaya zapis') s tochnoy epohoy rec.start().
     await playAnnouncement(page, cfg, onEvent);
+    // privetstviye sygrano — vyknuchayem mikrofon, chtoby feyk-mikrofona
+    // ne shumel v konferentsii do kontsa zapisi.
+    await muteMicrophone(page, onEvent);
     for (const fr of page.frames()) {
       await fr.evaluate(() => {
         try { if (window.__mnemaArm) window.__mnemaArm(); } catch (e) { /* */ }
@@ -524,6 +527,75 @@ async function waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent, vnc = null)
     }
     await page.waitForTimeout(3000);
   }
+  return false;
+}
+
+// ----------------------------------------------------- wyklyuchenie mikrofonа
+// Knopka mikrofona v toolbare Zoom lezhit v glavenem freyme, no resincy/locales
+// raznyye — opredelyaem sostoyanie po dvum nezavisimym priznakam (aria-label i
+// klass ikonki) i klykaem tol'ko kogda mikrofon VKLUCHEN. Dialoga podtverzhdeniya
+// u etoy knopki net.
+const MIC_UNMUTED_RE = /\bmute\b|stop audio|отключить микрофон|выключить микрофон/;
+
+async function micState(fr) {
+  return fr.evaluate(() => {
+    const sels = ['[data-tid="mute_mic_button"]', '#mute-microphone-button-text',
+      '.mic-button .icon-number-of-active-speakers, .nc-mic-btn',
+      'button[aria-label]'];
+    for (const sel of sels) {
+      for (const el of document.querySelectorAll(sel)) {
+        if (!(el instanceof HTMLElement)) continue;
+        if (!el.offsetParent && !el.getBoundingClientRect().width) continue;
+        const icon = el.querySelector('[class*="microphone"], [class*="audio"]');
+        const cls = `${el.className} ${icon ? icon.className : ""}`.toLowerCase();
+        const label = (el.getAttribute("aria-label") || el.innerText || "").trim().toLowerCase();
+        if (!/microphone|mic|микрофон|audio/.test(`${cls} ${label}`)) continue;
+        // muted po ikonke (microphone-muted/slash) ili po nadpisi, oznachayushchey
+        // "klik — vklyuchim": Unmute / Start audio / Включить микрофон.
+        const muted = /muted|slash|off|disabled/.test(cls)
+          || /unmute|start audio|включить/.test(label);
+        return { found: true, muted, label: label.slice(0, 40) };
+      }
+    }
+    return { found: false, muted: null, label: "" };
+  }).catch(() => ({ found: false, muted: null, label: "" }));
+}
+
+async function muteMicrophone(page, onEvent) {
+  const until = Date.now() + 30000;
+  while (Date.now() < until) {
+    for (const fr of page.frames()) {
+      const st = await micState(fr);
+      if (!st.found) continue;
+      if (st.muted) {
+        onEvent("mute", `mikrofon uže vyklyuchen (${st.label})`);
+        return true;
+      }
+      const btn = fr.locator('[data-tid="mute_mic_button"], #mute-microphone-button-text, .nc-mic-btn').first();
+      if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
+        await btn.click({ timeout: 5000 }).catch(() => {});
+      } else {
+        await fr.evaluate(() => {
+          const els = document.querySelectorAll('[data-tid="mute_mic_button"], #mute-microphone-button-text, .nc-mic-btn, button[aria-label]');
+          for (const el of els) {
+            const label = (el.getAttribute("aria-label") || "").toLowerCase();
+            if (MIC_UNMUTED_RE.test(label)) { el.click(); return true; }
+          }
+          return false;
+        }).catch(() => false);
+      }
+      await page.waitForTimeout(1500);
+      const after = await micState(fr);
+      if (after.found && after.muted) {
+        onEvent("mute", "mikrofon vyklyuchen posle privetstviya");
+        return true;
+      }
+      onEvent("mute", `klik po mikrofonu ne podtverdilsya (${after.label}) — povtor`);
+      break; // probuyem vDrugoy raz, ne klykaem povtorno v etoy pass
+    }
+    await page.waitForTimeout(2000);
+  }
+  onEvent(EVENT.ERROR, "ne udalos' vyklyuchit' mikrofon");
   return false;
 }
 
