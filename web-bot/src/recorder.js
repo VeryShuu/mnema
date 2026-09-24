@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildJoinUrl } from "./config.js";
+import { decideSilence } from "./silence.js";
 import { cleanSingletonLocks, freshProfileCopy, profilesRoot, publicVncPort } from "./vnc_manager.js";
 
 // Fake-audio-device Chrome (fake-device-for-media-stream) generiruet
@@ -112,7 +113,8 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
 
   const state = {
     stopRequested: false, stopReason: null, reloads: 0, joinedAt: null,
-    lastChunksTs: Date.now(), lastNavTs: Date.now(), chunksSaved: 0, vnc,
+    lastChunksTs: Date.now(), lastSoundTs: Date.now(),
+    lastNavTs: Date.now(), chunksSaved: 0, vnc,
   };
   holder.requestStop = (reason) => {
     state.stopRequested = true;
@@ -207,6 +209,7 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
     }
     recording = true;
     state.lastChunksTs = Date.now();
+    state.lastSoundTs = Date.now();
 
     // uzhol konca vstrechi / tihi / hard-limit (FT-4)
     let end;
@@ -609,10 +612,35 @@ function alertOperator(subject, body) {
   }).catch((e) => console.error("alert fail:", e.message));
 }
 
+// Vykhod iz sozwona: Leave -> podtverzhdeniye -> dosbir poslednih chankov.
+// Obshchiy dlya ruchnoy ostanovki i avovyhoda po tişine.
+async function leaveMeetingGracefully(page, state, onEvent) {
+  let leaveClicked = false;
+  try {
+    leaveClicked = await clickAnyFrame(page, /leave meeting|выйти с встречи|оставить встречу|leave|выйти из встречи/i, 8000);
+    onEvent("leaving", leaveClicked ? "nahata knopka Leave" : "knopka Leave nie naydena");
+    if (leaveClicked) {
+      await page.waitForTimeout(2500);
+      // dialog podtverzhdeniya: «Leave meeting» / «Disconnect»
+      await clickAnyFrame(page, /leave meeting|выйти с встречи|disconnect|ottepit'sya/i, 4000);
+    }
+  } catch (e) {
+    onEvent(EVENT.ERROR, `leave: ${e.message}`);
+  }
+  // zhём zatichiyu (recorder dosbiraet ostatnie chanki) do 10 s
+  const quietUntil = Date.now() + 10000;
+  while (Date.now() < quietUntil) {
+    const silenceS = (Date.now() - state.lastChunksTs) / 1000;
+    if (silenceS > 4) break;
+    try { await page.waitForTimeout(1000); } catch { break; }
+  }
+}
+
 // -------------------------------------------------------------- konets zapiši
 async function waitForEnd(page, cfg, state, onEvent) {
   const hardMs = cfg.maxDurationMin * 60 * 1000;
-  let leaveClicked = false;
+  const graceMs = cfg.silenceGraceMin * 60 * 1000;
+  const silenceLimitMs = cfg.silenceEndTimeoutMin * 60 * 1000;
   while (!state.stopRequested) {
     await page.waitForTimeout(10000);
     // prinyuditelny limit
@@ -641,6 +669,25 @@ async function waitForEnd(page, cfg, state, onEvent) {
     } else {
       state.reloads = 0; // strannitsa zhivaya
     }
+    // uroven' zvuka sozwona (RMS dBFS) po vsem freymam: maks. iz dostupnyh;
+    // posle greyysa bez zvuka >= silenceEndTimeoutMin podryad — avovyhod
+    let levelDb = null;
+    for (const fr of page.frames()) {
+      const l = await fr.evaluate(() =>
+        window.__mnemaLevel ? window.__mnemaLevel() : null).catch(() => null);
+      if (l !== null && l !== undefined && (levelDb === null || l > levelDb)) levelDb = l;
+    }
+    const d = decideSilence({
+      nowMs: Date.now(), joinedAtMs: state.joinedAt, lastSoundTsMs: state.lastSoundTs,
+      levelDb, thresholdDb: cfg.silenceLevelDb, graceMs, silenceMs: silenceLimitMs,
+    });
+    state.lastSoundTs = d.lastSoundTs;
+    if (d.leave) {
+      onEvent(EVENT.ENDED,
+        `tişina ${d.silenceMin.toFixed(1)} min podryad (> ${cfg.silenceEndTimeoutMin}) — avovyhod`);
+      await leaveMeetingGracefully(page, state, onEvent);
+      return { reason: "silent_leave" };
+    }
     // tišina: esli chanki ne idut dol'še SILENCE_END_TIMEOUT — proverit str.
     const silenceMin = (Date.now() - state.lastChunksTs) / 60000;
     if (silenceMin > cfg.silenceEndTimeoutMin) {
@@ -656,24 +703,7 @@ async function waitForEnd(page, cfg, state, onEvent) {
   // Ruchnaya ostanovka: graceful-wyhod iz sozwona (Leave -> подтверждение),
   // dam vremya na poslednie chanki, posle chego finalize soberaet zapis'.
   if (state.stopReason === "manual_leave") {
-    try {
-      leaveClicked = await clickAnyFrame(page, /leave meeting|выйти с встречи|оставить встречу|leave|выйти из встречи/i, 8000);
-      onEvent("leaving", leaveClicked ? "nahata knopka Leave" : "knopka Leave nie naydena");
-      if (leaveClicked) {
-        await page.waitForTimeout(2500);
-        // dialog podtverzhdeniya: «Leave meeting» / «Disconnect»
-        await clickAnyFrame(page, /leave meeting|выйти с встречи|disconnect|ottepit'sya/i, 4000);
-      }
-    } catch (e) {
-      onEvent(EVENT.ERROR, `leave: ${e.message}`);
-    }
-    // zhём zatichiyu (recorder dosbiraet ostatnie chanki) do 10 s
-    const quietUntil = Date.now() + 10000;
-    while (Date.now() < quietUntil) {
-      const silenceS = (Date.now() - state.lastChunksTs) / 1000;
-      if (silenceS > 4) break;
-      try { await page.waitForTimeout(1000); } catch { break; }
-    }
+    await leaveMeetingGracefully(page, state, onEvent);
     onEvent(EVENT.ENDED, "ruchnoe zavershenie: vyhod iz sozwona");
     return { reason: "manual_leave" };
   }
@@ -848,6 +878,10 @@ const INIT_SCRIPT = `
   window.__mnemaTracks = 0;
   const OrigPC = window.RTCPeerConnection;
   let ctx = null, dest = null, rec = null;
+  // Analizer na vyhode miksha vsekh udalennyh dorozhek: urov' zvuka sozwona
+  // (RMS dBFS) dlya detektora tishiny. Obyavleniye mimo dest (_mnemaLocal) —
+  // v uroven nie popadayet.
+  let analyser = null, anaBuf = null;
   // Okonnyy rekord: okno 0 — pre-arm (privetstviye), po komande __mnemaArm —
   // okno 1, koteroye i yest' nastoyashchaya zapis'. Epoha okna — Date.now v
   // moment REAL'nogo rec.start() pri UZHE RUNNING AudioContext (ranshe epoha
@@ -898,6 +932,12 @@ const INIT_SCRIPT = `
     if (ctx) return;
     ctx = new AudioContext();
     dest = ctx.createMediaStreamDestination();
+    try {
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      anaBuf = new Float32Array(analyser.fftSize);
+      dest.connect(analyser);
+    } catch (e) { analyser = null; }
     if (window.__mnemaGlobalArm) startWin(); // payplayn sozdan posle arma (migraciya trekov)
   }
 
@@ -1002,6 +1042,20 @@ const INIT_SCRIPT = `
     return { tracks: window.__mnemaTracks, bytes: window.__mnemaTotal,
              recording: rec && rec.state === 'recording',
              micMixer: !!micMixerDest, win, startMs: winEpochs[win] || 0 };
+  };
+
+  // Uroven zvuka sozwona na mikshe udalennyh dorozhek: RMS v dBFS
+  // (-120..0). Net payplayna/analyzera — null (nie путать с tişinoy).
+  window.__mnemaLevel = function () {
+    if (!analyser || !ctx || ctx.state !== 'running') return null;
+    try {
+      analyser.getFloatTimeDomainData(anaBuf);
+      let sum = 0;
+      for (let i = 0; i < anaBuf.length; i++) sum += anaBuf[i] * anaBuf[i];
+      const rms = Math.sqrt(sum / anaBuf.length);
+      if (rms <= 0) return -120;
+      return Math.max(-120, 20 * Math.log10(rms));
+    } catch (e) { return null; }
   };
 
   // FT-10: odin raz vlit' wav v kanal mikrofona (micMixerDest -> Zoom ->

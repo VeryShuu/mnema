@@ -10,6 +10,11 @@ export function loadConfig() {
     prejoinSeconds: int(process.env.BOT_PREJOIN_SECONDS, 120),
     joinDeadlineMin: int(process.env.JOIN_DEADLINE_MIN, 10),
     silenceEndTimeoutMin: int(process.env.SILENCE_END_TIMEOUT_MIN, 5),
+    // avoviyod: posle vklyucheniya zapisi zhdyom greyys-min, daleyshiy
+    // uroven' zvuka nizhe poroga (dBFS) >= silenceEndTimeoutMin podryad -> Leave
+    silenceGraceMin: int(process.env.SILENCE_GRACE_MIN, 30),
+    silenceLevelDb: parseFloat(process.env.SILENCE_LEVEL_DB) <= 0
+      ? parseFloat(process.env.SILENCE_LEVEL_DB) : -50,
     maxDurationMin: int(process.env.BOT_MAX_DURATION_MIN, 360),
     pageReloadRetries: int(process.env.PAGE_RELOAD_RETRIES, 2),
     announceWav: process.env.ANNOUNCE_WAV || "templates/announce.wav",
