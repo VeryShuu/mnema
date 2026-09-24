@@ -8,6 +8,10 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildJoinUrl } from "./config.js";
 import { decideSilence } from "./silence.js";
+import {
+  END_CONTROL_SRC, LEAVE_SRCS, LEAVE_DIALOG_SRCS,
+  MIC_CANDIDATE_SRC, MIC_MUTED_SRC, MIC_ACTIVE_SRC, MIC_MUTED_ICON_SRC,
+} from "./zoom_labels.js";
 import { cleanSingletonLocks, freshProfileCopy, profilesRoot, publicVncPort } from "./vnc_manager.js";
 
 // Fake-audio-device Chrome (fake-device-for-media-stream) generiruet
@@ -378,16 +382,17 @@ export async function classifyPage(page) {
                  botWall: false, signRequired: false, waitingRoom: false, ended: false,
                  captcha: false };
     for (const fr of frames) {
-      const loc = await fr.evaluate(() => {
+      const loc = await fr.evaluate(({ endRe, micJoinSel }) => {
         const txt = document.body ? document.body.innerText : "";
         const has = (s) => txt.toLowerCase().includes(s.toLowerCase());
         const btns = [...document.querySelectorAll("button, a")].map(
           (b) => (b.innerText || b.getAttribute("aria-label") || "").trim().toLowerCase());
         return {
-          leaveBtn: btns.some(t => /leave|выйти из встречи/.test(t)),
+          // Leave (obychnaya vstrecha) ili End (personal'naya komnata, PMN):
+          leaveBtn: btns.some(t => new RegExp(endRe, "i").test(t)),
           joinBrowser: btns.some(t => /join from browser|войти из браузера/.test(t)),
           join: btns.some(t => t === "join" || t === "присоединиться"),
-          micJoin: !!document.querySelector("#join_with_audio_link, #mic-button"),
+          micJoin: !!document.querySelector(micJoinSel),
           botWall: has("automated bots aren't allowed") || has("must use a zoom app") ||
                    has("join requires sign in") || has("rtms"),
           signRequired: has("sign in to continue to zoom"),
@@ -398,7 +403,8 @@ export async function classifyPage(page) {
                    || document.querySelector("iframe[src*='recaptcha'], .grecaptcha-badge") !== null
                    || has("protected by recaptcha"),
         };
-      }).catch(() => null);
+      }, { endRe: END_CONTROL_SRC, micJoinSel: "#join_with_audio_link, #mic-button" })
+        .catch(() => null);
       if (!loc) continue;
       for (const k of Object.keys(info)) info[k] = info[k] || loc[k];
     }
@@ -416,16 +422,18 @@ export async function classifyPage(page) {
 }
 
 // Knopku/pole iskhem vo VSEH freymah (vebl-klientZoom rizmesya po IFRAMEam).
+// Src — stroke-regex (peredayetsya v getByRole v kacestve name re).
 async function clickAnyFrame(page, nameRe, waitMs = 3000) {
+  const re = nameRe instanceof RegExp ? nameRe : new RegExp(nameRe, "i");
   const until = Date.now() + waitMs;
   while (Date.now() < until) {
     for (const fr of page.frames()) {
-      const btn = fr.getByRole("button", { name: nameRe }).first();
+      const btn = fr.getByRole("button", { name: re }).first();
       if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
         await btn.click({ timeout: 5000 }).catch(() => {});
         return true;
       }
-      const link = fr.locator("a,div[role=button]").filter({ hasText: nameRe }).first();
+      const link = fr.locator("a,div[role=button]").filter({ hasText: re }).first();
       if (await link.isVisible({ timeout: 300 }).catch(() => false)) {
         await link.click({ timeout: 5000 }).catch(() => {});
         return true;
@@ -535,38 +543,85 @@ async function waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent, vnc = null)
 
 // ----------------------------------------------------- wyklyuchenie mikrofonа
 // Knopka mikrofona v toolbare Zoom lezhit v glavenem freyme, no resincy/locales
-// raznyye — opredelyaem sostoyanie po dvum nezavisimym priznakam (aria-label i
-// klass ikonki) i klykaem tol'ko kogda mikrofon VKLUCHEN. Dialoga podtverzhdeniya
-// u etoy knopki net.
-const MIC_UNMUTED_RE = /\bmute\b|stop audio|отключить микрофон|выключить микрофон/;
-
+// raznyye. V personal'noy komnate (PMN) eto <a role="button"> s aria-label
+// "Mute my microphone" — ego ne lovil ni selector `nc-mic-btn`, ni obhod
+// po `button[aria-label]` (vstrecha 39: 8x "klik ne podtverdirsya").
+// Opredelyaem sostoyanie po dvum nezavisimym priznakam (aria-label i klass
+// ikonki), klykaem IMENNO naydennyy element (marka data-mnema-mic + dispatch
+// polnogo tsykla pointer-/mouse-sobytiy), bez toroga po chuzhim elementam.
 async function micState(fr) {
-  return fr.evaluate(() => {
+  const r = await fr.evaluate(({ candRe, mutedRe, activeRe, iconRe }) => {
+    const micRe = new RegExp(candRe, "i");
+    const mutedLblRe = new RegExp(mutedRe, "i");
+    const activeLblRe = new RegExp(activeRe, "i");
+    const mutedIconRe = new RegExp(iconRe, "i");
     const sels = ['[data-tid="mute_mic_button"]', '#mute-microphone-button-text',
-      '.mic-button .icon-number-of-active-speakers, .nc-mic-btn',
-      'button[aria-label]'];
+      '.nc-mic-btn', "button[aria-label], a[aria-label], [role=button][aria-label]"];
     for (const sel of sels) {
       for (const el of document.querySelectorAll(sel)) {
         if (!(el instanceof HTMLElement)) continue;
         if (!el.offsetParent && !el.getBoundingClientRect().width) continue;
         const icon = el.querySelector('[class*="microphone"], [class*="audio"]');
         const cls = `${el.className} ${icon ? icon.className : ""}`.toLowerCase();
-        const label = (el.getAttribute("aria-label") || el.innerText || "").trim().toLowerCase();
-        if (!/microphone|mic|микрофон|audio/.test(`${cls} ${label}`)) continue;
-        // muted po ikonke (microphone-muted/slash) ili po nadpisi, oznachayushchey
-        // "klik — vklyuchim": Unmute / Start audio / Включить микрофон.
-        const muted = /muted|slash|off|disabled/.test(cls)
-          || /unmute|start audio|включить/.test(label);
+        const label = (el.getAttribute("aria-label")
+          || el.getAttribute("title") || el.innerText || "").trim().toLowerCase();
+        if (!micRe.test(`${cls} ${label}`)) continue;
+        const iconMuted = mutedIconRe.test(cls);
+        const labelMuted = mutedLblRe.test(label);
+        const labelActive = activeLblRe.test(label);
+        const muted = labelMuted && !labelActive ? true
+          : labelActive && !labelMuted ? false
+          : iconMuted;
+        el.setAttribute("data-mnema-mic", "1");
         return { found: true, muted, label: label.slice(0, 40) };
       }
     }
     return { found: false, muted: null, label: "" };
+  }, {
+    candRe: MIC_CANDIDATE_SRC, mutedRe: MIC_MUTED_SRC,
+    activeRe: MIC_ACTIVE_SRC, iconRe: MIC_MUTED_ICON_SRC,
   }).catch(() => ({ found: false, muted: null, label: "" }));
+  return r;
+}
+
+//dispatch polnogo tsykla na element:Zoom-spa reagiruet na pointerdown/up,
+// prostoy .click()/el.click() po <a role=button> inogda ignoring.
+async function clickMarkedElement(fr, attr) {
+  const handle = await fr.$(`[${attr}]`).catch(() => null);
+  if (!handle) return false;
+  let ok = false;
+  try {
+    await handle.click({ timeout: 4000 });
+    ok = true;
+  } catch { /* ne stablyno/prehrysto — niskiy uroven' */ }
+  if (!ok) {
+    ok = await fr.evaluate((a) => {
+      const el = document.querySelector(`[${a}]`);
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      const opts = { bubbles: true, cancelable: true, view: window,
+        clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0 };
+      for (const type of ["pointerover", "pointerenter", "pointerdown", "pointerup",
+                          "pointerout", "mouseover", "mousedown", "mouseup", "click"]) {
+        const ev = type.startsWith("pointer")
+          ? new PointerEvent(type, { ...opts, pointerId: 1, isPrimary: true })
+          : new MouseEvent(type, opts);
+        el.dispatchEvent(ev);
+      }
+      return true;
+    }, attr).catch(() => false);
+  }
+  await fr.evaluate((a) => {
+    const el = document.querySelector(`[${a}]`);
+    if (el) el.removeAttribute(a);
+  }, attr).catch(() => {});
+  return ok;
 }
 
 async function muteMicrophone(page, onEvent) {
   const until = Date.now() + 30000;
   while (Date.now() < until) {
+    let tried = false;
     for (const fr of page.frames()) {
       const st = await micState(fr);
       if (!st.found) continue;
@@ -574,29 +629,19 @@ async function muteMicrophone(page, onEvent) {
         onEvent("mute", `mikrofon uže vyklyuchen (${st.label})`);
         return true;
       }
-      const btn = fr.locator('[data-tid="mute_mic_button"], #mute-microphone-button-text, .nc-mic-btn').first();
-      if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
-        await btn.click({ timeout: 5000 }).catch(() => {});
-      } else {
-        await fr.evaluate(() => {
-          const els = document.querySelectorAll('[data-tid="mute_mic_button"], #mute-microphone-button-text, .nc-mic-btn, button[aria-label]');
-          for (const el of els) {
-            const label = (el.getAttribute("aria-label") || "").toLowerCase();
-            if (MIC_UNMUTED_RE.test(label)) { el.click(); return true; }
-          }
-          return false;
-        }).catch(() => false);
-      }
+      const clicked = await clickMarkedElement(fr, "data-mnema-mic");
+      tried = true;
       await page.waitForTimeout(1500);
       const after = await micState(fr);
       if (after.found && after.muted) {
         onEvent("mute", "mikrofon vyklyuchen posle privetstviya");
         return true;
       }
-      onEvent("mute", `klik po mikrofonu ne podtverdilsya (${after.label}) — povtor`);
+      onEvent("mute", `klik po mikrofonu ne podtverdilsya (${after.label})` +
+        `${clicked ? "" : " — element ne kliknutsya"} — povtor`);
       break; // probuyem vDrugoy raz, ne klykaem povtorno v etoy pass
     }
-    await page.waitForTimeout(2000);
+    if (!tried) await page.waitForTimeout(2000);
   }
   onEvent(EVENT.ERROR, "ne udalos' vyklyuchit' mikrofon");
   return false;
@@ -612,17 +657,26 @@ function alertOperator(subject, body) {
   }).catch((e) => console.error("alert fail:", e.message));
 }
 
-// Vykhod iz sozwona: Leave -> podtverzhdeniye -> dosbir poslednih chankov.
-// Obshchiy dlya ruchnoy ostanovki i avovyhoda po tişine.
+// Vykhod iz sozwona: Leave/End -> podtverzhdeniye -> dosbir poslednih chankov.
+// Obshchiy dlya ruchnoy ostanovki i avovyhoda po tişine. V personal'noy
+// komnate (PMN) knopka zovetsya "End", a ne "Leave" (vstrecha 39), no
+// uryvayetsya s "recommend"/"send" — pattern' s golyem "end" s granitsami.
+async function clickFirstFrame(page, srcs, waitMs = 4000) {
+  for (const src of srcs) {
+    if (await clickAnyFrame(page, new RegExp(src, "i"), waitMs)) return true;
+  }
+  return false;
+}
+
 async function leaveMeetingGracefully(page, state, onEvent) {
   let leaveClicked = false;
   try {
-    leaveClicked = await clickAnyFrame(page, /leave meeting|выйти с встречи|оставить встречу|leave|выйти из встречи/i, 8000);
-    onEvent("leaving", leaveClicked ? "nahata knopka Leave" : "knopka Leave nie naydena");
+    leaveClicked = await clickFirstFrame(page, LEAVE_SRCS, 2500);
+    onEvent("leaving", leaveClicked ? "nahata knopka Leave/End" : "knopka Leave/End nie naydena");
     if (leaveClicked) {
       await page.waitForTimeout(2500);
-      // dialog podtverzhdeniya: «Leave meeting» / «Disconnect»
-      await clickAnyFrame(page, /leave meeting|выйти с встречи|disconnect|ottepit'sya/i, 4000);
+      // dialog podtverzhdeniya: «Leave meeting» / «End meeting for all» / «Disconnect»
+      await clickFirstFrame(page, LEAVE_DIALOG_SRCS, 4000);
     }
   } catch (e) {
     onEvent(EVENT.ERROR, `leave: ${e.message}`);
