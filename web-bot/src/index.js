@@ -1,8 +1,13 @@
 // Mnema web-bot: zapuskaet Zapisi vstrech Zoom cherez vebl-klient (FT-1..10, 41).
 // Chitaet zadachi iz redis (mnema:launch), piyet statusy/sobytiya obratno v API.
+// VNC-sessiya (kontsept "nastroyka + ekrany vstrech") — v vnc_manager.js.
 import { createClient } from "redis";
 import { launchAndRecord, healthCheckSession } from "./recorder.js";
 import { loadConfig } from "./config.js";
+import {
+  VNC_QUEUE, setVncDeps, handleVncCommand, ensureSetup, startHeartbeat,
+  startupCleanup, ensureJobVnc, releaseJobVnc,
+} from "./vnc_manager.js";
 
 const cfg = loadConfig();
 
@@ -10,10 +15,19 @@ async function main() {
   console.log("[web-bot] start, poll", JSON.stringify({
     prejoin: cfg.prejoinSeconds, joinDeadlineMin: cfg.joinDeadlineMin,
     maxDurationMin: cfg.maxDurationMin, announce: cfg.announceWav,
+    vncMaxSlots: cfg.vncMaxSlots,
   }));
   const redis = createClient({ url: cfg.redisUrl });
   redis.on("error", (e) => console.error("[redis]", e.message));
   await redis.connect();
+  setVncDeps(redis, cfg);
+  await startupCleanup();
+  try {
+    await ensureSetup();
+  } catch (e) {
+    console.error("[vnc] ne udalos' podnyat' setup-sessiyu:", e.message);
+  }
+  startHeartbeat();
 
   let processing = new Set();
 
@@ -33,6 +47,11 @@ async function main() {
         const s = JSON.parse(stop);
         console.log("[web-bot] stop requested for", s.job_id, s.reason || "");
         recorders.get(s.job_id)?.requestStop(s.reason);
+      }
+      const vncCmd = await redis.rPop(VNC_QUEUE);
+      if (vncCmd) {
+        handleVncCommand(JSON.parse(vncCmd)).catch((e) =>
+          console.error("[vnc] komanda:", e.message));
       }
       const hc = await redis.rPop("mnema:session_healthcheck");
       if (hc) {
@@ -59,7 +78,13 @@ async function runTask(task, redis) {
       postEvent(job_id, ev, detail).catch(() => {});
       if (ev === "joined") postStatus(job_id, "recording").catch(() => {});
     };
-    const run = await launchAndRecord(job_id, cfg, recordersHolder, onEvent);
+    const vnc = await ensureJobVnc(job_id);
+    let run;
+    try {
+      run = await launchAndRecord(job_id, cfg, recordersHolder, onEvent, vnc);
+    } finally {
+      await releaseJobVnc(job_id);
+    }
     if (run.ok) {
       await postFinished(job_id, run);
     } else if (run.fail_reason === "cancelled") {

@@ -36,6 +36,26 @@
   </p>
   {% endif %}
 </div>
+{% if job.source != 'upload' and (job.status in ('scheduled','launching','recording') or vnc_session) %}
+<div class="card" id="vnc">
+  <h3>Экран встречи (VNC)</h3>
+  {% if vnc_session and vnc_session.status in ('ready','running') %}
+    <p>
+      <span class="badge done">Доступен</span>
+      <a href="{{ vnc_session.url }}" target="_blank" rel="noopener"
+         title="Индивидуальный экран этой встречи: введите капчу / пройдите проверку вручную">Открыть экран встречи</a>
+      <span class="muted">слот {{ vnc_session.slot }}, {{ vnc_session.display }}</span>
+    </p>
+  {% elif job.status in ('scheduled','launching','recording') %}
+    <p>
+      <button type="button" id="vnc-btn" onclick="openJobVnc({{ job.id }})">Создать/открыть экран встречи</button>
+      <span id="vnc-status" class="muted">Понадобится, если придётся ввести капчу или подтвердить вход вручную.</span>
+    </p>
+  {% else %}
+    <p class="muted">Экран встречи больше не активен.</p>
+  {% endif %}
+</div>
+{% endif %}
 <div class="card">
   <h3>Аудиозаписи</h3>
   {% for a in audio %}
@@ -61,6 +81,35 @@
 </div>
 {% endblock %}
 {% block scripts %}
+<script>
+function openJobVnc(jid) {
+  const btn = document.getElementById('vnc-btn');
+  const st = document.getElementById('vnc-status');
+  if (btn) btn.disabled = true;
+  if (st) st.textContent = 'Запрашиваю экран…';
+  fetch('/jobs/' + jid + '/vnc', { method: 'POST' })
+    .then(async function (r) {
+      const d = await r.json().catch(function () { return {}; });
+      if (!r.ok) {
+        if (btn) btn.disabled = false;
+        if (st) st.textContent = 'Не удалось: ' + (d.detail || r.status);
+        return;
+      }
+      if (d.session && d.url) {
+        window.open(d.url, '_blank');
+        if (st) st.textContent = 'Экран открыт';
+        setTimeout(function () { location.reload(); }, 2000);
+      } else {
+        if (st) st.textContent = 'Экран создаётся — повторите через 3 с';
+        if (btn) btn.disabled = false;
+      }
+    })
+    .catch(function (e) {
+      if (btn) btn.disabled = false;
+      if (st) st.textContent = 'Ошибка: ' + e.message;
+    });
+}
+</script>
 {% if job.status in ('done', 'awaiting_llm') %}
 <script>
 function rerunLlm(jid) {

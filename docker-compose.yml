@@ -53,7 +53,12 @@ services:
       - data:/data
       - ./templates:/app/templates:ro
     ports:
-      - "8080:6080"   # noVNC: vruchnuyu perelogin i prokhod reCAPTCHA (§12)
+      # noVNC: 8080 = ekran nastroyki (setup), 8080+slot = ekrany vstrech;
+      # vnutrennie 6080+slot (VNC_MAX_SLOTS po umolch. 20 -> diapazon 8080-8100).
+      # §HT: ekrany bez autentifikatsii API — pri nedoverennoy seti uzhite
+      # VNC_PUBLISH_BIND=127.0.0.1: (togda dostup cherno reverse-proxy/ssh-tunnel)
+      # i/ili VNC_PASSWORD dlya samogo VNC-protokola.
+      - "${VNC_PUBLISH_BIND:-}8080-8100:6080-6100"
     depends_on:
       - redis
     restart: unless-stopped

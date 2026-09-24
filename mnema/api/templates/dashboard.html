@@ -19,8 +19,22 @@
         <span class="badge {{ 'done' if zoom_health.ok else 'failed' }}">{{ 'В порядке' if zoom_health.ok else 'Проблема' }}</span>
         {% if not zoom_health.ok and zoom_health.detail %}<span class="muted">{{ zoom_health.detail }}</span>{% endif %}
         <span class="muted"> · проверено {{ zoom_health.checked_ts|msk }}</span>
-      {% else %}<span class="muted">проверка ещё не выполнялась</span>{% endif %}
-      <a href="http://{{ request.url.hostname }}:8080/vnc.html" target="_blank" title="Открыть браузер бота (для ручного входа в Zoom и прохождения reCAPTCHA)">Подключиться через noVNC</a></td></tr>
+      {% else %}<span class="muted">проверка ещё не выполнялась</span>{% endif %}</td></tr>
+    <tr><th>VNC: экран настройки</th><td>
+      {% if vnc_setup and vnc_setup.status in ('ready','running') %}
+        <span class="badge done">Активна</span>
+        <a href="{{ vnc_setup.url }}" target="_blank" rel="noopener"
+           title="Живой браузер с Zoom: войдите в аккаунт — печенье и отпечатки сохранятся в базовый профиль">Открыть экран настройки</a>
+        <button type="button" id="setup-restart" onclick="restartSetupVnc()">Пересоздать</button>
+      {% else %}
+        {% if vnc_setup and vnc_setup.status == 'failed' %}
+          <span class="badge failed">Сбой</span>
+          {% if vnc_setup.error %}<span class="muted">{{ vnc_setup.error }}</span>{% endif %}
+        {% else %}<span class="muted">не создана</span>{% endif %}
+        <button type="button" class="primary" id="setup-create" onclick="createSetupVnc()">Создать VNC-сессию настройки</button>
+      {% endif %}
+      <span id="setup-vnc-status" class="muted"></span>
+      <div class="muted">В открывшемся браузере выполните вход в Zoom — профиль будет использован всеми записями.</div></td></tr>
     <tr><th>Очередь задач</th><td>
       <span class="badge {{ 'done' if queue_ok else 'failed' }}">{{ 'Доступна' if queue_ok else 'Недоступна' }}</span></td></tr>
   </table>
@@ -30,12 +44,18 @@
   <h3>Активные записи</h3>
   <div class="table-wrap">
   <table>
-    <tr><th>№</th><th>Тема</th><th>Встреча Zoom</th><th>Начало (МСК)</th><th>Статус</th></tr>
+    <tr><th>№</th><th>Тема</th><th>Встреча Zoom</th><th>Начало (МСК)</th><th>Статус</th><th>VNC</th></tr>
     {% for j in active %}<tr>
       <td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td>
       <td>{{ j.topic }}</td><td>{{ j.zoom_meeting_id }}</td><td>{{ j.start_at|msk }}</td>
-      <td>{{ badge(j.status) }}</td></tr>
-    {% else %}<tr><td colspan="5" class="muted">Нет активных записей</td></tr>{% endfor %}
+      <td>{{ badge(j.status) }}</td>
+      <td>{% set vs = vnc_jobs.get(j.id) %}
+        {% if vs and vs.url %}<a href="{{ vs.url }}" target="_blank" rel="noopener"
+          title="Индивидуальный экран встречи (ввод капчи и т.п.)">экран</a>
+        {% elif j.status in ('launching','recording') %}
+          <a href="/jobs/{{ j.id }}#vnc" title="Открыть/создать индивидуальный экран встречи">создать</a>
+        {% else %}<span class="muted">—</span>{% endif %}</td></tr>
+    {% else %}<tr><td colspan="6" class="muted">Нет активных записей</td></tr>{% endfor %}
   </table>
   </div>
 </div>
@@ -55,4 +75,39 @@
   <h3>Задачи по статусам</h3>
   <p>{% for k,v in job_status_counts.items() %}{{ badge(k) }} <b>{{ v }}</b>&nbsp; {% else %}<span class="muted">Задач нет</span>{% endfor %}</p>
 </div>
+{% endblock %}
+{% block scripts %}
+<script>
+function openVncUrl(data) {
+  const st = document.getElementById('setup-vnc-status');
+  if (data && data.url) {           // zhivaya sessiya — srazu otkryvaem
+    window.open(data.url, '_blank');
+    setTimeout(function () { location.reload(); }, 2000);
+  } else if (data && data.queued) { // sozdano, no eshchyo nie zhivaya
+    if (st) st.textContent = 'Ekran sozdayetsya… otkroyte povtornuyu cherez 3 s';
+    setTimeout(function () { location.reload(); }, 3000);
+  } else if (st) {
+    st.textContent = 'Menedzher VNC niedostupen (web-bot/redis nie otvechayut)';
+  }
+}
+function postVnc(path, btnId, stId) {
+  const btn = document.getElementById(btnId);
+  const st = document.getElementById(stId);
+  if (btn) btn.disabled = true;
+  if (st) st.textContent = '…';
+  fetch(path, { method: 'POST' })
+    .then(async function (r) {
+      const d = await r.json().catch(function () { return {}; });
+      if (btn) btn.disabled = !r.ok;
+      if (!r.ok) { if (st) st.textContent = 'Не удалось: ' + (d.detail || r.status); return; }
+      openVncUrl(d);
+    })
+    .catch(function (e) {
+      if (btn) btn.disabled = false;
+      if (st) st.textContent = 'Ошибка: ' + e.message;
+    });
+}
+function createSetupVnc() { postVnc('/api/vnc/setup/open', 'setup-create', 'setup-vnc-status'); }
+function restartSetupVnc() { postVnc('/api/vnc/setup/restart', 'setup-restart', 'setup-vnc-status'); }
+</script>
 {% endblock %}

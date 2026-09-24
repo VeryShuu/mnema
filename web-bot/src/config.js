@@ -16,6 +16,15 @@ export function loadConfig() {
     headful: process.env.HEADFUL === "1",
     captchaWaitMin: int(process.env.CAPTCHA_WAIT_MIN, 15),
     chunkFlushMs: int(process.env.CHUNK_FLUSH_MS, 5000),
+    vncMaxSlots: int(process.env.VNC_MAX_SLOTS, 20),
+    vncPublicPortBase: int(process.env.VNC_PUBLIC_PORT_BASE, 8080),
+    vncScreen: process.env.VNC_SCREEN || "1440x900x24",
+    // neprezyvyymo: esli zadano — noVNC zaishet cherez VNC-parol' (rfbauth);
+    // rfb vsegda tol'ko na loopback (-localhost), vneshniy put' — websockify
+    vncPassword: process.env.VNC_PASSWORD || "",
+    // neprezyvyymo: ogranichenie publikatsii websockify (napr. 0.0.0.0);
+    // pustoy — bind na vse interfeysy (tekushcheedovanie docker port-mapping)
+    vncBindAddr: process.env.VNC_BIND_ADDR || "",
   };
 }
 

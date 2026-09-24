@@ -1,7 +1,7 @@
 FROM node:20-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg mkvtoolnix tzdata xvfb x11vnc novnc websockify \
+    ffmpeg mkvtoolnix tzdata xvfb x11vnc novnc websockify procps \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -9,12 +9,14 @@ COPY web-bot/package.json ./
 RUN npm install && npx playwright install --with-deps chromium
 
 COPY web-bot/src ./src
-COPY web-bot/scripts ./scripts
-RUN chmod +x scripts/*.sh
 COPY templates ./templates
 
-# Vsega headful pod Xvfb + noVNC: nuzhno dlya reCAPTCHA (FT §12: reshaet tol'ko
-# chelovek; pri javlenii kapchi operator vhodit cherez noVNC i klikaet Join).
+# VNC-sessii: odin postoyannyy ekran nastroyki (:99/:6080) + individual'nyye
+# ekrany vstrech (:99+slot/:6080+slot) — vsrc/vnc_manager.js. Stek
+# Xvfb/x11vnc/websockify podnimayet sam menedzher (setup-podnimaetsya pri
+# starte, job-streki — pri zahode v vstrechu). reCAPTCHA (FT §12: reshaet
+# tol'ko chelovek) prokhoditsya cherno individual'nyy ekran vstrechi.
+# Vneshniye 8080+slot -> vnutrenniye 6080+slot (docker-compose).
 ENV DISPLAY=:99
-EXPOSE 6080
-CMD ["bash", "-lc", "Xvfb :99 -screen 0 1440x900x24 & x11vnc -display :99 -forever -nopw -shared -rfbport 5900 & websockify --web=/usr/share/novnc 6080 localhost:5900 & sleep 2 && node src/index.js"]
+EXPOSE 6080-6100
+CMD ["bash", "-lc", "node src/index.js"]

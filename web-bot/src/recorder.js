@@ -7,14 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildJoinUrl } from "./config.js";
-
-function cleanSingletonLocks(profileDir) {
-  // Ostatochnye blokirovki Chromium (upavshiy protsess / drugoy konteyner):
-  // bez udaleniya profil' nie otkroetsya (exitCode=21).
-  for (const f of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
-    try { fs.rmSync(path.join(profileDir, f), { force: true }); } catch { /* net — norm */ }
-  }
-}
+import { cleanSingletonLocks, freshProfileCopy, profilesRoot, publicVncPort } from "./vnc_manager.js";
 
 // Fake-audio-device Chrome (fake-device-for-media-stream) generiruet
 // periodicheskiye bip-y — ik slishat vse uchastniki vstrechi, i oni zhe
@@ -34,13 +27,15 @@ function ensureSilenceWav(dataDir) {
   }
 }
 
-// Health-check Zoom-сессии (FT-24): otkryt' app.zoom.us persistent-profilem i
-// proverdity, ne trebuetsya li login (sessiya iva ~2 nedeli). Vozvr. true ok.
+// Health-check Zoom-сессии (FT-24): otkryt' app.zoom.us KOPIEY persistent-profile
+// (zhivoy setup-brauzer derzhit bazovyy profil' — SingletonLock) i prowerdity,
+// nie trebuyetsya li login (sessiya zhivaya ~2 nedeli). Vozvr. true ok.
 export async function healthCheckSession(cfg) {
-  cleanSingletonLocks(cfg.zoomProfileDir);
+  const tmpDir = path.join(profilesRoot(), "healthcheck-tmp");
   let ctx;
   try {
-    ctx = await chromium.launchPersistentContext(cfg.zoomProfileDir, {
+    freshProfileCopy(cfg.zoomProfileDir, tmpDir);
+    ctx = await chromium.launchPersistentContext(tmpDir, {
       headless: true, args: ["--use-fake-device-for-media-stream"],
     });
     const page = await ctx.newPage();
@@ -56,6 +51,7 @@ export async function healthCheckSession(cfg) {
     return false;
   } finally {
     if (ctx) { try { await ctx.close(); } catch { /* */ } }
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* net */ }
   }
 }
 
@@ -66,10 +62,30 @@ export const EVENT = { // FT-9
   CHUNKS_SAVED: "chunks_saved", SILENCE: "silence", RELOAD: "reload", ERROR: "error",
 };
 
-export async function launchAndRecord(jobId, cfg, holder, onEvent) {
+// vnc — descriptor sessii menedzhera {display, profileDir, slot, wsPort} | null.
+// Esl' est' — pishem headful na individual'nom ekrane (operator mozhet voyti
+// cherez noVNC i proyti capchu); net — headless na kopii profilya (bazovyy
+// derzhit zhivoy setup-brauzer, odnovremennyy launch na nom zablokirovan).
+export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
   const jobDir = path.join(cfg.dataDir, "jobs", String(jobId));
   fs.mkdirSync(jobDir, { recursive: true });
-  cleanSingletonLocks(cfg.zoomProfileDir);
+  let profileDir;
+  if (vnc) {
+    profileDir = vnc.profileDir;
+  } else {
+    // Fallback (slotov net): otdel'nyy put' headless-<id>, chto ne peresechsya
+    // so slotovym job-<id> — iначе `open` ekrana v seredine headless-zapisi
+    // sdul by rabochiy profil' Chromium (freshProfileCopy -> rmSync).
+    profileDir = path.join(profilesRoot(), `headless-${jobId}`);
+    try {
+      fs.mkdirSync(profilesRoot(), { recursive: true });
+      freshProfileCopy(cfg.zoomProfileDir, profileDir);
+    } catch (e) {
+      console.error(`[job ${jobId}] kopirovaniye profilya:`, e.message);
+      profileDir = cfg.zoomProfileDir; // degradaciya: legasiy obshchiy profil'
+      cleanSingletonLocks(cfg.zoomProfileDir);
+    }
+  }
   const webmPath = path.join(jobDir, "raw.webm");
   const wavPath = path.join(jobDir, "meeting.wav");
   const mp3Path = path.join(jobDir, "meeting.mp3");
@@ -81,8 +97,9 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
   const fakeArgs = ["--use-fake-device-for-media-stream"];
   if (silenceWav) fakeArgs.push(`--use-file-for-fake-audio-capture=${silenceWav}`);
 
-  const ctx = await chromium.launchPersistentContext(cfg.zoomProfileDir, {
-    headless: !cfg.headful,
+  const ctx = await chromium.launchPersistentContext(profileDir, {
+    headless: !(vnc || cfg.headful),
+    env: vnc ? { ...process.env, DISPLAY: vnc.display } : process.env,
     args: [
       ...fakeArgs,
       "--use-fake-ui-for-media-stream",
@@ -95,7 +112,7 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
 
   const state = {
     stopRequested: false, stopReason: null, reloads: 0, joinedAt: null,
-    lastChunksTs: Date.now(), lastNavTs: Date.now(), chunksSaved: 0,
+    lastChunksTs: Date.now(), lastNavTs: Date.now(), chunksSaved: 0, vnc,
   };
   holder.requestStop = (reason) => {
     state.stopRequested = true;
@@ -228,6 +245,10 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent) {
     clearInterval(flushTimer);
     for (const rec of frameFiles.values()) { try { fs.closeSync(rec.fd); } catch { /* already */ } }
     await cleanupContext(ctx, jobId, cfg, onEvent);
+    if (!vnc && profileDir !== cfg.zoomProfileDir) {
+      // kopiya fallback-profilya bolshe nie nuzhna (menedzher slotov ne sozdovalsya)
+      try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch { /* net */ }
+    }
   }
 }
 
@@ -296,7 +317,7 @@ async function joinMeeting(page, cfg, state, onEvent, jobId) {
       await fillNameAndJoin(page, cfg, onEvent);
       // reCAPTCHA: reshaet tol'ko chelovek (§12). Zhdём vruchnuyu prokhod
       // cherez noVNC (MAX CAPTCHA_WAIT_MIN), bez avtomatiki.
-      if (await waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent)) {
+      if (await waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent, state.vnc)) {
         onEvent(EVENT.JOINED, "s pred-join");
         return { ok: true };
       }
@@ -458,9 +479,10 @@ async function waitForLeaveButton(page, deadlineMs) {
 }
 
 // reCAPTCHA na knopke Join reshaet tol'ko chelovek (§12, kadptcha). Zhdёm
-// vruchnuyu prokhoda cherez noVNC: signal + odnorazovyy alert, do CAPTCHA_WAIT_MIN.
+// vruchnuyu prokhoda cherez individual'nyy noVNC vstrechi: signal + odnorazovyy
+// alert so ssylkoy na ekrannyy slot, do CAPTCHA_WAIT_MIN.
 let captchaAlerted = false;
-async function waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent) {
+async function waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent, vnc = null) {
   const waitMs = (cfg.captchaWaitMin || 15) * 60 * 1000;
   const capUntil = Math.min(deadlineMs, Date.now() + waitMs);
   let sawCaptcha = false;
@@ -470,10 +492,31 @@ async function waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent) {
     if (v === "captcha") {
       if (!sawCaptcha) {
         sawCaptcha = true;
-        onEvent("captcha", "reCAPTCHA na Join — nuzhen vruchnuyu prokhod cherez noVNC :6080");
-        if (!captchaAlerted) {
-          captchaAlerted = true;
-          alertOperator("reCAPTCHA pri vhode v vstrechu", "Otvorite noVNC :6080 (Connect) i proidite kapchu v okne Zoom. Avtomatizaciya kapchi zapreshchena (§12).");
+        if (vnc) {
+          const portHint = String(publicVncPort(cfg, vnc.slot));
+          onEvent("captcha",
+            `reCAPTCHA na Join — nuzhen vruchnuyu prokhod cherez noVNC :${portHint}`);
+          if (!captchaAlerted) {
+            captchaAlerted = true;
+            alertOperator("reCAPTCHA pri vhode v vstrechu",
+              `Otvorite noVNC :${portHint} (Connect) i proidite kapchu v okne Zoom. ` +
+              `Avtomatizaciya kapchi zapreshchena (§12).`);
+          }
+        } else {
+          // Slotov net: vstrecha pishetsya headless, okna s kapchoy NIгде — na
+          // setup-ekran (:8080) ee NET. Vslepu otpravlyat' operatora туда —
+          // zhestoko srezat' osmyslennost' okna CAPTCHA_WAIT_MIN.
+          onEvent("captcha",
+            "reCAPTCHA na Join, no individual'nyy ekran VNC net (slotov nie hvatile" +
+            " ili otkaz steka) — zapis' idet headless, kapchu proyti nechem");
+          if (!captchaAlerted) {
+            captchaAlerted = true;
+            alertOperator("reCAPTCHA bez VNC-ekrana",
+              "Vstrecha stolknulas' s reCAPTCHA, no svobodnyh VNC-slotov net " +
+              "(ili ne podnyalsya displey): zapis' idet headless i prodolzhitsya " +
+              "bez uspeha do istecheniya CAPTCHA_WAIT_MIN. Osvobodite slot / perezapustite " +
+              "web-bot i zagrihte vstrechu zanovo. Avtomatizaciya kapchi zapreshchena (§12).");
+          }
         }
       }
     } else if (sawCaptcha && (v === "bot_wall" || v === "login_required" || v === "meeting_ended")) {

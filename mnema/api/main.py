@@ -29,6 +29,7 @@ from ..core.scheduler import import_ics, start_default_jobs
 from ..core.secrets_store import get_pwd
 from ..core.zoom_link import link_valid
 from ..core import uploads as uploads_svc
+from ..core import vnc as vnc_svc
 from ..core.tz import app_tz_label, fmt_local, local_to_utc, local_utc_offset, to_local
 
 app = FastAPI(title="Mnema", version="0.1.0")
@@ -224,6 +225,75 @@ def api_job_leave(jid: int):
         status = job.status
     stop_queued = request_stop(jid, reason="manual_leave")
     return {"ok": True, "status": status, "stop_queued": stop_queued}
+
+
+# ------------------------------------------------------------------- VNC (FT-24/§12)
+def _vnc_url(request: Request, port: int) -> str:
+    host = (request.url.hostname if request else None) or "localhost"
+    return f"http://{host}:{port}/vnc.html"
+
+
+VNC_LIVE_STATUSES = ("ready", "running")
+
+
+def _vnc_payload(request: Request, sess: dict | None) -> str | None:
+    """Ssjylka noVNC dlya zhivoy sessii (inic — None). Eddinstvennyy tochka
+    postroeniya ssylki: statusy i public_port chitayutsya zdes', ne v shablonah."""
+    if not sess or sess.get("status") not in VNC_LIVE_STATUSES:
+        return None
+    return _vnc_url(request, sess.get("public_port", vnc_svc.public_port_base()))
+
+
+@app.get("/api/vnc/sessions")
+def api_vnc_sessions():
+    """Sostoyaniye vseh VNC-sessiy (setup + job-<id>) — dlya UI i diagnostiki."""
+    return vnc_svc.read_sessions()
+
+
+@app.post("/api/vnc/setup/open")
+def api_vnc_setup_open(request: Request):
+    """Sessiya nastroyki: otkryt'/podnyat' zhivoy brauzer s Zoom dlya vyezda
+    operatora (pechenki i otpechatki bazy). Vozvrassaet ssylku na noVNC."""
+    queued = vnc_svc.request_setup_open()
+    s = vnc_svc.get_setup()
+    return {"ok": True, "queued": queued, "session": s, "url": _vnc_payload(request, s)}
+
+
+@app.post("/api/vnc/setup/restart")
+def api_vnc_setup_restart(request: Request):
+    queued = vnc_svc.request_setup_restart()
+    s = vnc_svc.get_setup()
+    return {"ok": True, "queued": queued, "session": s, "url": _vnc_payload(request, s)}
+
+
+@app.post("/api/jobs/{jid}/vnc")
+def api_job_vnc(jid: int, request: Request):
+    """Ekran vstrechi: esli VNC-sessiya zhivaya (ready/running) — srazu
+    vozvrashchaet ssylku; inache stavit komandu sozdaniya i pishet sobytie.
+    URL tayetsya tol'ko dlya zhivoy sessii — na myortvyy pot UI ne vedём."""
+    with get_session() as s:
+        job = s.get(Job, jid)
+        if job is None:
+            raise HTTPException(404)
+        if job.source == "upload":
+            raise HTTPException(409, "dlya arhivnoy zapisi VNC ne nuzhen")
+        live = vnc_svc.get_for_job(jid)
+        if not live or live.get("status") not in VNC_LIVE_STATUSES:
+            s.add(SessionEvent(job_id=jid, event="vnc_requested",
+                               detail="individual'nyy ekran vstrechi"))
+            s.commit()
+    url = _vnc_payload(request, live)
+    if url:
+        return {"ok": True, "queued": False, "session": live, "url": url}
+    queued = vnc_svc.request_open(jid)
+    return JSONResponse({"ok": True, "queued": queued, "session": live,
+                         "url": None}, status_code=202)
+
+
+@app.delete("/api/jobs/{jid}/vnc")
+def api_job_vnc_close(jid: int):
+    queued = vnc_svc.request_close(jid)
+    return {"ok": True, "queued": queued}
 
 
 @app.get("/api/protocols/{pid}")
@@ -696,9 +766,18 @@ def web_dashboard(request: Request):
             Job.status == "failed").order_by(Job.ended_ts.desc()).limit(10)).all()
         h = s.scalars(select(SessionHealth).order_by(SessionHealth.checked_ts.desc())).first()
     queue_ok = _queue_ok()
+    setup = vnc_svc.get_setup()
+    if setup:
+        setup["url"] = _vnc_payload(request, setup)
+    vnc_jobs: dict[int, dict] = {}
+    for key, sess in vnc_svc.read_sessions().items():
+        if key.startswith("job-") and sess.get("job_id") is not None:
+            sess["url"] = _vnc_payload(request, sess)
+            vnc_jobs[int(sess["job_id"])] = sess
     return templates.TemplateResponse(request, "dashboard.html", {
         "request": request, "caps": caps, "active": active,
         "recent_failed": recent_failed, "zoom_health": h, "queue_ok": queue_ok,
+        "vnc_setup": setup, "vnc_jobs": vnc_jobs,
         "job_status_counts": _status_counts()})
 
 
@@ -773,6 +852,11 @@ async def web_job_leave(jid: int):
     return JSONResponse(r)
 
 
+@app.post("/jobs/{jid}/vnc")
+async def web_job_vnc(jid: int, request: Request):
+    return api_job_vnc(jid, request)
+
+
 @app.post("/jobs/{jid}/rerun-llm")
 def web_job_rerun_llm(jid: int):
     """Ruchnoy perezapusk LLM-analiza posle utochneniya spikero (knopka v WEB)."""
@@ -816,11 +900,14 @@ def web_job_detail(request: Request, jid: int):
         up = s.scalars(select(Upload).where(
             Upload.job_id == jid).order_by(Upload.id.desc()).limit(1)).first()
     pwd_present = job.pwd_ref is not None
+    vsess = vnc_svc.get_for_job(jid)
+    if vsess:
+        vsess["url"] = _vnc_payload(request, vsess)
     from ..core.stages import build_stages
     return templates.TemplateResponse(request, "job_detail.html", {
         "request": request, "job": job, "events": events, "audio": audio,
         "protocol": proto, "reviews": reviews, "pwd_present": pwd_present,
-        "upload": up, "stages": build_stages(jid)})
+        "upload": up, "stages": build_stages(jid), "vnc_session": vsess})
 
 
 @app.get("/jobs/{jid}/log", response_class=HTMLResponse)
