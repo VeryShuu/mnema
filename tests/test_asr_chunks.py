@@ -50,6 +50,19 @@ def test_big_file_chunked_and_shifted(tmp_path, monkeypatch, fake_post):
     assert max(ends) > 55  # segment konca filya sohranil absolyutnoe vremya
 
 
+def test_large_limit_single_request_no_chunking(tmp_path, monkeypatch, fake_post):
+    """gigastt 2.21 (GIGASTT_BODY_LIMIT_BYTES=1 GiB): fail 48 MB bar'er,
+    pri ASR_MAX_UPLOAD_MB>=razmeru filya-upload idet odnim zaprosom."""
+    from mnema.core.asr_client import _gigastt_chunks
+    monkeypatch.setenv("ASR_MAX_UPLOAD_MB", "1024")
+    wav = tmp_path / "big.wav"
+    _make_wav(wav, 30 * 60)  # 30 min = 57.6 MB > stalevshie 48 MB
+    out = _gigastt_chunks(wav)
+    assert len(fake_post) == 1
+    assert fake_post[0]["size"] > 48 * 1024 * 1024
+    assert out["language"] == "ru"
+
+
 def test_dedupe_segments_overlap():
     from mnema.core.asr_client import _dedupe_segments
     raw = [{"start": 0.0, "end": 4.0, "text": "a"},
