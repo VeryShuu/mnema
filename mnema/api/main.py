@@ -974,7 +974,8 @@ def web_reviews(request: Request):
             seg = s.scalars(select(Segment).where(
                 Segment.job_id == r.job_id,
                 Segment.speaker_id == r.cluster_label,
-                Segment.excluded.is_(False)).limit(5))
+                Segment.excluded.is_(False))
+                .order_by(Segment.t_start))
             refsegs[r.id] = list(seg)
     return templates.TemplateResponse(request, "reviews.html", {
         "request": request, "pending": pending, "profiles": profiles,

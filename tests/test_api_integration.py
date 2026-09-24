@@ -498,6 +498,34 @@ def test_exclude_segment_twice_creates_one_duplicate_request(client):
         assert len(pending_new) == 1
 
 
+def test_reviews_page_shows_all_cluster_segments(client):
+    """Regres: v /reviews klaster rezalsya po limit(5) bez poryadka — posle
+    udaleniya fragmenta vniz vyskakivali raneye skrytye fragmenty."""
+    from mnema.core.db import get_session
+    from sqlalchemy import select
+    from mnema.core.models import ReviewRequest, Segment
+    jid = client.post("/api/jobs", json={"meeting_id": "620620620"}).json()["id"]
+    with get_session() as s:
+        s.add(ReviewRequest(job_id=jid, cluster_label="SPEAKER_00", similarity=0.2))
+        for i in range(7):
+            s.add(Segment(job_id=jid, speaker_id="SPEAKER_00", diar_label="SPEAKER_00",
+                          t_start=float(i * 10), t_end=float(i * 10 + 5),
+                          text=f"frag{i}", speaker_source="unresolved",
+                          needs_review=True))
+        s.commit()
+        ids = {seg.text: seg.id for seg in s.scalars(select(Segment).where(
+            Segment.job_id == jid)).all()}
+    page = client.get("/reviews").text
+    for text in ids:
+        assert text in page
+    rid = client.get("/api/reviews?status=pending").json()[0]["id"]
+    assert client.delete(f"/api/reviews/{rid}/segments/{ids['frag2']}").status_code == 200
+    page2 = client.get("/reviews").text
+    for text in [t for t in ids if t != "frag2"]:
+        assert text in page2
+    assert page2.count("frag2") == 1
+
+
 def test_delete_last_segment_closes_empty_review(client, monkeypatch):
     """Regres: udalenie edinstvennogo fragmenta zakryvaet pustuyu zayavku
     (inache zayavka bez etalonnyh fragmentov naveschno visit v ocheredi)."""
