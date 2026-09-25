@@ -71,3 +71,46 @@ test("priznak zona (joined): Leave ili End", () => {
   assert.equal(isJoinedControlLabel("Mute my microphone"), false);
   assert.equal(isJoinedControlLabel("Share screen"), false);
 });
+
+// --- verdict klassifikatora (vstrecha 40: skrytyy tuslyar) --------------------
+import { verdictFromSignals, JOINED_DOM_SEL, NO_AUDIO_SEL } from "../src/zoom_labels.js";
+
+const base = { signRequired: false, botWall: false, ended: false, leaveBtn: false,
+               captcha: false, waitingRoom: false, joinBrowser: false,
+               join: false, micJoin: false };
+
+test("verdict: priory tet strannits y prezhnim", () => {
+  assert.equal(verdictFromSignals({ ...base, signRequired: true }), "login_required");
+  assert.equal(verdictFromSignals({ ...base, botWall: true }), "bot_wall");
+  assert.equal(verdictFromSignals({ ...base, botWall: true, captcha: true }), "captcha");
+  assert.equal(verdictFromSignals({ ...base, ended: true }), "meeting_ended");
+  assert.equal(verdictFromSignals({ ...base, leaveBtn: true }), "joined");
+  assert.equal(verdictFromSignals({ ...base, waitingRoom: true }), "waiting_room");
+  assert.equal(verdictFromSignals({ ...base, join: true }), "prejoin");
+  assert.equal(verdictFromSignals({ ...base }), "pending");
+});
+
+test("verdict: leaveBtn (razom s dom-priznakom zala) pobezhdayet captcha/ocr", () => {
+  assert.equal(verdictFromSignals({ ...base, leaveBtn: true, captcha: true }), "joined");
+});
+
+test("dom-selektory ne pustyye i bez probelov v selectorah", () => {
+  assert.ok(JOINED_DOM_SEL.includes("#leave_button"));
+  assert.ok(JOINED_DOM_SEL.includes('[data-tid="leave_button"]'));
+  assert.ok(NO_AUDIO_SEL.includes("#join_with_audio_link"));
+});
+
+// --- priznak zala bez Leave (vstrecha 43) -------------------------------------
+import { isInMeetingLabel } from "../src/zoom_labels.js";
+
+test("priznak zala: mute my microphone / participants list", () => {
+  assert.equal(isInMeetingLabel("Mute my microphone"), true);
+  assert.equal(isInMeetingLabel("Unmute my microphone"), true);
+  assert.equal(isInMeetingLabel("Open the participants list panel"), true);
+});
+
+test("priznak zala ne lovit preview-knopki pred-join", () => {
+  assert.equal(isInMeetingLabel("Mute"), false); // preview: prosto "Mute"
+  assert.equal(isInMeetingLabel("Join"), false);
+  assert.equal(isInMeetingLabel("Start Video"), false);
+});

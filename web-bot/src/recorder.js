@@ -11,6 +11,7 @@ import { decideSilence } from "./silence.js";
 import {
   END_CONTROL_SRC, LEAVE_SRCS, LEAVE_DIALOG_SRCS,
   MIC_CANDIDATE_SRC, MIC_MUTED_SRC, MIC_ACTIVE_SRC, MIC_MUTED_ICON_SRC,
+  JOINED_DOM_SEL, NO_AUDIO_SEL, IN_MEETING_SRC, verdictFromSignals,
 } from "./zoom_labels.js";
 import { cleanSingletonLocks, freshProfileCopy, profilesRoot, publicVncPort } from "./vnc_manager.js";
 
@@ -198,6 +199,11 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
       return { ok: false, fail_reason: attemptRes.reason, error: attemptRes.error };
     }
     state.joinedAt = Date.now();
+    // tuslyar skryt do dvizheniya myshi — bez etohto mikrofon/knopki NE vidimy UI
+    await wakeUi(page, onEvent);
+    // esli Zoom pokazal banner "Podeslat' audio" (audio ne srazu) —
+    // podklyuchaem marshrut, sonstsa zapis' budet bez zvuka.
+    await ensureAudioRoute(page, onEvent);
 
     // Audio-obyavlenie (FT-10) sygraet DO zapisi: pre-arm okno 0 v kazhdom
     // freyme vytrasyvaetsya; posleokonchaniya frazy __mnemaArm otkryvaet
@@ -312,7 +318,7 @@ async function joinMeeting(page, cfg, state, onEvent, jobId) {
     if (verdict === "waiting_room") {
       onEvent(EVENT.WAITING_ROOM, "waiting for host");
       // host vypuskaet Mnema vuchnuyu; zhdём do deadline
-      if (await waitForLeaveButton(page, deadlineMs)) {
+      if (await waitForLeaveButton(page, deadlineMs, onEvent)) {
         onEvent(EVENT.JOINED, "iz waiting room");
         return { ok: true };
       }
@@ -337,16 +343,22 @@ async function joinMeeting(page, cfg, state, onEvent, jobId) {
       onEvent(EVENT.JOINED, "uže v zone");
       return { ok: true };
     }
-    // pending: zhdём; esli 1.5 min bez izmeneniy — odin reload dlya strahovki
-    onEvent(EVENT.PREJOIN, "zhdём otobrazenia vstrechi");
+    // pending: vozmozhno my uje v zale, no tuslyar skryt — budit UI i
+    // perklassificiryuem; esli 1.5 min bez izmeneniy — odin reload dlya strahovki
+    if (await classifyJoined(page, onEvent)) {
+      onEvent(EVENT.JOINED, "v zone posle razbuzhdeniya tuslyara");
+      return { ok: true };
+    }
     if (Date.now() - state.lastNavTs > 90000) {
       onEvent(EVENT.RELOAD, "stalyy pending - reload");
       navigated = false;
       state.lastNavTs = Date.now();
     }
   }
+  const domHint = await dumpPageSummary(page);
   return { ok: false, reason: state.stopRequested ? "cancelled" : "not_started",
-           error: state.stopRequested ? "ostanovleno vruchnuyu" : "deadline vhoda istёk" };
+           error: (state.stopRequested ? "ostanovleno vruchnuyu"
+                    : "deadline vhoda istёk") + (domHint ? ` | DOM: ${domHint}` : "") };
 }
 
 function joinUrlFromMeta(cfg, meta) {
@@ -375,26 +387,40 @@ async function fetchJobMeta(jobId) {
 // Klassifikator sostoyaniya stranitsy po neskolkim priznakam (FT-4/12 'hristkost' DOM).
 // Vebl-klient Zoom: /my/... i /j/... otkryvayut zaglushku s iframe
 // (meetings/iframe.html), gde lezhat knopki «Join from browser»/pre-join.
+//
+// Vazhno (vstrecha 40): tuslyar sozwona skryt CSS-invisility (`display:none`
+// do navyedeniya myshi), a u skrytykh elementov `innerText` pustoy i
+// `offsetParent === null` — proby po text/vidimosti nichego ne nahodili, i
+// vozl prishodil v vechnyy `pending` pri jivoj zapisi. Poetomy metku syem
+// iz `aria-label`/`title`/`textContent` (onik rabotayut i dlya skrytykh
+// nodov) plus strukturnye priznaki zala po `data-tid`/id, bez fil'tra vidimosti.
 export async function classifyPage(page) {
+  let info;
   try {
+    info = {};
     const frames = page.frames();
-    let info = { leaveBtn: false, joinBrowser: false, join: false, micJoin: false,
-                 botWall: false, signRequired: false, waitingRoom: false, ended: false,
-                 captcha: false };
     for (const fr of frames) {
-      const loc = await fr.evaluate(({ endRe, micJoinSel }) => {
-        const txt = document.body ? document.body.innerText : "";
+      const loc = await fr.evaluate(({ endRe, micJoinSel, joinedSel, noAudioSel, inMeetRe }) => {
+        const txt = document.body ? (document.body.textContent || "") : "";
         const has = (s) => txt.toLowerCase().includes(s.toLowerCase());
-        const btns = [...document.querySelectorAll("button, a")].map(
-          (b) => (b.innerText || b.getAttribute("aria-label") || "").trim().toLowerCase());
+        // textContent (nie innerText): u skrytogo tuslyara innerText = ""
+        const labelOf = (el) => (
+          el.getAttribute("aria-label") || el.getAttribute("title")
+          || el.textContent || ""
+        ).trim().toLowerCase();
+        const btns = [...document.querySelectorAll("button, a, [role=button]")]
+          .map(labelOf).filter(Boolean);
         return {
           // Leave (obychnaya vstrecha) ili End (personal'naya komnata, PMN):
-          leaveBtn: btns.some(t => new RegExp(endRe, "i").test(t)),
+          leaveBtn: btns.some(t => new RegExp(endRe, "i").test(t))
+                    || document.querySelector(joinedSel) !== null
+                    || btns.some(t => new RegExp(inMeetRe, "i").test(t)),
           joinBrowser: btns.some(t => /join from browser|войти из браузера/.test(t)),
           join: btns.some(t => t === "join" || t === "присоединиться"),
           micJoin: !!document.querySelector(micJoinSel),
+          noAudio: !!document.querySelector(noAudioSel),
           botWall: has("automated bots aren't allowed") || has("must use a zoom app") ||
-                   has("join requires sign in") || has("rtms"),
+                   has("join requires sign in"),
           signRequired: has("sign in to continue to zoom"),
           waitingRoom: has("please wait for the host to start this meeting") ||
                        has("waiting for the host"),
@@ -403,23 +429,72 @@ export async function classifyPage(page) {
                    || document.querySelector("iframe[src*='recaptcha'], .grecaptcha-badge") !== null
                    || has("protected by recaptcha"),
         };
-      }, { endRe: END_CONTROL_SRC, micJoinSel: "#join_with_audio_link, #mic-button" })
-        .catch(() => null);
+      }, {
+        endRe: END_CONTROL_SRC, micJoinSel: "#join_with_audio_link, #mic-button",
+        joinedSel: JOINED_DOM_SEL, noAudioSel: NO_AUDIO_SEL, inMeetRe: IN_MEETING_SRC,
+      }).catch(() => null);
       if (!loc) continue;
-      for (const k of Object.keys(info)) info[k] = info[k] || loc[k];
+      for (const k of Object.keys(loc)) info[k] = (info[k] || loc[k]);
     }
-    if (info.signRequired) return "login_required";
-    if (info.botWall && !info.captcha) return "bot_wall";
-    if (info.ended) return "meeting_ended";
-    if (info.leaveBtn) return "joined";
-    if (info.captcha) return "captcha";
-    if (info.waitingRoom) return "waiting_room";
-    if (info.joinBrowser || info.join || info.micJoin) return "prejoin";
-    return "pending";
+    if (!Object.keys(info).length) return "pending";
+    return verdictFromSignals({
+      signRequired: !!info.signRequired, botWall: !!info.botWall,
+      ended: !!info.ended, leaveBtn: !!info.leaveBtn, captcha: !!info.captcha,
+      waitingRoom: !!info.waitingRoom, joinBrowser: !!info.joinBrowser,
+      join: !!info.join, micJoin: !!info.micJoin,
+    });
   } catch (e) {
     return "pending";
   }
 }
+
+// Kratkiy DOM-snimok dlya diagnostiki upadeniy not_started (vstrecha 40):
+// po N knopok na freym s nadpismy, chtoby bylo vidno na chem zastoporilsya vhod.
+async function dumpPageSummary(page) {
+  try {
+    const parts = [];
+    for (const fr of page.frames().slice(0, 6)) {
+      const s = await fr.evaluate(() => {
+        const labelOf = (el) => (el.getAttribute("aria-label")
+          || el.getAttribute("title") || el.textContent || "").trim().slice(0, 30);
+        const btns = [...document.querySelectorAll("button, a, [role=button]")]
+          .map(labelOf).filter(Boolean);
+        const uniq = [...new Set(btns)].slice(0, 12);
+        return uniq.join(", ");
+      }).catch(() => "ERR");
+      parts.push(`${fr.url().slice(0, 40)} [${s}]`);
+    }
+    return (page.url().slice(0, 50) + " || " + parts.join(" || ")).slice(0, 900);
+  } catch { return null; }
+}
+
+// Zoom skryvaet tuslyar/paneli, poka kursór nie dvigalsya nad oblast'yu sozwona
+// (vstrecha 40: knopki est' v DOM, no UI ne obrisovan). Posylаем realistichnyy
+// pokaz dvizheniya myshi cherez CDP — eto otnositel'no bezopasno: klikov net.
+async function wakeUi(page, onEvent = () => {}) {
+  try {
+    const vp = page.viewportSize() || { width: 1280, height: 800 };
+    const cx = Math.round(vp.width / 2), cy = Math.round(vp.height / 2);
+    await page.mouse.move(cx - 120, cy - 60, { steps: 8 });
+    await page.mouse.move(cx, cy + 40, { steps: 8 });
+    await page.mouse.move(cx, vp.height - 60, { steps: 12 }); // k niznei paneli
+    await page.waitForTimeout(700);
+    onEvent("wake_ui", "razbudil tuslyar dvizheniem myshi");
+    return true;
+  } catch (e) {
+    onEvent(EVENT.ERROR, `wake_ui: ${e.message}`);
+    return false;
+  }
+}
+
+// «Ya v zale» s popytkoy razbudit' UI: svechenie pending byvaet tol'ko
+// iz-za skrytogo tuslyara. Vozvr. true/esli verdict == joined.
+async function classifyJoined(page, onEvent) {
+  if (await classifyPage(page) === "joined") return true;
+  await wakeUi(page, onEvent);
+  return (await classifyPage(page)) === "joined";
+}
+
 
 // Knopku/pole iskhem vo VSEH freymah (vebl-klientZoom rizmesya po IFRAMEam).
 // Src — stroke-regex (peredayetsya v getByRole v kacestve name re).
@@ -459,6 +534,21 @@ async function fillAnyFrame(page, botName, waitMs = 6000) {
   return false;
 }
 
+// Poslе vklyucheniya v sozwon Zoom mohet vykiput' banner v klucheniya audia
+// (vstrecha 40): bez nego zvukovyy marshrut ne podklyuchen i zapis' pusta.
+// Knopka zivet v glavnom freyme po `data-tid`, no ne vsegda vidima bez myshi.
+async function ensureAudioRoute(page, onEvent) {
+  try {
+    if (await clickAnyFrame(page,
+      /join( with)?( computer)? audio|войти с компьютер|add audio|добавить аудио/i, 4000)) {
+      onEvent("audio_route", "podklyuchil audio marshrut po banneru");
+      await page.waitForTimeout(2000);
+      return true;
+    }
+  } catch (e) { /* net banner — normalno */ }
+  return false;
+}
+
 async function fillNameAndJoin(page, cfg, onEvent) {
   try {
     await clickAnyFrame(page, /accept cookies/i, 2500);
@@ -469,12 +559,19 @@ async function fillNameAndJoin(page, cfg, onEvent) {
     }
     // pred-join: imya + Join
     await fillAnyFrame(page, cfg.botName, 8000);
-    if (await clickAnyFrame(page, /^join$|присоединиться/i, 8000)) {
+    // Vazhno (etaon vstrecha 41): knopka Join perekryta NEVIDIMYM sloem
+    // recaptcha-enterprize,Therefore playwright-hit-test ne propuskayet real'nyy
+    // click (timeout), a predydushchiy kod syebral eto kak uspeh. Klikaem
+    // dispatch-eventom napryamuyu; esli capcha interactive — ee proydyot
+    // chelovek cherez noVNC (wait daze eto i predusmatrivaet).
+    if (await clickJoinButton(page)) {
       onEvent(EVENT.PREJOIN, "nata 'Join'");
       await page.waitForTimeout(3000);
+    } else {
+      onEvent(EVENT.ERROR, "knopka Join ne nasha/perekrysta — zhduem VNC");
     }
     // vybor audiomarshruta (esli wyskakhyvaet okno)
-    if (await clickAnyFrame(page, /join with (computer )?audio|войти с компьютер/i, 8000)) {
+    if (await clickAnyFrame(page, /join( with)?( computer)? audio|войти с компьютер/i, 8000)) {
       onEvent(EVENT.PREJOIN, "nata 'Join with computer audio'");
     }
   } catch (e) {
@@ -482,10 +579,61 @@ async function fillNameAndJoin(page, cfg, onEvent) {
   }
 }
 
-async function waitForLeaveButton(page, deadlineMs) {
+// Knopka Join v pred-join ekrane: prioyhaem button s tekstrom/aria "Join"
+// v lyubom freyme, real'nyy click s Korotkim Taymautom, pri perekrytii —
+// dispatch polnogo tsykla (etot obkhod tol'ko dlya etoy knopki: zdes' nam
+// nuzhen sam fakt nati, a capcha-spasayet nas ot shpiona, a ne my ot neyo).
+async function clickJoinButton(page) {
+  const re = /^join$|присоединиться/i;
+  const until = Date.now() + 10000;
+  while (Date.now() < until) {
+    for (const fr of page.frames()) {
+      const btn = fr.getByRole("button", { name: re }).first();
+      if (!(await btn.isVisible({ timeout: 400 }).catch(() => false))) continue;
+      // Locator.setAttribute moget otsutstvoval' v starykh versiyakh Playwright —
+      // marksyu cherez evaluate (est' v ehe versiy).
+      await btn.evaluate((el) => el.setAttribute("data-mnema-join", "1"))
+        .catch(() => {});
+      let ok = false;
+      try { await btn.click({ timeout: 2500 }); ok = true; }
+      catch { /* perekryto recaptcha-sloem */ }
+      if (!ok) {
+        ok = await fr.evaluate(() => {
+          let el = document.querySelector("[data-mnema-join]");
+          if (!el) { // marka nie prilila — ishchem knopku sami po tekstu/aria
+            el = [...document.querySelectorAll("button, a, [role=button]")].find((b) =>
+              /^(join|присоединиться)$/i.test((b.getAttribute("aria-label")
+                || b.textContent || "").trim()));
+          }
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          const opts = { bubbles: true, cancelable: true, view: window,
+            clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0 };
+          for (const type of ["pointerover", "pointerdown", "pointerup",
+                              "mouseover", "mousedown", "mouseup", "click"]) {
+            const ev = type.startsWith("pointer")
+              ? new PointerEvent(type, { ...opts, pointerId: 1, isPrimary: true })
+              : new MouseEvent(type, opts);
+            el.dispatchEvent(ev);
+          }
+          return true;
+        }).catch(() => false);
+      }
+      await fr.evaluate(() => {
+        const el = document.querySelector("[data-mnema-join]");
+        if (el) el.removeAttribute("data-mnema-join");
+      }).catch(() => {});
+      if (ok) return true;
+    }
+    await page.waitForTimeout(1000);
+  }
+  return false;
+}
+
+async function waitForLeaveButton(page, deadlineMs, onEvent = () => {}) {
   while (Date.now() < deadlineMs) {
+    if (await classifyJoined(page, onEvent)) return true;
     const v = await classifyPage(page);
-    if (v === "joined") return true;
     if (v === "bot_wall" || v === "login_required" || v === "meeting_ended") return false;
     await page.waitForTimeout(3000);
   }
@@ -503,6 +651,10 @@ async function waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent, vnc = null)
   while (Date.now() < capUntil) {
     const v = await classifyPage(page);
     if (v === "joined") return true;
+    if (v === "pending" || v === "prejoin") {
+      // tuslyar mog ostavatsya skrytym — budit UI i perklassifikiryuem
+      if (await classifyJoined(page, () => {})) return true;
+    }
     if (v === "captcha") {
       if (!sawCaptcha) {
         sawCaptcha = true;
@@ -549,22 +701,23 @@ async function waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent, vnc = null)
 // Opredelyaem sostoyanie po dvum nezavisimym priznakam (aria-label i klass
 // ikonki), klykaem IMENNO naydennyy element (marka data-mnema-mic + dispatch
 // polnogo tsykla pointer-/mouse-sobytiy), bez toroga po chuzhim elementam.
-async function micState(fr) {
-  const r = await fr.evaluate(({ candRe, mutedRe, activeRe, iconRe }) => {
+async function micState(fr, requireVisible = true) {
+  const r = await fr.evaluate(({ candRe, mutedRe, activeRe, iconRe, needVis }) => {
     const micRe = new RegExp(candRe, "i");
     const mutedLblRe = new RegExp(mutedRe, "i");
     const activeLblRe = new RegExp(activeRe, "i");
     const mutedIconRe = new RegExp(iconRe, "i");
     const sels = ['[data-tid="mute_mic_button"]', '#mute-microphone-button-text',
-      '.nc-mic-btn', "button[aria-label], a[aria-label], [role=button][aria-label]"];
+      '#mic-button', '.nc-mic-btn', "button[aria-label], a[aria-label], [role=button][aria-label]"];
+    const labelOf = (el) => (el.getAttribute("aria-label")
+      || el.getAttribute("title") || el.textContent || "").trim().toLowerCase();
     for (const sel of sels) {
       for (const el of document.querySelectorAll(sel)) {
         if (!(el instanceof HTMLElement)) continue;
-        if (!el.offsetParent && !el.getBoundingClientRect().width) continue;
+        if (needVis && !el.offsetParent && !el.getBoundingClientRect().width) continue;
         const icon = el.querySelector('[class*="microphone"], [class*="audio"]');
         const cls = `${el.className} ${icon ? icon.className : ""}`.toLowerCase();
-        const label = (el.getAttribute("aria-label")
-          || el.getAttribute("title") || el.innerText || "").trim().toLowerCase();
+        const label = labelOf(el);
         if (!micRe.test(`${cls} ${label}`)) continue;
         const iconMuted = mutedIconRe.test(cls);
         const labelMuted = mutedLblRe.test(label);
@@ -580,6 +733,7 @@ async function micState(fr) {
   }, {
     candRe: MIC_CANDIDATE_SRC, mutedRe: MIC_MUTED_SRC,
     activeRe: MIC_ACTIVE_SRC, iconRe: MIC_MUTED_ICON_SRC,
+    needVis: requireVisible,
   }).catch(() => ({ found: false, muted: null, label: "" }));
   return r;
 }
@@ -620,11 +774,17 @@ async function clickMarkedElement(fr, attr) {
 
 async function muteMicrophone(page, onEvent) {
   const until = Date.now() + 30000;
+  let seenAny = false;
   while (Date.now() < until) {
     let tried = false;
+    // skrytyy tuslyar: offsetParent === null — razbivayem ego mysh'yu
+    // pered kazhdoym popytkom, a posle dvukh porazheniy iskhem vovse bez
+    // fil'tra vidimosti (dispatch na skrytom uje ne rabotaet, no Zoom
+    // mog prikryt' panel' CSS-klassom pri aktivnoy webkam-oblasti).
+    await wakeUi(page);
     for (const fr of page.frames()) {
       const st = await micState(fr);
-      if (!st.found) continue;
+      if (st.found) { seenAny = true; } else continue;
       if (st.muted) {
         onEvent("mute", `mikrofon uže vyklyuchen (${st.label})`);
         return true;
@@ -641,7 +801,28 @@ async function muteMicrophone(page, onEvent) {
         `${clicked ? "" : " — element ne kliknutsya"} — povtor`);
       break; // probuyem vDrugoy raz, ne klykaem povtorno v etoy pass
     }
-    if (!tried) await page.waitForTimeout(2000);
+    if (!tried && seenAny) {
+      // kandidaty yest', no ne vidimy: klykaem vslepu po pervomu naidennomu
+      for (const fr of page.frames()) {
+        const st = await micState(fr, false);
+        if (!st.found) continue;
+        if (st.muted) {
+          onEvent("mute", `mikrofon vyklyuchen (skrytyy tuslyar, ${st.label})`);
+          return true;
+        }
+        const clicked = await clickMarkedElement(fr, "data-mnema-mic");
+        await page.waitForTimeout(1500);
+        const after = await micState(fr, false);
+        if (after.found && after.muted) {
+          onEvent("mute", "mikrofon vyklyuchen po skrytomu knopke");
+          return true;
+        }
+        onEvent("mute", `slepey klik ne podtverdit (mic=${st.label}, ` +
+          `klik=${clicked ? "da" : "net"})`);
+        break;
+      }
+    }
+    await page.waitForTimeout(2000);
   }
   onEvent(EVENT.ERROR, "ne udalos' vyklyuchit' mikrofon");
   return false;
@@ -657,13 +838,45 @@ function alertOperator(subject, body) {
   }).catch((e) => console.error("alert fail:", e.message));
 }
 
-// Vykhod iz sozwona: Leave/End -> podtverzhdeniye -> dosbir poslednih chankov.
-// Obshchiy dlya ruchnoy ostanovki i avovyhoda po tişine. V personal'noy
-// komnate (PMN) knopka zovetsya "End", a ne "Leave" (vstrecha 39), no
-// uryvayetsya s "recommend"/"send" — pattern' s golyem "end" s granitsami.
-async function clickFirstFrame(page, srcs, waitMs = 4000) {
-  for (const src of srcs) {
-    if (await clickAnyFrame(page, new RegExp(src, "i"), waitMs)) return true;
+// Dialog vtorm Shaga vykhoda («Leave meeting» / «End meeting for all»):
+// obychnyy click do nego ne dokhvachyvaet (vstrecha 48/49: shag 1 'najden',
+// no klik ne realizovalsya — Zoom-toggle reaguirut tol'ko na dispatch
+// polnogo tsykla, kak mikrofon). Klykaem dispatch po elementu s metkoy.
+async function dispatchClickByLabel(page, srcs, maxLabelLen = 40, waitMs = 12000) {
+  const until = Date.now() + waitMs;
+  while (Date.now() < until) {
+    for (const fr of page.frames()) {
+      const ok = await fr.evaluate(({ srcsStr, maxLen }) => {
+        const regs = srcsStr.split("\n").map((s) => new RegExp(s, "i"));
+        const labelOf = (el) => (el.getAttribute("aria-label")
+          || el.getAttribute("title") || el.textContent || "").trim();
+        const tags = ["button", "a", "[role=button]", "[role=menuitem]"];
+        const cands = [];
+        for (const sel of tags) {
+          for (const el of document.querySelectorAll(sel)) {
+            const t = labelOf(el);
+            if (t && t.length <= maxLen && regs.some((r) => r.test(t))) cands.push(el);
+          }
+        }
+        for (const el of cands) {
+          const r = el.getBoundingClientRect();
+          if (!r.width || !r.height) continue;
+          const opts = { bubbles: true, cancelable: true, view: window,
+            clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0 };
+          for (const type of ["pointerover", "pointerenter", "pointerdown",
+                              "pointerup", "mouseover", "mousedown", "mouseup", "click"]) {
+            const ev = type.startsWith("pointer")
+              ? new PointerEvent(type, { ...opts, pointerId: 1, isPrimary: true })
+              : new MouseEvent(type, opts);
+            el.dispatchEvent(ev);
+          }
+          return true;
+        }
+        return false;
+      }, { srcsStr: srcs.join("\n"), maxLen: maxLabelLen }).catch(() => false);
+      if (ok) return true;
+      await page.waitForTimeout(1000);
+    }
   }
   return false;
 }
@@ -671,12 +884,28 @@ async function clickFirstFrame(page, srcs, waitMs = 4000) {
 async function leaveMeetingGracefully(page, state, onEvent) {
   let leaveClicked = false;
   try {
-    leaveClicked = await clickFirstFrame(page, LEAVE_SRCS, 2500);
-    onEvent("leaving", leaveClicked ? "nahata knopka Leave/End" : "knopka Leave/End nie naydena");
+    // shag 1: krasnaya knopka "Leave" (skrytyy tuslyar — snachala razbudit';
+    // klik cherez dispatch: Zoom nie reagiruut na obychnyy click)
+    await wakeUi(page);
+    leaveClicked = await dispatchClickByLabel(page, LEAVE_SRCS, 12, 8000);
+    onEvent("leaving", leaveClicked ? "nahata knopka Leave/End (shag 1/2)"
+                                    : "knopka Leave/End nie naydena");
     if (leaveClicked) {
-      await page.waitForTimeout(2500);
-      // dialog podtverzhdeniya: «Leave meeting» / «End meeting for all» / «Disconnect»
-      await clickFirstFrame(page, LEAVE_DIALOG_SRCS, 4000);
+      // shag 2: vyskakhyvayet dialog s vtoroy knopkoy «Leave meeting»
+      // (dlya hosta — «End meeting for all»)
+      await page.waitForTimeout(1500);
+      const confirmed = await dispatchClickByLabel(page, LEAVE_DIALOG_SRCS, 40, 12000);
+      onEvent("leaving", confirmed ? "podtverzhden vykhod v dialoge (shag 2/2)"
+                                   : "dialog ne nayden); vtoraya popytka shaga 1");
+      if (!confirmed) {
+        leaveClicked = await dispatchClickByLabel(page, LEAVE_SRCS, 12, 4000);
+        if (leaveClicked) {
+          await page.waitForTimeout(1500);
+          const c2 = await dispatchClickByLabel(page, LEAVE_DIALOG_SRCS, 40, 8000);
+          onEvent("leaving", c2 ? "podtverzhden vykhod so vtoroy popytki"
+                                : "dialog nie podtvyerden — zakroyem okno");
+        }
+      }
     }
   } catch (e) {
     onEvent(EVENT.ERROR, `leave: ${e.message}`);

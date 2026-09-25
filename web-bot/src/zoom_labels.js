@@ -36,6 +36,7 @@ export function micMutedFromLabel(label) {
 export const LEAVE_SRCS = [
   "leave meeting", "leave this meeting", "выйти (с|из) (встречи|созвона)",
   "оставить встречу", "покинуть встречу",
+  "^leave$", "^выйти$", "^покинуть$", "^оставить$", // vstrecha 41: aria-label "Leave" golyakom
   "end meeting", "end for all", "end all meetings", "end call", "^end$",
   "завершить (встреч|созвон)", "закончить (встреч|созвон)",
 ];
@@ -76,4 +77,46 @@ export function isEndMeetingLabel(label) {
 
 export function isJoinedControlLabel(label) {
   return isLeaveMeetingLabel(label) || isEndMeetingLabel(label);
+}
+
+// --- strukturnye priznaki DOM (vstrecha 40: tuslyar Zoom skryt bez myshi, ---
+// --- innerText pust, no knopka Leave yest' v DOM kak #leave_button) --------
+export const JOINED_DOM_SEL =
+  '#leave_button, [data-tid="leave_button"], [data-tid="leave_meeting"], ' +
+  '#disconnect_call_button, #meetingControlBtnsLeave';
+// Banner "nety audia" (puskayetsya posle vhoda bez podklyucheniya zvuka).
+export const NO_AUDIO_SEL =
+  '#join_with_audio_link, [data-tid="join_with_audio_link"]';
+
+// Priznak zala BEZ Leave-knopki (vstrecha 43: Leave ne sovpa ni s odnim
+// patternom, no aria-label "mute my microphone"/"unmute my microphone"
+// byvaet TOL'KO v zale — na pre-join preview tot nazivaetsya prosto "mute").
+export const IN_MEETING_LABELS = [
+  "^mute my microphone$", "^unmute my microphone$",
+  "^open the participants list",
+];
+
+export function isInMeetingLabel(label) {
+  const t = norm(label);
+  if (!t) return false;
+  return IN_MEETING_LABELS.some((s) => re(s).test(t));
+}
+
+export const IN_MEETING_SRC = IN_MEETING_LABELS.join("|");
+
+// Chisty verdict po agregirovannym po signalam (dlya testov).
+// Poryadok vazhen (vstrecha 45/46): structural'nyy priznak zala (leaveBtn)
+// idu PIERED bot_wall — na zhivoy zapisi tekst vstroeannyh freymov (team-chat,
+// whiteboard) sluchayno soderzhal frazy antybot-steny, a knopki zala pri etom
+// byli na meste. Na nastoyashchey stene knopok zala NET, tak chto poryadok
+// bezopasen.
+export function verdictFromSignals(s) {
+  if (s.signRequired) return "login_required";
+  if (s.leaveBtn) return "joined";
+  if (s.botWall && !s.captcha) return "bot_wall";
+  if (s.ended) return "meeting_ended";
+  if (s.captcha) return "captcha";
+  if (s.waitingRoom) return "waiting_room";
+  if (s.joinBrowser || s.join || s.micJoin) return "prejoin";
+  return "pending";
 }
