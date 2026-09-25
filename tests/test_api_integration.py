@@ -208,9 +208,11 @@ def test_web_pages_render(client):
 
 def test_jobs_page_renamed_and_start_now_option(client):
     r = client.get("/jobs")
-    assert "Запланировать задачу" in r.text
-    assert "Создать задачу" not in r.text
+    assert "Запланировать встречу" in r.text
+    assert "Запланировать задачу" not in r.text
     assert 'name="start_now"' in r.text
+    assert 'name="end_at"' in r.text
+    assert 'step="300"' in r.text
 
 
 def test_web_job_create_start_now_ignores_start_at(client):
@@ -263,6 +265,45 @@ def test_web_job_create_start_at_is_moscow_time(client):
              if x["zoom_meeting_id"] == "777777771")
     started = dt.datetime.fromisoformat(j["start_at"]).replace(tzinfo=dt.timezone.utc)
     assert started == dt.datetime(2026, 10, 1, 13, 0, tzinfo=dt.timezone.utc)
+
+
+def test_web_job_create_end_at_is_moscow_time(client):
+    naive = "2026-10-01T17:30"
+    r = client.post("/jobs/create", data={
+        "meeting_link": "https://us05web.zoom.us/j/777777772",
+        "topic": "EndMsk", "start_at": "2026-10-01T16:00", "end_at": naive},
+        follow_redirects=False)
+    assert r.status_code == 303
+    j = next(x for x in client.get("/api/jobs").json()
+             if x["zoom_meeting_id"] == "777777772")
+    ji = client.get(f"/api/jobs/{j['id']}/join-info")
+    assert ji.status_code == 200
+    end_at = ji.json()["end_at"]
+    assert end_at is not None
+    end = dt.datetime.fromisoformat(end_at)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=dt.timezone.utc)
+    assert end == dt.datetime(2026, 10, 1, 14, 30, tzinfo=dt.timezone.utc)
+
+
+def test_web_job_create_end_before_start_rejected(client):
+    r = client.post("/jobs/create", data={
+        "meeting_link": "https://us05web.zoom.us/j/777777773",
+        "topic": "BadEnd", "start_at": "2026-10-01T17:00", "end_at": "2026-10-01T16:00"},
+        follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/jobs?error=end_before_start"
+    jobs = client.get("/api/jobs").json()
+    assert all(x.get("topic") != "BadEnd" for x in jobs)
+
+
+def test_web_job_create_end_at_without_start_allowed(client):
+    r = client.post("/jobs/create", data={
+        "meeting_link": "https://us05web.zoom.us/j/777777774",
+        "topic": "EndOnly", "end_at": "2026-10-01T16:00"},
+        follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/jobs/")
 
 
 def test_web_job_create_invalid_link_empty(client):

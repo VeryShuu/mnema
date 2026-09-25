@@ -15,6 +15,7 @@ from .zoom_link import extract_meeting_id, normalize_join_link
 def create_job(*, meeting_link: str | None = None, meeting_id: str | None = None,
                pwd: str | None = None, topic: str = "",
                start_at: dt.datetime | None = None,
+               end_at: dt.datetime | None = None,
                duration_max_min: int | None = None,
                created_by: str = "api") -> Job:
     src = meeting_link or (meeting_id or "")
@@ -26,6 +27,11 @@ def create_job(*, meeting_link: str | None = None, meeting_id: str | None = None
     if start_at is not None and start_at.tzinfo is None:
         from .tz import local_to_utc
         start_at = local_to_utc(start_at)  # naivnyj vzor = lokal'noe vremya operatora
+    if end_at is not None and end_at.tzinfo is None:
+        from .tz import local_to_utc
+        end_at = local_to_utc(end_at)
+    if end_at is not None and start_at is not None and end_at <= start_at:
+        raise ValueError("end_at dolzhen byt' pozhe start_at")
     immediate = start_at is None
     if immediate:
         start_at = dt.datetime.now(dt.timezone.utc)
@@ -34,6 +40,7 @@ def create_job(*, meeting_link: str | None = None, meeting_id: str | None = None
         job = Job(zoom_meeting_id=mid, join_link=join_link,
                   pwd_ref=(store_pwd(mid, pwd) if pwd else None),
                   topic=topic or f"Meeting {mid}", start_at=start_at,
+                  end_at=end_at,
                   duration_max_min=duration_max_min, status=status,
                   created_by=created_by)
         s.add(job)

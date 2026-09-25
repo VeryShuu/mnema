@@ -31,6 +31,7 @@ class Job(Base):
     pwd_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
     topic: Mapped[str] = mapped_column(String(512), default="")
     start_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_max_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="scheduled", index=True)
     created_by: Mapped[str] = mapped_column(String(64), default="api")

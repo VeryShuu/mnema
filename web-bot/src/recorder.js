@@ -119,7 +119,7 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
   const state = {
     stopRequested: false, stopReason: null, reloads: 0, joinedAt: null,
     lastChunksTs: Date.now(), lastSoundTs: Date.now(),
-    lastNavTs: Date.now(), chunksSaved: 0, vnc,
+    lastNavTs: Date.now(), chunksSaved: 0, vnc, endAtMs: null,
   };
   holder.requestStop = (reason) => {
     state.stopRequested = true;
@@ -287,6 +287,13 @@ async function joinMeeting(page, cfg, state, onEvent, jobId) {
   if (!joinUrl) {
     const meta = await fetchJobMeta(jobId);
     if (!meta) return { ok: false, reason: "timeout", error: "net meta job" };
+    if (meta.end_at) {
+      // naive-ISO iz SQLite bez offseta vsegda UTC: Date.parse bez Z prochyotal
+      // by kak lokal'noe vremya
+      const iso = /Z|[+-]\d{2}:?\d{2}$/.test(meta.end_at) ? meta.end_at : meta.end_at + "Z";
+      const t = Date.parse(iso);
+      if (Number.isFinite(t)) state.endAtMs = t;
+    }
     joinUrl = joinUrlFromMeta(cfg, meta);
   }
   onEvent(EVENT.NAVIGATING, "to join url");
@@ -963,6 +970,7 @@ async function waitForEnd(page, cfg, state, onEvent) {
     const d = decideSilence({
       nowMs: Date.now(), joinedAtMs: state.joinedAt, lastSoundTsMs: state.lastSoundTs,
       levelDb, thresholdDb: cfg.silenceLevelDb, graceMs, silenceMs: silenceLimitMs,
+      endAtMs: state.endAtMs,
     });
     state.lastSoundTs = d.lastSoundTs;
     if (d.leave) {

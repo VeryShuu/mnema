@@ -94,3 +94,62 @@ test("na sekundu ranshe poroga — ne leave", () => {
   const d = decideSilence(base({ nowMs: joined + GRACE + SILENCE - 1, lastSoundTsMs: joined + GRACE }));
   assert.equal(d.leave, false);
 });
+
+// --- endAtMs: aktivaciya proverki tishiny ot predpolagaemogo okonchaniya ---
+
+test("endAt: do okonchaniya proverka ne aktivna, daže posle greyysa", () => {
+  const joined = 1_000_000;
+  const endAt = joined + 2 * GRACE;
+  const d = decideSilence(base({
+    nowMs: joined + GRACE + SILENCE, joinedAtMs: joined, endAtMs: endAt,
+    lastSoundTsMs: joined, levelDb: -90,
+  }));
+  assert.equal(d.graceDone, false);
+  assert.equal(d.leave, false);
+});
+
+test("endAt: posle okonchaniya i tişine >= silenceMs — leave", () => {
+  const joined = 1_000_000;
+  const endAt = joined + 10 * MIN;
+  const d = decideSilence(base({
+    nowMs: endAt + SILENCE, joinedAtMs: joined, endAtMs: endAt,
+    lastSoundTsMs: endAt, levelDb: -90,
+  }));
+  assert.equal(d.graceDone, true);
+  assert.equal(d.leave, true);
+});
+
+test("endAt: srazu posle okonchaniya, no tişine masih'e poroga — ne leave", () => {
+  const joined = 1_000_000;
+  const endAt = joined + 10 * MIN;
+  const d = decideSilence(base({
+    nowMs: endAt + MIN, joinedAtMs: joined, endAtMs: endAt,
+    lastSoundTsMs: endAt, levelDb: -90,
+  }));
+  assert.equal(d.graceDone, true);
+  assert.equal(d.leave, false);
+});
+
+test("endAt: endAt ran'şe greyysa — proverka aktivna s endAt (greyys nie tyanetsya)", () => {
+  const joined = 1_000_000;
+  const endAt = joined + 5 * MIN; // men'şe GRACE
+  const d = decideSilence(base({
+    nowMs: endAt + SILENCE, joinedAtMs: joined, endAtMs: endAt,
+    lastSoundTsMs: endAt, levelDb: -90,
+  }));
+  assert.equal(d.leave, true);
+});
+
+test("endAt null/undefined — padenie na grace-rezhim (obratnaya sovmestimost')", () => {
+  const joined = 1_000_000;
+  const on = decideSilence(base({
+    nowMs: joined + GRACE + SILENCE, joinedAtMs: joined, endAtMs: null,
+    lastSoundTsMs: joined + GRACE,
+  }));
+  assert.equal(on.leave, true);
+  const early = decideSilence(base({
+    nowMs: joined + 10 * MIN, joinedAtMs: joined, endAtMs: undefined,
+    lastSoundTsMs: joined,
+  }));
+  assert.equal(early.leave, false);
+});

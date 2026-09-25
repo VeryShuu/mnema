@@ -15,12 +15,17 @@ export function isSoundLevel(levelDb, thresholdDb) {
 // leave = proshyel greyys ot momenta vklyucheniya zapisi I zvuk otсутstvuyet
 // nepreryvno >= silenceMs. Tişина mozhet nabegat' vo vremya greyysa — togda
 // vyhod vozmožen syrazu po ego okonchanii.
+// endAtMs (optional) — predpolagaemoe okonchanie vstrechi: esli zadano,
+// proverka tishiny aktiviruyetsya ne po greyysu, a s momenta endAtMs.
 export function decideSilence({ nowMs, joinedAtMs, lastSoundTsMs,
-                                levelDb, thresholdDb, graceMs, silenceMs }) {
+                                levelDb, thresholdDb, graceMs, silenceMs,
+                                endAtMs }) {
   const sound = isSoundLevel(levelDb, thresholdDb);
   const lastSoundTs = sound ? nowMs : lastSoundTsMs;
   const silenceMsActual = nowMs - lastSoundTs;
-  const graceDone = nowMs - joinedAtMs >= graceMs;
+  const graceDone = (endAtMs !== null && endAtMs !== undefined)
+    ? nowMs >= endAtMs
+    : nowMs - joinedAtMs >= graceMs;
   return {
     sound,
     lastSoundTs,

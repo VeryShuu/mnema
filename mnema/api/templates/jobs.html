@@ -4,11 +4,12 @@
 <h2>Встречи и расписание</h2>
 {% if error_text %}<div class="card" style="border-color:var(--err);color:var(--err)">{{ error_text }}</div>{% endif %}
 <div class="card">
-  <h3>Запланировать задачу</h3>
-  <form method="post" action="/jobs/create" style="display:flex;gap:.5rem;flex-wrap:wrap" onsubmit="return validateZoomLink(this)">
+  <h3>Запланировать встречу</h3>
+  <form method="post" action="/jobs/create" style="display:flex;gap:.5rem;flex-wrap:wrap" onsubmit="return validateSchedule(this)">
     <input name="meeting_link" placeholder="Ссылка-приглашение Zoom или номер встречи" size="50" required>
     <input name="topic" placeholder="Тема">
-    <input name="start_at" type="datetime-local" title="Пусто — записать сейчас. Время московское">
+    <input name="start_at" type="datetime-local" step="300" min="0" title="Пусто — записать сейчас. Время московское">
+    <input name="end_at" type="datetime-local" step="300" min="0" title="Предполагаемое окончание созвона. После него начинается проверка тишины. Время московское">
     <button type="submit" class="primary">Запланировать</button>
   </form>
   <form method="post" action="/jobs/import-ics" enctype="multipart/form-data" style="margin-top:.7rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
@@ -69,6 +70,16 @@ function validateZoomLink(form){
   if(!ok){
     alert("Некорректная ссылка Zoom. Пример: https://us06web.zoom.us/j/4383506695?pwd=... или номер встречи (9–11 цифр)");
     form.meeting_link.focus();
+    return false;
+  }
+  return true;
+}
+function validateSchedule(form){
+  if(!validateZoomLink(form)) return false;
+  var s=form.start_at.value, e=form.end_at.value;
+  if(s && e && e<=s){
+    alert("Время окончания должно быть позже времени начала");
+    form.end_at.focus();
     return false;
   }
   return true;

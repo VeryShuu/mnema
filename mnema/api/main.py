@@ -128,7 +128,7 @@ def api_join_info(jid: int):
         if job is None:
             raise HTTPException(404)
         return {"meeting_id": job.zoom_meeting_id, "pwd": get_pwd(job.pwd_ref),
-                "join_link": job.join_link}
+                "join_link": job.join_link, "end_at": job.end_at}
 
 
 # vnutrennie sobytiya ot web-bot (FT-9 event-log + statusy)
@@ -807,7 +807,8 @@ def web_jobs(request: Request, status: str | None = None, error: str | None = No
         jobs = s.scalars(q).all()
     error_text = {"link": "Некорректная ссылка Zoom: нужна ссылка вида "
                           "https://us06web.zoom.us/j/123456789?pwd=... или ID встречи (9–11 цифр)",
-                  "date": "Некорректная дата начала"}.get(error or "", None)
+                  "date": "Некорректная дата начала",
+                  "end_before_start": "Время окончания должно быть позже времени начала"}.get(error or "", None)
     return templates.TemplateResponse(request, "jobs.html", {
         "request": request, "jobs": jobs, "status_filter": status,
         "error_text": error_text})
@@ -836,7 +837,21 @@ async def web_job_create(request: Request):
         except ValueError:
             return RedirectResponse("/jobs?error=date", status_code=303)
         start_at = local_to_utc(start_at)  # datetime-local = время оператора (МСК)
-    job = create_job(meeting_link=link, topic=topic, start_at=start_at, created_by="web")
+    end_raw = str(form.get("end_at", "")).strip()
+    end_at = None
+    if end_raw:
+        try:
+            end_at = dt.datetime.fromisoformat(end_raw)
+        except ValueError:
+            return RedirectResponse("/jobs?error=date", status_code=303)
+        end_at = local_to_utc(end_at)
+    if end_at is not None and start_at is not None and end_at <= start_at:
+        return RedirectResponse("/jobs?error=end_before_start", status_code=303)
+    try:
+        job = create_job(meeting_link=link, topic=topic, start_at=start_at,
+                         end_at=end_at, created_by="web")
+    except ValueError:
+        return RedirectResponse("/jobs?error=end_before_start", status_code=303)
     return RedirectResponse(f"/jobs/{job.id}", status_code=303)
 
 
