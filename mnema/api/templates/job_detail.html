@@ -2,7 +2,18 @@
 {% from "_macros.html" import badge %}
 {% block content %}
 <div class="page-head">
-  <h2>Встреча №{{ job.id }} — {{ job.topic }} {% if job.source == 'upload' %}<span class="badge upload">архив</span>{% endif %}</h2>
+  <h2>Встреча №{{ job.id }} — <span id="topic-text">{{ job.topic }}</span>
+    <button type="button" class="icon-btn" id="rename-btn" title="Переименовать" onclick="startRename()">✎</button>
+    <button type="button" class="icon-btn danger" title="Удалить встречу"
+            onclick="deleteMeeting({{ job.id }})">🗑</button>
+    {% if job.source == 'upload' %}<span class="badge upload">Архив</span>{% endif %}
+  </h2>
+  <p id="rename-row" style="display:none">
+    <input id="rename-input" size="50" value="{{ job.topic|e }}">
+    <button type="button" class="primary" onclick="saveRename({{ job.id }})">Сохранить</button>
+    <button type="button" onclick="cancelRename()">Отмена</button>
+    <span id="rename-status" class="muted"></span>
+  </p>
 </div>
 <div class="card">
   <div class="table-wrap">
@@ -10,7 +21,7 @@
     {% if job.source == 'upload' %}
     <tr><th>Тип</th><td>Архивная запись (загружена вручную)</td></tr>
     {% if upload %}<tr><th>Файл</th><td>{{ upload.filename }}
-      {% if upload.bytes_total %} ({{ (upload.bytes_received/1048576)|round(1) }} из {{ (upload.bytes_total/1048576)|round(1) }} МБ){% endif %}
+      {% if upload.bytes_total %} ({{ upload.bytes_total|human_size }}){% endif %}
       {% if upload.status == 'complete' %} · <a href="/api/jobs/{{ job.id }}/source">скачать оригинал</a>{% endif %}
     </td></tr>{% endif %}
     {% else %}
@@ -59,7 +70,7 @@
 <div class="card">
   <h3>Аудиозаписи</h3>
   {% for a in audio %}
-    <p class="audio-block"><b>{{ a.kind|upper }}</b> — {{ '%.0f'|format(a.duration_s) if a.duration_s else '?' }} с, {{ (a.bytes//1024 if a.bytes else '?') }} КБ
+    <p class="audio-block"><b>{{ a.kind|upper }}</b> — {{ '%.0f'|format(a.duration_s) if a.duration_s else '?' }} с, {{ a.bytes|human_size }}
       {% if a.kind in ('mp3','wav','webm') %}
       · <a href="/api/jobs/{{ job.id }}/audio?format={{ a.kind }}">скачать</a>
       {% if a.kind=='mp3' %}<audio controls src="/api/jobs/{{ job.id }}/audio?format=mp3"></audio>{% endif %}
@@ -81,6 +92,52 @@
 </div>
 {% endblock %}
 {% block scripts %}
+<script>
+function startRename() {
+  document.getElementById('rename-row').style.display = '';
+  const inp = document.getElementById('rename-input');
+  inp.focus();
+  inp.select();
+}
+function cancelRename() {
+  document.getElementById('rename-status').textContent = '';
+  document.getElementById('rename-input').value =
+    document.getElementById('topic-text').textContent;
+  document.getElementById('rename-row').style.display = 'none';
+}
+function saveRename(jid) {
+  const st = document.getElementById('rename-status');
+  const topic = document.getElementById('rename-input').value.trim();
+  if (!topic) { st.textContent = 'Название не может быть пустым'; return; }
+  const fd = new FormData(); fd.append('topic', topic);
+  st.textContent = '…';
+  fetch('/jobs/' + jid + '/rename', { method: 'POST', body: fd })
+    .then(async (r) => {
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        st.textContent = 'Не удалось: ' + (e.detail || r.status);
+        return;
+      }
+      document.getElementById('topic-text').textContent = topic;
+      document.getElementById('rename-row').style.display = 'none';
+      st.textContent = '';
+    })
+    .catch((e) => { st.textContent = 'Ошибка: ' + e.message; });
+}
+function deleteMeeting(jid) {
+  if (!confirm('Удалить встречу вместе с записями, протоколом и файлами? Действие необратимо.')) return;
+  fetch('/jobs/' + jid + '/delete', { method: 'POST' })
+    .then(async (r) => {
+      if (!r.ok && !r.redirected) {
+        const e = await r.json().catch(() => ({}));
+        alert('Не удалось удалить: ' + (e.detail || r.status));
+        return;
+      }
+      location.href = '/jobs';
+    })
+    .catch((e) => alert('Ошибка: ' + e.message));
+}
+</script>
 <script>
 function openJobVnc(jid) {
   const btn = document.getElementById('vnc-btn');

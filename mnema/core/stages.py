@@ -188,6 +188,14 @@ def build_stages(job_id: int) -> list[dict]:
     return stages
 
 
+def running_stage_title(job_id: int) -> str | None:
+    """Zagolovok tekushchego (running) etapa dlya podrobnogo statusa."""
+    for st in build_stages(job_id):
+        if st["state"] == "running":
+            return st["title"]
+    return None
+
+
 def _done_events(key: str, vad_done: bool, asr_done: bool, diar_done: bool,
                  vp_done: bool, steno_exists: bool, proto_structured: bool):
     return {

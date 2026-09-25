@@ -7,8 +7,8 @@ from pathlib import Path
 from sqlalchemy import select
 
 from .db import get_session
-from .models import Job, SessionEvent
-from .secrets_store import store_pwd
+from .models import Job, Protocol, ReviewRequest, SessionEvent
+from .secrets_store import delete_pwd, store_pwd
 from .zoom_link import extract_meeting_id, normalize_join_link
 
 
@@ -75,3 +75,71 @@ def cancel_job(job_id: int) -> Job | None:
     if cur in ("scheduled", "launching", "recording", "processing", "uploading"):
         return transition(job_id, "cancelled", event="cancelled")
     return job
+
+
+def rename_job(job_id: int, topic: str) -> Job | None:
+    """Menyaem tol'ko nazvanie (topic); imya 'Vstrecha №' ostavlyaem kak est'.
+
+    Pustaya/otсутstvuyushchaya topic -> 422 na urovne API, zdes' vozvrat None
+    esli vstrechi net.
+    """
+    topic = (topic or "").strip()[:512]
+    with get_session() as s:
+        job = s.get(Job, job_id)
+        if job is None:
+            return None
+        old = job.topic
+        job.topic = topic
+        s.add(SessionEvent(job_id=job_id, event="renamed",
+                           detail=f"'{old}' -> '{topic}'"))
+        s.commit()
+        s.refresh(job)
+        return job
+
+
+def delete_job(job_id: int) -> bool:
+    """Polnoe udalenie vstrechi: BDD-zapisi + fayly na diske + secret.
+
+    Vozvra True YESLI vstecha sushchestvovala i udalena, False esli net.
+    """
+    with get_session() as s:
+        job = s.get(Job, job_id)
+        if job is None:
+            return False
+        paths: list[str] = []
+        for up in job.uploads:
+            if up.path:
+                paths.append(up.path)
+        for a in job.audio_files:
+            if a.path:
+                paths.append(a.path)
+        proto = s.scalars(select(Protocol).where(
+            Protocol.job_id == job_id)).first()
+        if proto:
+            for p in (proto.md_path, proto.docx_path, proto.steno_md_path):
+                if p:
+                    paths.append(p)
+        for e in job.events:
+            s.delete(e)
+        for a in job.audio_files:
+            s.delete(a)
+        for up in job.uploads:
+            s.delete(up)
+        for seg in job.segments:
+            s.delete(seg)
+        for rr in s.scalars(select(ReviewRequest).where(
+                ReviewRequest.job_id == job_id)).all():
+            s.delete(rr)
+        if proto:
+            s.delete(proto)
+        delete_pwd(job.pwd_ref)
+        s.delete(job)
+        s.commit()
+    for p in paths:
+        Path(p).unlink(missing_ok=True)
+    try:
+        from .scheduler import get_scheduler
+        get_scheduler().remove_job(f"launch:{job_id}")
+    except Exception:  # noqa: BLE001 — no zadaschika / net taska
+        pass
+    return True

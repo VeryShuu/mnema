@@ -19,7 +19,7 @@ from sqlalchemy import select
 from ..core import registry
 from ..core.capabilities import capability_status
 from ..core.db import Base, get_engine, get_session
-from ..core.jobs_api import cancel_job, create_job
+from ..core.jobs_api import cancel_job, create_job, delete_job, rename_job
 from ..core.models import (AudioFile, Job, Notification, Protocol,
                            ReviewRequest, Segment, SessionEvent, SessionHealth,
                            Upload, VoiceProfile)
@@ -35,8 +35,21 @@ from ..core.tz import app_tz_label, fmt_local, local_to_utc, local_utc_offset, t
 app = FastAPI(title="Mnema", version="0.1.0")
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+def human_size(n):
+    if not n:
+        return "?"
+    size = float(n)
+    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
+        if size < 1024 or unit == "ТБ":
+            return f"{size:.1f} {unit}".replace(".0 ", " ")
+        size /= 1024
+
+
 templates.env.filters["msk"] = lambda v: fmt_local(v)
 templates.env.filters["msk_sec"] = lambda v: fmt_local(v, "%d.%m.%Y %H:%M:%S")
+templates.env.filters["human_size"] = human_size
 templates.env.globals["app_tz_label"] = app_tz_label
 templates.env.globals["local_utc_offset"] = local_utc_offset
 STATIC_DIR = Path(__file__).parent / "static"
@@ -761,7 +774,7 @@ def web_dashboard(request: Request):
         active = s.scalars(select(Job).where(
             Job.status.in_(("scheduled", "launching", "recording", "processing",
                             "uploading"))
-        ).order_by(Job.start_at).limit(20)).all()
+        ).order_by(Job.id).limit(20)).all()
         recent_failed = s.scalars(select(Job).where(
             Job.status == "failed").order_by(Job.ended_ts.desc()).limit(10)).all()
         h = s.scalars(select(SessionHealth).order_by(SessionHealth.checked_ts.desc())).first()
@@ -774,10 +787,17 @@ def web_dashboard(request: Request):
         if key.startswith("job-") and sess.get("job_id") is not None:
             sess["url"] = _vnc_payload(request, sess)
             vnc_jobs[int(sess["job_id"])] = sess
+    from ..core.stages import running_stage_title
+    job_stage = {}
+    for j in active:
+        if j.status == "processing":
+            t = running_stage_title(j.id)
+            if t:
+                job_stage[j.id] = t
     return templates.TemplateResponse(request, "dashboard.html", {
         "request": request, "caps": caps, "active": active,
         "recent_failed": recent_failed, "zoom_health": h, "queue_ok": queue_ok,
-        "vnc_setup": setup, "vnc_jobs": vnc_jobs,
+        "vnc_setup": setup, "vnc_jobs": vnc_jobs, "job_stage": job_stage,
         "job_status_counts": _status_counts()})
 
 
@@ -859,6 +879,30 @@ async def web_job_create(request: Request):
 async def web_job_cancel(jid: int, request: Request):
     cancel_job(jid)
     return HTMLResponse("ok")
+
+
+@app.post("/jobs/{jid}/rename")
+async def web_job_rename(jid: int, request: Request):
+    form = await request.form()
+    topic = str(form.get("topic", "")).strip()
+    if not topic:
+        raise HTTPException(422, "Nazvanie ne mozhet byt' pustym")
+    job = rename_job(jid, topic)
+    if job is None:
+        raise HTTPException(404)
+    return HTMLResponse(job.topic)
+
+
+@app.post("/jobs/{jid}/delete")
+async def web_job_delete(jid: int):
+    with get_session() as s:
+        job = s.get(Job, jid)
+        if job is None:
+            raise HTTPException(404)
+        if job.status in ("scheduled", "launching", "recording"):
+            raise HTTPException(409, "Ostanovite vstrechu pered udaleniem")
+    delete_job(jid)
+    return RedirectResponse("/jobs", status_code=303)
 
 
 @app.post("/jobs/{jid}/leave")

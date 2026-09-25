@@ -90,6 +90,48 @@ def test_cancel_scheduled(client):
     assert r.status_code == 200 and r.json()["status"] == "cancelled"
 
 
+def test_rename_job_updates_topic(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "111222333",
+                                         "topic": "Staroe"}).json()["id"]
+    r = client.post(f"/jobs/{jid}/rename", data={"topic": "Novoe imya"})
+    assert r.status_code == 200
+    assert client.get(f"/api/jobs/{jid}").json()["topic"] == "Novoe imya"
+
+
+def test_rename_job_empty_topic_rejected(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "111222334",
+                                         "topic": "Staroe"}).json()["id"]
+    r = client.post(f"/jobs/{jid}/rename", data={"topic": "   "})
+    assert r.status_code == 422
+
+
+def test_rename_job_not_found(client):
+    r = client.post("/jobs/999999/rename", data={"topic": "Net"})
+    assert r.status_code == 404
+
+
+def test_delete_active_recording_rejected(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "111222335"}).json()["id"]
+    client.post(f"/api/jobs/{jid}/status", json={"status": "launching"})
+    client.post(f"/api/jobs/{jid}/status", json={"status": "recording"})
+    r = client.post(f"/jobs/{jid}/delete", follow_redirects=False)
+    assert r.status_code == 409
+    assert client.get(f"/api/jobs/{jid}").status_code == 200
+
+
+def test_delete_cancelled_job_removes_it(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "111222336",
+                                         "topic": "Udalit"}).json()["id"]
+    client.delete(f"/api/jobs/{jid}")  # cancelled
+    r = client.post(f"/jobs/{jid}/delete", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/jobs"
+    assert client.get(f"/api/jobs/{jid}").status_code == 404
+
+
+def test_delete_job_not_found(client):
+    assert client.post("/jobs/999999/delete").status_code == 404
+
+
 def test_leave_job_not_found(client):
     r = client.post("/api/jobs/999999/leave")
     assert r.status_code == 404

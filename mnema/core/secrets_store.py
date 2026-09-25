@@ -35,3 +35,15 @@ def get_pwd(pwd_ref: str | None) -> str | None:
     if not path.exists():
         return None
     return json.loads(path.read_text()).get(pwd_ref)
+
+
+def delete_pwd(pwd_ref: str | None) -> None:
+    if not pwd_ref:
+        return
+    path = _store_path()
+    if not path.exists():
+        return
+    data = json.loads(path.read_text())
+    if pwd_ref in data:
+        del data[pwd_ref]
+        path.write_text(json.dumps(data))

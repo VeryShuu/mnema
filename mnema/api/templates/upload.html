@@ -5,7 +5,7 @@
   <div id="form">
     {% if upload_job_id is none %}
     <p><label>Тема встречи<br><input id="topic" size="60" placeholder="Например: Планёрка 12.09"></label></p>
-    <p><label>Дата прошедшей встречи (МСК)<br><input id="meeting_date" type="datetime-local"></label></p>
+    <p><label>Дата прошедшей встречи (МСК)<br><input id="meeting_date" type="datetime-local" step="300"></label></p>
     <p><label>Примечание<br><input id="note" size="60" placeholder="необязательно"></label></p>
     {% else %}
     <p class="muted">Продолжение загрузки для встречи #{{ upload_job_id }}. Выберите тот же файл — загрузка продолжится с последней принятой позиции.</p>

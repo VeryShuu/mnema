@@ -23,7 +23,7 @@
     <tr><th>VNC: экран настройки</th><td>
       {% if vnc_setup and vnc_setup.status in ('ready','running') %}
         <span class="badge done">Активна</span>
-        <a href="{{ vnc_setup.url }}" target="_blank" rel="noopener"
+        <a href="{{ vnc_setup.url }}" target="_blank" rel="noopener" class="btn"
            title="Живой браузер с Zoom: войдите в аккаунт — печенье и отпечатки сохранятся в базовый профиль">Открыть экран настройки</a>
         <button type="button" id="setup-restart" onclick="restartSetupVnc()">Пересоздать</button>
       {% else %}
@@ -44,18 +44,21 @@
   <h3>Активные записи</h3>
   <div class="table-wrap">
   <table>
-    <tr><th>№</th><th>Тема</th><th>Встреча Zoom</th><th>Начало (МСК)</th><th>Статус</th><th>VNC</th></tr>
+    <tr><th>№</th><th>Тема</th><th>Встреча Zoom</th><th>Начало (МСК)</th><th>Статус</th><th>VNC</th><th>Действия</th></tr>
     {% for j in active %}<tr>
       <td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td>
       <td>{{ j.topic }}</td><td>{{ j.zoom_meeting_id }}</td><td>{{ j.start_at|msk }}</td>
-      <td>{{ badge(j.status) }}</td>
+      <td>{{ badge(j.status) }}{% if job_stage.get(j.id) %}<span class="muted"> — {{ job_stage[j.id] }}</span>{% endif %}</td>
       <td>{% set vs = vnc_jobs.get(j.id) %}
         {% if vs and vs.url %}<a href="{{ vs.url }}" target="_blank" rel="noopener"
           title="Индивидуальный экран встречи (ввод капчи и т.п.)">экран</a>
         {% elif j.status in ('launching','recording') %}
           <a href="/jobs/{{ j.id }}#vnc" title="Открыть/создать индивидуальный экран встречи">создать</a>
+        {% else %}<span class="muted">—</span>{% endif %}</td>
+      <td>{% if j.status in ('launching','recording') %}
+        <button hx-post="/jobs/{{ j.id }}/leave" hx-confirm="Бот выйдет из созвона, запись будет обработана. Завершить встречу?" hx-on="click: location.reload()">Выйти из созвона</button>
         {% else %}<span class="muted">—</span>{% endif %}</td></tr>
-    {% else %}<tr><td colspan="6" class="muted">Нет активных записей</td></tr>{% endfor %}
+    {% else %}<tr><td colspan="7" class="muted">Нет активных записей</td></tr>{% endfor %}
   </table>
   </div>
 </div>
