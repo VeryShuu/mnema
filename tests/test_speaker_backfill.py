@@ -301,3 +301,22 @@ def test_cluster_embedding_for_none_when_wav_missing(db, monkeypatch):
     from mnema.core.speaker import _cluster_embedding_for
     with _session() as s:
         assert _cluster_embedding_for(s, 999, "SPEAKER_00") is None  # net wav
+
+
+def test_run_speaker_rematch_refreshes_pending_hint(db, monkeypatch):
+    """Povtornyy matsching (posle backfill) perenosit v pending review naydennogo
+    candidate i similarity, no ne zakryvaet ego."""
+    pid = _add_profile("Noviy N.N.")
+    _mk_segments(905, 2)
+    _add_review(905, "SPEAKER_00", None, status="pending", answered_by=None)
+    _speaker_env(monkeypatch, "hint", pid, 0.5)
+    from mnema.worker.tasks import _run_speaker
+    _run_speaker(905)
+    from mnema.core.db import get_session
+    from mnema.core.models import ReviewRequest
+    with get_session() as s:
+        rr = s.scalars(select(ReviewRequest).where(ReviewRequest.job_id == 905)).all()
+        assert len(rr) == 1
+        assert rr[0].status == "pending"
+        assert rr[0].candidate_profile_id == pid
+        assert rr[0].similarity == pytest.approx(0.5)

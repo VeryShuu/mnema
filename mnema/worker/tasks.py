@@ -391,9 +391,11 @@ def _run_speaker(job_id: int) -> None:
                                               "superseded")))).first()
             auto = verdict == "auto" and profile is not None
             if existing is not None:
-                if auto and existing.status == "pending":
-                    existing.candidate_profile_id = profile.id
+                if existing.status == "pending":
+                    if profile is not None:
+                        existing.candidate_profile_id = profile.id
                     existing.similarity = sim
+                if auto and existing.status == "pending":
                     existing.status = "confirmed"
                     existing.answered_by = "voiceprint"
                     existing.answered_ts = datetime.now(timezone.utc)
