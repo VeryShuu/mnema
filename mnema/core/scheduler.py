@@ -82,6 +82,24 @@ def schedule_job_for(job_id: int) -> None:
     jobs_launch.enqueue_launch(job_id, run_at)
 
 
+def reschedule_missed_jobs() -> int:
+    """Vosstanovlenie posle restarta api: in-memory APScheduler teryaet
+    odozhennye zapiski launch:*, rposeskhaem ih zanovo dlya vseh scheduled job.
+
+    Prossrochennye start_at gaydut srazu (schedule_job_for ogranichivaet
+    run_at = max(start_at - prejoin, now)): bot zaidyot v idushchuyu vstrechu.
+    """
+    with get_session() as s:
+        ids = [j.id for j in s.execute(
+            select(Job).where(Job.status == "scheduled")).scalars()]
+    for jid in ids:
+        try:
+            schedule_job_for(jid)
+        except Exception:  # noqa: BLE001 — odna upavshaya job ne lonit rest
+            continue
+    return len(ids)
+
+
 _scheduler: BackgroundScheduler | None = None
 
 

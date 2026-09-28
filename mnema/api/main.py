@@ -70,6 +70,13 @@ def startup() -> None:
         start_default_jobs()
     except Exception as e:  # noqa: BLE001
         print(f"scheduler start failed: {e}", flush=True)
+    try:
+        from ..core.scheduler import reschedule_missed_jobs
+        n = reschedule_missed_jobs()
+        if n:
+            print(f"rescheduled missed jobs: {n}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"reschedule missed jobs failed: {e}", flush=True)
 
 
 # ----------------------------------------------------------------- REST (FT-21)
