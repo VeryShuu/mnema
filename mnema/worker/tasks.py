@@ -374,16 +374,44 @@ def _run_speaker(job_id: int) -> None:
                     seg.speaker_name = None
                     seg.speaker_source = "unresolved"
                     seg.needs_review = True
-            # sozdat' review-request (odin na klaster)
+            # sozdat' review-request (odin na klaster); auto-sovpadenie
+            # zakryvaetsya avtomatom — operatoru ostat'sya hint/unresolved
+            from datetime import datetime, timezone
             from ..core.models import ReviewRequest
             existing = s.scalars(select(ReviewRequest).where(
                 ReviewRequest.job_id == job_id,
                 ReviewRequest.cluster_label == label,
                 ReviewRequest.status == "pending")).first()
+            human_answered = False
             if existing is None:
-                s.add(ReviewRequest(job_id=job_id, cluster_label=label,
-                                    candidate_profile_id=(profile.id if verdict in ("auto", "hint") and profile else None),
-                                    similarity=sim, status="pending"))
+                existing = s.scalars(select(ReviewRequest).where(
+                    ReviewRequest.job_id == job_id,
+                    ReviewRequest.cluster_label == label,
+                    ReviewRequest.status.in_(("confirmed", "excluded",
+                                              "superseded")))).first()
+            auto = verdict == "auto" and profile is not None
+            if existing is not None:
+                if auto and existing.status == "pending":
+                    existing.candidate_profile_id = profile.id
+                    existing.similarity = sim
+                    existing.status = "confirmed"
+                    existing.answered_by = "voiceprint"
+                    existing.answered_ts = datetime.now(timezone.utc)
+                    stats = dict(profile.match_stats or {})
+                    stats["auto_confirmed"] = stats.get("auto_confirmed", 0) + 1
+                    profile.match_stats = stats
+            else:
+                rv = ReviewRequest(job_id=job_id, cluster_label=label,
+                                   candidate_profile_id=(profile.id if verdict in ("auto", "hint") and profile else None),
+                                   similarity=sim,
+                                   status="confirmed" if auto else "pending",
+                                   answered_by="voiceprint" if auto else None,
+                                   answered_ts=datetime.now(timezone.utc) if auto else None)
+                s.add(rv)
+                if auto:
+                    stats = dict(profile.match_stats or {})
+                    stats["auto_confirmed"] = stats.get("auto_confirmed", 0) + 1
+                    profile.match_stats = stats
             s.commit()
     from ..core.db import get_session as _gs
     with _gs() as s:
