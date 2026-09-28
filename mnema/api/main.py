@@ -1021,10 +1021,13 @@ def web_protocol(request: Request, pid: int):
 
 
 @app.get("/reviews", response_class=HTMLResponse)
-def web_reviews(request: Request):
+def web_reviews(request: Request, job_id: int | None = None):
     with get_session() as s:
-        pending = s.scalars(select(ReviewRequest).where(
-            ReviewRequest.status == "pending").order_by(ReviewRequest.id.desc())).all()
+        crit = [ReviewRequest.status == "pending"]
+        if job_id is not None:
+            crit.append(ReviewRequest.job_id == job_id)
+        pending = s.scalars(select(ReviewRequest).where(*crit)
+                            .order_by(ReviewRequest.id.desc())).all()
         profiles = s.scalars(select(VoiceProfile)).all()
         jobs = {j.id: j for j in s.scalars(select(Job)).all()}
         # etalonnie fragmenty: po segmentu na klastery
@@ -1038,7 +1041,7 @@ def web_reviews(request: Request):
             refsegs[r.id] = list(seg)
     return templates.TemplateResponse(request, "reviews.html", {
         "request": request, "pending": pending, "profiles": profiles,
-        "jobs": jobs, "refsegs": refsegs})
+        "jobs": jobs, "refsegs": refsegs, "job_id": job_id})
 
 
 @app.get("/voices", response_class=HTMLResponse)

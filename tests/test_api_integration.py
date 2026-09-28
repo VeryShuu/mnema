@@ -388,6 +388,24 @@ def test_reviews_page_with_pending(client):
     assert api and api[0]["cluster_label"] == "SPEAKER_UNKNOWN"
 
 
+def test_reviews_page_filtered_by_job(client):
+    """Ссылка из встречи ведёт на уточнения только этой встречи."""
+    from mnema.core.db import get_session
+    from mnema.core.models import ReviewRequest
+    jid1 = client.post("/api/jobs", json={"meeting_id": "111000111"}).json()["id"]
+    jid2 = client.post("/api/jobs", json={"meeting_id": "222000222"}).json()["id"]
+    with get_session() as s:
+        s.add(ReviewRequest(job_id=jid1, cluster_label="CLUSTER_ONE"))
+        s.add(ReviewRequest(job_id=jid2, cluster_label="CLUSTER_TWO"))
+        s.commit()
+    r = client.get(f"/reviews?job_id={jid1}")
+    assert r.status_code == 200
+    assert "CLUSTER_ONE" in r.text
+    assert "CLUSTER_TWO" not in r.text
+    allr = client.get("/reviews")
+    assert "CLUSTER_ONE" in allr.text and "CLUSTER_TWO" in allr.text
+
+
 def _make_review_fixture(client):
     """Job v awaiting_review + pending review + segmenty + meeting.wav (3 s)."""
     from mnema.core.db import get_session
