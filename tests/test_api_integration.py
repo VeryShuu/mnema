@@ -348,6 +348,29 @@ def test_web_job_create_end_at_without_start_allowed(client):
     assert r.headers["location"].startswith("/jobs/")
 
 
+def test_web_job_detail_shows_planned_end(client):
+    r = client.post("/jobs/create", data={
+        "meeting_link": "https://us05web.zoom.us/j/777777775",
+        "topic": "ShowEnd", "start_at": "2026-10-01T16:00", "end_at": "2026-10-01T17:30"},
+        follow_redirects=False)
+    assert r.status_code == 303
+    page = client.get(r.headers["location"])
+    assert page.status_code == 200
+    assert "Плановое окончание (МСК)" in page.text
+    assert "17:30" in page.text
+
+
+def test_web_job_detail_hides_planned_end_when_absent(client):
+    r = client.post("/jobs/create", data={
+        "meeting_link": "https://us05web.zoom.us/j/777777776",
+        "topic": "NoEnd", "start_at": "2026-10-01T16:00"},
+        follow_redirects=False)
+    assert r.status_code == 303
+    page = client.get(r.headers["location"])
+    assert page.status_code == 200
+    assert "Плановое окончание (МСК)" not in page.text
+
+
 def test_web_job_create_invalid_link_empty(client):
     r = client.post("/jobs/create", data={"meeting_link": "", "start_now": "1"},
                     follow_redirects=False)

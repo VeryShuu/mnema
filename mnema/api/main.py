@@ -48,7 +48,21 @@ def human_size(n):
         size /= 1024
 
 
+def human_duration(seconds):
+    if seconds is None:
+        return "?"
+    total = int(round(float(seconds)))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h} ч {m} мин {s} с"
+    if m:
+        return f"{m} мин {s} с"
+    return f"{s} с"
+
+
 templates.env.filters["msk"] = lambda v: fmt_local(v)
+templates.env.filters["human_duration"] = human_duration
 templates.env.filters["msk_sec"] = lambda v: fmt_local(v, "%d.%m.%Y %H:%M:%S")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_tz_label"] = app_tz_label
@@ -842,7 +856,7 @@ def _status_counts() -> dict:
 @app.get("/jobs", response_class=HTMLResponse)
 def web_jobs(request: Request, status: str | None = None, error: str | None = None):
     with get_session() as s:
-        q = select(Job).order_by(Job.start_at.desc()).limit(200)
+        q = select(Job).order_by(Job.id.desc()).limit(200)
         if status:
             q = q.where(Job.status == status)
         jobs = s.scalars(q).all()

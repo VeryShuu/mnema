@@ -30,6 +30,7 @@
     <tr><th>Статус</th><td>{{ badge(job.status) }}</td></tr>
     {% if job.source != 'upload' %}<tr><th>Пароль</th><td>{{ 'задан (скрыт)' if pwd_present else 'не задан' }}</td></tr>{% endif %}
     <tr><th>Начало (МСК)</th><td>{{ job.start_at|msk }}</td></tr>
+    {% if job.end_at %}<tr><th>Плановое окончание (МСК)</th><td>{{ job.end_at|msk }}</td></tr>{% endif %}
     <tr><th>Запись начата (МСК)</th><td>{{ job.started_ts|msk }}</td></tr>
     <tr><th>Завершено (МСК)</th><td>{{ job.ended_ts|msk }}</td></tr>
     {% if job.fail_reason %}<tr><th>Причина сбоя</th><td>{{ job.fail_reason }}</td></tr>{% endif %}
@@ -53,7 +54,7 @@
   {% if vnc_session and vnc_session.status in ('ready','running') %}
     <p>
       <span class="badge done">Доступен</span>
-      <a href="{{ vnc_session.url }}" target="_blank" rel="noopener"
+      <a href="{{ vnc_session.url }}" target="_blank" rel="noopener" class="btn"
          title="Индивидуальный экран этой встречи: введите капчу / пройдите проверку вручную">Открыть экран встречи</a>
       <span class="muted">слот {{ vnc_session.slot }}, {{ vnc_session.display }}</span>
     </p>
@@ -70,7 +71,7 @@
 <div class="card">
   <h3>Аудиозаписи</h3>
   {% for a in audio %}
-    <p class="audio-block"><b>{{ a.kind|upper }}</b> — {{ '%.0f'|format(a.duration_s) if a.duration_s else '?' }} с, {{ a.bytes|human_size }}
+    <p class="audio-block"><b>{{ a.kind|upper }}</b> — {{ a.duration_s|human_duration }}, {{ a.bytes|human_size }}
       {% if a.kind in ('mp3','wav','webm') %}
       · <a href="/api/jobs/{{ job.id }}/audio?format={{ a.kind }}">скачать</a>
       {% if a.kind=='mp3' %}<audio controls src="/api/jobs/{{ job.id }}/audio?format=mp3"></audio>{% endif %}

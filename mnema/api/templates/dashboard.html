@@ -50,10 +50,10 @@
       <td>{{ j.topic }}</td><td>{{ j.zoom_meeting_id }}</td><td>{{ j.start_at|msk }}</td>
       <td>{{ badge(j.status) }}{% if job_stage.get(j.id) %}<span class="muted"> — {{ job_stage[j.id] }}</span>{% endif %}</td>
       <td>{% set vs = vnc_jobs.get(j.id) %}
-        {% if vs and vs.url %}<a href="{{ vs.url }}" target="_blank" rel="noopener"
+        {% if vs and vs.url %}<a href="{{ vs.url }}" target="_blank" rel="noopener" class="btn"
           title="Индивидуальный экран встречи (ввод капчи и т.п.)">экран</a>
         {% elif j.status in ('launching','recording') %}
-          <a href="/jobs/{{ j.id }}#vnc" title="Открыть/создать индивидуальный экран встречи">создать</a>
+          <a href="/jobs/{{ j.id }}#vnc" class="btn" title="Открыть/создать индивидуальный экран встречи">создать</a>
         {% else %}<span class="muted">—</span>{% endif %}</td>
       <td>{% if j.status in ('launching','recording') %}
         <button hx-post="/jobs/{{ j.id }}/leave" hx-confirm="Бот выйдет из созвона, запись будет обработана. Завершить встречу?" hx-on="click: location.reload()">Выйти из созвона</button>
