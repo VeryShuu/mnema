@@ -148,6 +148,15 @@ progress{width:100%;height:10px;accent-color:var(--accent)}
   main{padding:0 .8rem}
 }
 </style>
+<style>
+.tp-panel{position:fixed;z-index:50;background:var(--bg-card);border:1px solid var(--border);border-radius:.6rem;box-shadow:var(--shadow);padding:.4rem .3rem .5rem;min-width:12rem}
+.tp-hour{text-align:center;font-weight:600;font-size:.9rem;padding:.15rem .3rem .4rem}
+.tp-list{max-height:12rem;overflow:auto;display:flex;flex-direction:column}
+.tp-opt{display:block;width:100%;text-align:center;background:transparent;border:none;color:var(--text);font:inherit;padding:.3rem 1.2rem;border-radius:.45rem}
+.tp-opt:hover{background:var(--bg-hover)}
+.tp-opt.tp-active{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.tp-panel[hidden]{display:none}
+</style>
 </head>
 <body>
 <header class="topbar">
@@ -179,6 +188,101 @@ progress{width:100%;height:10px;accent-color:var(--accent)}
     render();
   });
   render();
+})();
+</script>
+<script>
+// datetime-local step="300": rodnoy popup Chrome pokaazyvaet vse 60 minut.
+// Klast na rodnoy kalendar (vybir daty cherez ikonku), a pri kliki po chasah
+// otkryvaet svoi spisok minut tol'ko kratnyh 5. Znacenie vsegda kratno 5.
+(function(){
+  function pad(n){return String(n).padStart(2,'0');}
+  function snapVal(v){
+    if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) return v;
+    var m=parseInt(v.slice(14,16),10), r=Math.round(m/5)*5;
+    if(r===m) return v;
+    var d=new Date(v+":00");
+    if(isNaN(d.getTime())) return v;
+    d.setMinutes(r,0,0);
+    return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+
+      'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+  }
+  var panel=null, cur=null, selHour=null;
+  function ensurePanel(){
+    if(panel) return panel;
+    panel=document.createElement('div');
+    panel.className='tp-panel'; panel.hidden=true;
+    document.body.appendChild(panel);
+    panel.addEventListener('mousedown',function(e){e.preventDefault();});
+    panel.addEventListener('click',function(e){
+      var b=e.target.closest('.tp-opt'); if(!b) return;
+      var mm=b.getAttribute('data-m');
+      var v=cur.value;
+      if(/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(v)) cur.value=v+':'+mm;
+      else if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) cur.value=v.slice(0,14)+mm;
+      cur.dispatchEvent(new Event('input',{bubbles:true}));
+      close();
+    });
+    return panel;
+  }
+  function render(){
+    var h='';
+    h+='<div class="tp-hour">chas '+(selHour!=null?selHour:'--')+'</div><div class="tp-list">';
+    for(var m=0;m<60;m+=5){
+      var mm=pad(m);
+      var act=(cur && cur.value.slice(14,16)===mm)?' tp-active':'';
+      h+='<button type="button" class="tp-opt'+act+'" data-m="'+mm+'">'+mm+'</button>';
+    }
+    h+='</div>';
+    ensurePanel().innerHTML=h;
+  }
+  function open(inp,r){
+    cur=inp;
+    var v=inp.value;
+    selHour=/^\d{4}-\d{2}-\d{2}T(\d{2})/.test(v)?v.slice(11,13):null;
+    render();
+    var p=ensurePanel();
+    p.hidden=false;
+    p.style.left='0px'; // pass 1: merit' pri levo m argine
+    var w=p.offsetWidth,ht=p.offsetHeight;
+    var x=Math.max(4,Math.min(r.left,window.innerWidth-w-4));
+    var y=r.bottom+4;
+    if(y+ht>window.innerHeight-4) y=Math.max(4,r.top-ht-4);
+    p.style.left=x+'px'; p.style.top=y+'px';
+  }
+  function close(){ if(panel) panel.hidden=true; cur=null; }
+  document.addEventListener('click',function(e){
+    var inp=e.target.closest && e.target.closest('input[type="datetime-local"]');
+    if(!inp){ if(cur && panel && !panel.contains(e.target)) close(); return; }
+    if(panel && !panel.hidden && cur===inp){ return; }
+    var r=inp.getBoundingClientRect();
+    if(e.clientX>r.right-44 && e.clientY<r.top+22) return; // klik po ikone: rodnoy kalendar daty
+    var sel=(typeof inp.selectionStart==='number')?inp.selectionStart:null;
+    if(sel!=null && sel<=10) return; // segment daty: rodnoy popup
+    open(inp,r);
+  });
+  document.addEventListener('keydown',function(e){
+    if(!cur||panel.hidden) return;
+    if(e.key==='Escape'){ close(); return; }
+    if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+      e.preventDefault();
+      var opts=[].slice.call(panel.querySelectorAll('.tp-opt'));
+      var i=opts.indexOf(panel.querySelector('.tp-active'));
+      var n=Math.max(0,Math.min(opts.length-1,i+(e.key==='ArrowDown'?1:-1)));
+      opts[n].focus();
+    }
+  });
+  document.addEventListener('input',function(e){
+    var t=e.target;
+    if(t && t.matches && t.matches('input[type="datetime-local"]') && t!==cur)
+      t.value=snapVal(t.value);
+  });
+  document.addEventListener('change',function(e){
+    var t=e.target;
+    if(t && t.matches && t.matches('input[type="datetime-local"]')){
+      if(cur===t) close();
+      t.value=snapVal(t.value);
+    }
+  },true);
 })();
 </script>
 {% block scripts %}{% endblock %}
