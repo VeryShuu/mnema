@@ -148,14 +148,29 @@ progress{width:100%;height:10px;accent-color:var(--accent)}
   main{padding:0 .8rem}
 }
 </style>
-<style>
-.tp-panel{position:fixed;z-index:50;background:var(--bg-card);border:1px solid var(--border);border-radius:.6rem;box-shadow:var(--shadow);padding:.4rem .3rem .5rem;min-width:12rem}
-.tp-hour{text-align:center;font-weight:600;font-size:.9rem;padding:.15rem .3rem .4rem}
-.tp-list{max-height:12rem;overflow:auto;display:flex;flex-direction:column}
-.tp-opt{display:block;width:100%;text-align:center;background:transparent;border:none;color:var(--text);font:inherit;padding:.3rem 1.2rem;border-radius:.45rem}
-.tp-opt:hover{background:var(--bg-hover)}
-.tp-opt.tp-active{background:var(--accent-soft);color:var(--accent);font-weight:600}
-.tp-panel[hidden]{display:none}
+input[type="datetime-local"]::-webkit-calendar-picker-indicator{opacity:0;cursor:pointer}
+.dtp{position:fixed;z-index:50;display:flex;gap:.5rem;background:var(--bg-card);border:1px solid var(--border);border-radius:.7rem;box-shadow:var(--shadow);padding:.6rem}
+.dtp[hidden]{display:none}
+.dtp-cal{min-width:15rem}
+.dtp-head{display:flex;align-items:center;justify-content:space-between;gap:.4rem;margin-bottom:.35rem}
+.dtp-title{font-weight:650;font-size:.9rem}
+.dtp-nav{padding:.1rem .5rem;font-size:.95rem}
+.dtp-grid{display:grid;grid-template-columns:repeat(7,2rem);gap:2px}
+.dtp-dow{color:var(--text-muted);font-size:.72rem;text-align:center;text-transform:uppercase;padding:.15rem 0}
+.dtp-day{padding:.28rem 0;text-align:center;border:none;background:transparent;color:var(--text);font:inherit;font-size:.85rem;border-radius:.45rem}
+.dtp-day:hover{background:var(--bg-hover)}
+.dtp-day.other{color:var(--text-faint)}
+.dtp-day.today{color:var(--accent);font-weight:700}
+.dtp-day.sel{background:var(--accent);color:#fff;font-weight:600}
+.dtp-foot{display:flex;justify-content:space-between;gap:.4rem;margin-top:.45rem}
+.dtp-foot button{font-size:.8rem;padding:.25rem .6rem}
+.dtp-times{display:flex;gap:.25rem;border-left:1px solid var(--border-soft);padding-left:.4rem}
+.dtp-col{display:flex;flex-direction:column;width:3.4rem}
+.dtp-col-h{color:var(--text-muted);font-size:.72rem;text-align:center;text-transform:uppercase;padding:.15rem 0}
+.dtp-col-l{max-height:13rem;overflow-y:auto;scrollbar-width:thin}
+.dtp-opt{display:block;width:100%;text-align:center;background:transparent;border:none;color:var(--text);font:inherit;font-size:.85rem;padding:.24rem 0;border-radius:.4rem}
+.dtp-opt:hover{background:var(--bg-hover)}
+.dtp-opt.sel{background:var(--accent-soft);color:var(--accent);font-weight:650}
 </style>
 </head>
 <body>
@@ -191,96 +206,114 @@ progress{width:100%;height:10px;accent-color:var(--accent)}
 })();
 </script>
 <script>
-// datetime-local step="300": rodnoy popup Chrome pokaazyvaet vse 60 minut.
-// Klast na rodnoy kalendar (vybir daty cherez ikonku), a pri kliki po chasah
-// otkryvaet svoi spisok minut tol'ko kratnyh 5. Znacenie vsegda kratno 5.
+// Polnost'yu kastomnyy popup dlya input[type="datetime-local"]:
+// rodnoy popup Chrome zakryt (mousedown preventDefault + skrytaya ikonka),
+// otkryvaetsya svoy: kalendar daty + kolonki chasov i minut (kratno 5).
+// Znachenie vyvoditsya v skrytyy rodnoy input v formate YYYY-MM-DDTHH:MM.
 (function(){
   function pad(n){return String(n).padStart(2,'0');}
-  function snapVal(v){
-    if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) return v;
-    var m=parseInt(v.slice(14,16),10), r=Math.round(m/5)*5;
-    if(r===m) return v;
-    var d=new Date(v+":00");
-    if(isNaN(d.getTime())) return v;
-    d.setMinutes(r,0,0);
-    return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+
-      'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+  var MONTHS=['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+  function parse(v){
+    var m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(v||'');
+    if(!m||isNaN(new Date(v+':00').getTime())) return null;
+    return {y:+m[1],mo:+m[2]-1,d:+m[3],h:+m[4],mi:+m[5]};
   }
-  var panel=null, cur=null, selHour=null;
-  function ensurePanel(){
+  function fmt(t){return t.y+'-'+pad(t.mo+1)+'-'+pad(t.d)+'T'+pad(t.h)+':'+pad(t.mi);}
+  function snapMin(t){var r=Math.round(t.mi/5)*5; if(r===60){r=0;t.h+=1;} if(t.h===24){t.h=0;var d=new Date(t.y,t.mo,t.d+1);t.y=d.getFullYear();t.mo=d.getMonth();t.d=d.getDate();} t.mi=r; return t;}
+  var panel=null, cur=null, view=null, draft=null;
+  function emit(){
+    cur.value=draft?fmt(draft):'';
+    cur.dispatchEvent(new Event('input',{bubbles:true}));
+    cur.dispatchEvent(new Event('change',{bubbles:true}));
+  }
+  function ensure(){
     if(panel) return panel;
     panel=document.createElement('div');
-    panel.className='tp-panel'; panel.hidden=true;
-    document.body.appendChild(panel);
+    panel.className='dtp'; panel.hidden=true;
     panel.addEventListener('mousedown',function(e){e.preventDefault();});
     panel.addEventListener('click',function(e){
-      var b=e.target.closest('.tp-opt'); if(!b) return;
-      var mm=b.getAttribute('data-m');
-      var v=cur.value;
-      if(/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(v)) cur.value=v+':'+mm;
-      else if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) cur.value=v.slice(0,14)+mm;
-      cur.dispatchEvent(new Event('input',{bubbles:true}));
-      close();
+      var b=e.target.closest('[data-act]'); if(!b) return;
+      var a=b.getAttribute('data-act');
+      if(!draft){ var n=new Date(); draft={y:n.getFullYear(),mo:n.getMonth(),d:n.getDate(),h:0,mi:0}; }
+      if(a==='prev'){ view.mo--; if(view.mo<0){view.mo=11;view.y--;} }
+      else if(a==='next'){ view.mo++; if(view.mo>11){view.mo=0;view.y++;} }
+      else if(a==='day'){ var d=parse(b.getAttribute('data-v')); draft.y=d.y;draft.mo=d.mo;draft.d=d.d; }
+      else if(a==='hour'){ draft.h=+b.getAttribute('data-v'); }
+      else if(a==='min'){ draft.mi=+b.getAttribute('data-v'); }
+      else if(a==='today'){ var t=new Date(); draft.y=t.getFullYear();draft.mo=t.getMonth();draft.d=t.getDate(); view={y:draft.y,mo:draft.mo}; }
+      else if(a==='clear'){ draft=null; emit(); close(); return; }
+      else if(a==='ok'){ close(); cur.focus(); return; }
+      snapMin(draft); emit(); render();
     });
+    document.body.appendChild(panel);
     return panel;
   }
   function render(){
-    var h='';
-    h+='<div class="tp-hour">chas '+(selHour!=null?selHour:'--')+'</div><div class="tp-list">';
-    for(var m=0;m<60;m+=5){
-      var mm=pad(m);
-      var act=(cur && cur.value.slice(14,16)===mm)?' tp-active':'';
-      h+='<button type="button" class="tp-opt'+act+'" data-m="'+mm+'">'+mm+'</button>';
+    var y=view.y, mo=view.mo;
+    var first=new Date(y,mo,1), start=new Date(y,mo,1-((first.getDay()+6)%7));
+    var today=new Date();
+    var h='<div class="dtp-left"><div class="dtp-head">'+
+      '<button type="button" class="dtp-nav" data-act="prev" aria-label="Предыдущий месяц">‹</button>'+
+      '<span class="dtp-title">'+MONTHS[mo]+' '+y+'</span>'+
+      '<button type="button" class="dtp-nav" data-act="next" aria-label="Следующий месяц">›</button></div><div class="dtp-grid">';
+    ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].forEach(function(d){h+='<span class="dtp-dow">'+d+'</span>';});
+    for(var i=0;i<42;i++){
+      var d=new Date(start.getFullYear(),start.getMonth(),start.getDate()+i);
+      var sel=draft&&d.getFullYear()===draft.y&&d.getMonth()===draft.mo&&d.getDate()===draft.d;
+      var isToday=d.getFullYear()===today.getFullYear()&&d.getMonth()===today.getMonth()&&d.getDate()===today.getDate();
+      h+='<button type="button" data-act="day" data-v="'+d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T00:00" class="dtp-day'+
+        (d.getMonth()!==mo?' other':'')+(isToday?' today':'')+(sel?' sel':'')+'">'+d.getDate()+'</button>';
     }
-    h+='</div>';
-    ensurePanel().innerHTML=h;
+    h+='</div><div class="dtp-foot"><button type="button" data-act="clear">Очистить</button>'+
+      '<button type="button" data-act="today">Сегодня</button>'+
+      '<button type="button" class="primary" data-act="ok">Готово</button></div></div>';
+    h+='<div class="dtp-times"><div class="dtp-col"><div class="dtp-col-h">Час</div><div class="dtp-col-l" id="dtpH">';
+    for(var hh=0;hh<24;hh++)
+      h+='<button type="button" data-act="hour" data-v="'+hh+'" class="dtp-opt'+(draft&&draft.h===hh?' sel':'')+'">'+pad(hh)+'</button>';
+    h+='</div></div><div class="dtp-col"><div class="dtp-col-h">Мин</div><div class="dtp-col-l" id="dtpM">';
+    for(var mm=0;mm<60;mm+=5)
+      h+='<button type="button" data-act="min" data-v="'+mm+'" class="dtp-opt'+(draft&&draft.mi===mm?' sel':'')+'">'+pad(mm)+'</button>';
+    h+='</div></div></div>';
+    ensure().innerHTML=h;
+    if(draft){
+      var lh=panel.querySelector('#dtpH .dtp-opt.sel'); if(lh) lh.scrollIntoView({block:'nearest'});
+      var lm=panel.querySelector('#dtpM .dtp-opt.sel'); if(lm) lm.scrollIntoView({block:'nearest'});
+    }
   }
-  function open(inp,r){
-    cur=inp;
-    var v=inp.value;
-    selHour=/^\d{4}-\d{2}-\d{2}T(\d{2})/.test(v)?v.slice(11,13):null;
-    render();
-    var p=ensurePanel();
+  function place(){
+    var p=ensure();
     p.hidden=false;
-    p.style.left='0px'; // pass 1: merit' pri levo m argine
-    var w=p.offsetWidth,ht=p.offsetHeight;
+    p.style.left='0px'; p.style.top='0px';
+    var r=cur.getBoundingClientRect(), w=p.offsetWidth, ht=p.offsetHeight;
     var x=Math.max(4,Math.min(r.left,window.innerWidth-w-4));
-    var y=r.bottom+4;
-    if(y+ht>window.innerHeight-4) y=Math.max(4,r.top-ht-4);
-    p.style.left=x+'px'; p.style.top=y+'px';
+    var yy=r.bottom+6;
+    if(yy+ht>window.innerHeight-4) yy=Math.max(4,r.top-ht-6);
+    p.style.left=x+'px'; p.style.top=yy+'px';
+  }
+  function open(inp){
+    close();
+    cur=inp;
+    var t=parse(inp.value);
+    draft=t?snapMin(JSON.parse(JSON.stringify(t))):null;
+    var n=new Date();
+    view=t?{y:t.y,mo:t.mo}:{y:n.getFullYear(),mo:n.getMonth()};
+    render(); place();
   }
   function close(){ if(panel) panel.hidden=true; cur=null; }
-  document.addEventListener('click',function(e){
+  document.addEventListener('mousedown',function(e){
     var inp=e.target.closest && e.target.closest('input[type="datetime-local"]');
-    if(!inp){ if(cur && panel && !panel.contains(e.target)) close(); return; }
-    if(panel && !panel.hidden && cur===inp){ return; }
-    var r=inp.getBoundingClientRect();
-    if(e.clientX>r.right-44 && e.clientY<r.top+22) return; // klik po ikone: rodnoy kalendar daty
-    var sel=(typeof inp.selectionStart==='number')?inp.selectionStart:null;
-    if(sel!=null && sel<=10) return; // segment daty: rodnoy popup
-    open(inp,r);
+    if(inp){ e.preventDefault(); open(inp); return; }
+    if(cur && panel && !panel.hidden && !panel.contains(e.target)) close();
   });
   document.addEventListener('keydown',function(e){
-    if(!cur||panel.hidden) return;
-    if(e.key==='Escape'){ close(); return; }
-    if(e.key==='ArrowDown'||e.key==='ArrowUp'){
-      e.preventDefault();
-      var opts=[].slice.call(panel.querySelectorAll('.tp-opt'));
-      var i=opts.indexOf(panel.querySelector('.tp-active'));
-      var n=Math.max(0,Math.min(opts.length-1,i+(e.key==='ArrowDown'?1:-1)));
-      opts[n].focus();
-    }
+    if(cur && panel && !panel.hidden && e.key==='Escape') close();
   });
-  document.addEventListener('input',function(e){
-    var t=e.target;
-    if(t && t.matches && t.matches('input[type="datetime-local"]') && t!==cur)
-      t.value=snapVal(t.value);
-  });
+  // esli vremya vveli s klaviatury v rodnom inpucie - Owkruglyaem do 5
   document.addEventListener('change',function(e){
     var t=e.target;
-    if(t && t.matches && t.matches('input[type="datetime-local"]')){
-      if(cur===t) close();
-      t.value=snapVal(t.value);
+    if(t && t.matches && t.matches('input[type="datetime-local"]') && t!==cur){
+      var p=parse(t.value);
+      if(p){ var s=snapMin(p); var f=fmt(s); if(f!==t.value) t.value=f; }
     }
   },true);
 })();
