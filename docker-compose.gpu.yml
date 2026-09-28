@@ -12,6 +12,9 @@ services:
       - ASR_DEVICE=cuda:0
       # whisper na GPU: float16 bystree float32 v ~2 raza, kachestvo tozhe
       - WHISPER_COMPUTE_TYPE=float16
+      # diari v fp16 kleit raznykh govoriaschikh v odin klaster (poterya tochnosti
+      # embeddingov); kachestvo diarizatsii vazhnee skorosti
+      - DIAR_FP16=0
     deploy:
       resources:
         reservations:
