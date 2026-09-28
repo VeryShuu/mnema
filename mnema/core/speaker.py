@@ -148,7 +148,14 @@ def match_cluster(embedding: list[float]) -> tuple[str, VoiceProfile | None, flo
 
 
 def _cluster_embedding_for(s, job_id: int, cluster_label: str) -> list[float] | None:
-    """Embedding klastera iz zapisi vstrechi, chtoby novyy profil' matsilsya."""
+    """Embedding klastera iz zapisi vstrechi, chtoby novyy profil' matsilsya.
+
+    Tol'ko zhivoy backend: hash-stub 32-D, poluchennyy v api-konteynere bez
+    pyannote, zagryazit profil' mushorom nesovmestimoy dimensii (kosinus vsegda
+    ~0 vs 512-D etalonov) — lu4he ostavit' profil' bez embedding.
+    """
+    if _embedding_backend() != "pyannote":
+        return None
     try:
         from ..worker.tasks import _cluster_embedding, _job_paths
         wav = _job_paths(job_id)["wav"]

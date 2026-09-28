@@ -278,3 +278,26 @@ def test_run_speaker_does_not_touch_human_answered(db, monkeypatch):
     with get_session() as s:
         rr = s.scalars(select(ReviewRequest).where(ReviewRequest.job_id == 904)).all()
         assert len(rr) == 1 and rr[0].candidate_profile_id == pid_real
+
+
+def _session():
+    from mnema.core.db import get_session
+    return get_session()
+
+
+def test_cluster_embedding_for_rejects_stub_backend(db, monkeypatch):
+    """V api-konteynere bez pyannote profil' ne poluchaet 32-D hash-musor."""
+    monkeypatch.setattr("mnema.core.speaker._embedding_backend", lambda: None)
+    from mnema.core.speaker import _cluster_embedding_for
+    with _session() as s:
+        assert _cluster_embedding_for(s, 999, "SPEAKER_00") is None
+
+
+def test_cluster_embedding_for_none_when_wav_missing(db, monkeypatch):
+    import pathlib
+    monkeypatch.setattr("mnema.core.speaker._embedding_backend", lambda: "pyannote")
+    monkeypatch.setattr("mnema.worker.tasks._job_paths",
+                        lambda job_id: {"wav": pathlib.Path("/nonexistent.wav")})
+    from mnema.core.speaker import _cluster_embedding_for
+    with _session() as s:
+        assert _cluster_embedding_for(s, 999, "SPEAKER_00") is None  # net wav
