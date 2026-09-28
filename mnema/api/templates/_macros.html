@@ -18,5 +18,5 @@
   'not_configured': 'Не настроено',
   'needs_review': 'Нужно уточнение'
 } -%}
-<span class="badge {{ status }}">{{ labels.get(status, status) }}</span>
+<span class="badge {{ status }}">{% if status == 'recording' %}<span class="rec-dot" aria-hidden="true"></span>{% endif %}{{ labels.get(status, status) }}</span>
 {%- endmacro %}

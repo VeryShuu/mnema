@@ -41,7 +41,7 @@
   </div>
 </div>
 <div class="card">
-  <h3>Активные записи</h3>
+  <h3>Активные записи{% if active|selectattr('status', 'equalto', 'recording')|list %} <span class="rec-dot" aria-hidden="true"></span>{% endif %}</h3>
   <div class="table-wrap">
   <table>
     <tr><th>№</th><th>Тема</th><th>Встреча Zoom</th><th>Начало (МСК)</th><th>Статус</th><th>VNC</th><th>Действия</th></tr>
@@ -81,6 +81,10 @@
 {% endblock %}
 {% block scripts %}
 <script>
+{% if active %}
+// Avtoobnovlenie paneli, poka idut aktivnye zapisi
+setTimeout(function () { location.reload(); }, 10000);
+{% endif %}
 function openVncUrl(data) {
   const st = document.getElementById('setup-vnc-status');
   if (data && data.url) {           // zhivaya sessiya — srazu otkryvaem

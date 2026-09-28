@@ -84,6 +84,8 @@ tbody tr:hover td,tr:hover td{background:var(--bg-hover)}
 .badge.failed{background:var(--err-soft);color:var(--err)}
 .badge.recording,.badge.processing,.badge.launching{background:var(--info-soft);color:var(--info)}
 .badge.awaiting_review,.badge.awaiting_llm,.badge.pending{background:var(--warn-soft);color:var(--warn)}
+.rec-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#e5484d;margin-right:.4rem;vertical-align:middle;animation:rec-pulse 1.2s ease-in-out infinite}
+@keyframes rec-pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(229,72,77,.5)}50%{opacity:.45;box-shadow:0 0 0 5px rgba(229,72,77,0)}}
 .badge.uploading{background:var(--purple-soft);color:var(--purple)}
 .badge.upload{background:var(--info-soft);color:var(--info)}
 .badge.scheduled{background:var(--neutral-soft);color:var(--neutral)}
