@@ -482,9 +482,22 @@ def api_answer_review(rid: int, body: ReviewAnswer):
         cluster = r.cluster_label
     name = apply_review_answer(rid, body.employee_id, body.employee_name,
                                body.create_new, body.answered_by or "web")
+    _enqueue_voice_enroll(job_id, cluster)
     from ..core.pipeline import resume_after_reviews
     done_now = resume_after_reviews(job_id)
     return {"ok": True, "name": name, "job_done": done_now}
+
+
+def _enqueue_voice_enroll(job_id: int, cluster_label: str) -> None:
+    """Reestr golosa: utocnenie operatora uluchshaet etalon — pereschitat'
+    embedding profila v workere (tam pyannote). V direct mode (testy/bez
+    redis) — noop: v api zhivyh embeddingov ne byvaet."""
+    from ..core.queue import enqueue_job
+    try:
+        enqueue_job("speaker", "mnema.worker.tasks.run_voice_enroll",
+                    job_id, cluster_label)
+    except Exception:  # noqa: BLE001 — enroll ne lonit otvet operatora
+        pass
 
 
 @app.delete("/api/reviews/{rid}/segments/{seg_id}")

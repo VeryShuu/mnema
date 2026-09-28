@@ -12,7 +12,8 @@ from pathlib import Path
 from sqlalchemy import select
 
 from ..core.db import get_session
-from ..core.models import AudioFile, Job, Protocol, Segment, SessionEvent
+from ..core.models import (AudioFile, Job, Protocol, ReviewRequest, Segment,
+                           SessionEvent, VoiceProfile)
 
 
 def _data_dir() -> Path:
@@ -340,6 +341,55 @@ def run_structure(job_id: int) -> None:
     except Exception as e:  # noqa: BLE001
         _fail_branch(job_id, e, "processing_error")
         raise
+
+
+def run_voice_enroll(job_id: int, cluster_label: str) -> None:
+    """Reestr golosa: utocnenie klastera operatorom (ili taym-autom) updatelyaet
+    embedding profila po etomu klasteru. Tol'ko v workere (est' pyannote);
+    v api s backends=None vyhod bezhash-musora. Auto-otvety voiceprint
+    isklyucheny, chtoby ne usilivat' obratnyu svyaz."""
+    from ..core.speaker import _embedding_backend
+    from ..core.models import ReviewRequest
+    if _embedding_backend() != "pyannote":
+        return
+    with get_session() as s:
+        r = s.scalars(select(ReviewRequest).where(
+            ReviewRequest.job_id == job_id,
+            ReviewRequest.cluster_label == cluster_label,
+            ReviewRequest.status == "confirmed")).first()
+        if r is None or not r.candidate_profile_id or r.answered_by == "voiceprint":
+            return
+        profile = s.get(VoiceProfile, r.candidate_profile_id)
+        if profile is None:
+            return
+    try:
+        from ..core.speaker_backfill import cluster_embedding_for, _l2_normalize
+        emb = cluster_embedding_for(job_id, cluster_label)
+    except Exception as e:  # noqa: BLE001 — enroll ne lonit utochnenie
+        print(f"voice_enroll fail (job {job_id}): {e}", flush=True)
+        return
+    if not emb:
+        return
+    emb = _l2_normalize(emb)
+    with get_session() as s:
+        profile = s.get(VoiceProfile, r.candidate_profile_id)
+        if profile is None:
+            return
+        stats = dict(profile.match_stats or {})
+        if profile.embedding and len(profile.embedding) == len(emb):
+            n = int(stats.get("backfill_clusters", 0)) + int(stats.get("enrollments", 1))
+            w_new = 1.0 / (n + 1)
+            profile.embedding = _l2_normalize(
+                [(1 - w_new) * a + w_new * b for a, b in zip(profile.embedding, emb)])
+        elif not profile.embedding:
+            profile.embedding = emb
+        stats["enrollments"] = stats.get("enrollments", 0) + 1
+        profile.match_stats = stats
+        s.commit()
+    with get_session() as s:
+        s.add(SessionEvent(job_id=job_id, event="voice_enroll",
+                           detail=f"klaster {cluster_label} -> profil {r.candidate_profile_id}"))
+        s.commit()
 
 
 def _run_speaker(job_id: int) -> None:

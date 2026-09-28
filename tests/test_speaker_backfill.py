@@ -320,3 +320,109 @@ def test_run_speaker_rematch_refreshes_pending_hint(db, monkeypatch):
         assert rr[0].status == "pending"
         assert rr[0].candidate_profile_id == pid
         assert rr[0].similarity == pytest.approx(0.5)
+
+
+# ---- run_voice_enroll: avtomaticheskiy enroll posle otveta operatora ----------
+def test_enroll_skips_without_backend(db, monkeypatch):
+    """V srede bez pyannote (api-konteyner) hash-musor v profil' ne pishetsya."""
+    monkeypatch.setattr("mnema.core.speaker._embedding_backend", lambda: None)
+    _mk_segments(910, 2)
+    pid = _add_profile("Enroll Skip")
+    _add_review(910, "SPEAKER_00", pid)
+    from mnema.worker.tasks import run_voice_enroll
+    run_voice_enroll(910, "SPEAKER_00")
+    from mnema.core.db import get_session
+    from mnema.core.models import VoiceProfile
+    with get_session() as s:
+        assert s.get(VoiceProfile, pid).embedding is None
+
+
+def test_enroll_sets_embedding_from_cluster(db, monkeypatch):
+    monkeypatch.setattr("mnema.core.speaker._embedding_backend", lambda: "pyannote")
+    monkeypatch.setattr("mnema.core.speaker_backfill.cluster_embedding_for",
+                        lambda job_id, cluster: [1.0, 0.0])
+    _mk_segments(911, 2)
+    pid = _add_profile("Enroll New")
+    _add_review(911, "SPEAKER_00", pid)
+    from mnema.worker.tasks import run_voice_enroll
+    run_voice_enroll(911, "SPEAKER_00")
+    from mnema.core.db import get_session
+    from mnema.core.models import SessionEvent, VoiceProfile
+    with get_session() as s:
+        v = s.get(VoiceProfile, pid)
+        assert v.embedding == [1.0, 0.0]
+        assert v.match_stats.get("enrollments") == 1
+        evs = s.scalars(select(SessionEvent).where(
+            SessionEvent.job_id == 911,
+            SessionEvent.event == "voice_enroll")).all()
+        assert len(evs) == 1
+
+
+def test_enroll_blends_with_weight_existing(db, monkeypatch):
+    """Nakoplenny po 8 klasteram etalon (backfill_clusters=8) odin novyi
+    otvet sdygayet malo."""
+    monkeypatch.setattr("mnema.core.speaker._embedding_backend", lambda: "pyannote")
+    monkeypatch.setattr("mnema.core.speaker_backfill.cluster_embedding_for",
+                        lambda job_id, cluster: [0.0, 1.0])
+    _mk_segments(912, 2)
+    pid = _add_profile("Enroll Blend", embedding=[1.0, 0.0],
+                       match_stats={"backfill_clusters": 8})
+    _add_review(912, "SPEAKER_00", pid)
+    from mnema.worker.tasks import run_voice_enroll
+    run_voice_enroll(912, "SPEAKER_00")
+    from mnema.core.db import get_session
+    from mnema.core.models import VoiceProfile
+    with get_session() as s:
+        emb = s.get(VoiceProfile, pid).embedding
+        assert emb[0] > 0.9  # novyi vklad 1/(n+1) mal
+
+
+def test_enroll_skips_voiceprint_auto_answer(db, monkeypatch):
+    monkeypatch.setattr("mnema.core.speaker._embedding_backend", lambda: "pyannote")
+    monkeypatch.setattr("mnema.core.speaker_backfill.cluster_embedding_for",
+                        lambda job_id, cluster: [1.0, 0.0])
+    _mk_segments(913, 2)
+    pid = _add_profile("Enroll Auto")
+    _add_review(913, "SPEAKER_00", pid, answered_by="voiceprint")
+    from mnema.worker.tasks import run_voice_enroll
+    run_voice_enroll(913, "SPEAKER_00")
+    from mnema.core.db import get_session
+    from mnema.core.models import VoiceProfile
+    with get_session() as s:
+        assert s.get(VoiceProfile, pid).embedding is None
+
+
+def test_enroll_skips_pending_review(db, monkeypatch):
+    monkeypatch.setattr("mnema.core.speaker._embedding_backend", lambda: "pyannote")
+    monkeypatch.setattr("mnema.core.speaker_backfill.cluster_embedding_for",
+                        lambda job_id, cluster: [1.0, 0.0])
+    _mk_segments(914, 2)
+    pid = _add_profile("Enroll Pending")
+    _add_review(914, "SPEAKER_00", pid, status="pending", answered_by=None)
+    from mnema.worker.tasks import run_voice_enroll
+    run_voice_enroll(914, "SPEAKER_00")
+    from mnema.core.db import get_session
+    from mnema.core.models import VoiceProfile
+    with get_session() as s:
+        assert s.get(VoiceProfile, pid).embedding is None
+
+
+def test_api_answer_review_enqueues_voice_enroll(db, tmp_path, monkeypatch):
+    """Otvet POST /api/reviews/{rid} stavit v ochered speaker zadachu enroll."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    calls = []
+    monkeypatch.setattr("mnema.core.queue.enqueue_job",
+                        lambda name, func, *a, **kw: calls.append((name, func, a))
+                        or None)
+    _mk_segments(915, 2)
+    rid = _add_review(915, "SPEAKER_00", None, status="pending", answered_by=None)
+    from fastapi.testclient import TestClient
+    from mnema.api.main import app
+    client = TestClient(app)
+    resp = client.post(f"/api/reviews/{rid}",
+                       json={"employee_name": "Ochered O.O.", "create_new": True})
+    assert resp.status_code == 200
+    enr = [c for c in calls if "run_voice_enroll" in str(c[1])]
+    assert len(enr) == 1
+    assert enr[0][0] == "speaker"
+    assert enr[0][2] == (915, "SPEAKER_00")
