@@ -26,3 +26,28 @@
   недопустимый переход → 409, это проверяемое поведение.
 - web-bot (Node.js, `web-bot/`) автотестов не имеет; минимальная проверка —
   `node --check src/<file>.js` для каждого изменённого файла.
+
+## Деплой на GPU-сервер (удалённый ИИ-сервер)
+
+- Сервер: `user@mnema-gpu.internal` (`gpu-ssh-alias`), каталог: `/data_local/docker/mnema`.
+- Деплой из репо: `./scripts/deploy-gpu.sh` — пуш ветки в origin, на сервере
+  `git fetch origin + git reset --hard origin/<branch>`, затем
+  `docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.override.yml up -d --build`.
+  Требует чистое дерево (иначе выходит с ошибкой); коммитить нужно до деплоя.
+- **ВАЖНО: все команды compose на сервере — только с тремя `-f`.** Без
+  `docker-compose.gpu.yml` worker поднимется из лёгкого CPU-образа и
+  `ASR_DEVICE=cuda:0` потеряется (диаризация/ASR молча пойдут на CPU).
+- `docker-compose.override.yml` на сервере untracked (ручной файл): GPU device_ids
+  (`device_ids: ["9"]`), порты web-bot `8100-8120:6080-6100`, `!override`-теги.
+  `git reset --hard` его не трогает, но при пересоздании с нуля настройки потеряются —
+  всё, что должно жить постоянно, добавляйте в `docker-compose.gpu.yml` в git.
+- Ключевые env worker'а (GPU): `ASR_DEVICE=cuda:0`, `WHISPER_COMPUTE_TYPE=float16`,
+  `DIAR_FP16=0` (в fp16 pyannote склеивает разных говорящих в один кластер —
+  качество диаризации важнее скорости; локально на CPU переменная не нужна).
+- Веса pyannote: кэш HF — volume `mnema_hf-cache`; кэш `/root/.cache/torch/pyannote`
+  ephemeral. Признак устаревших весов в логах: `Model was trained with
+  pyannote.audio 0.0.1, yours is 3.4.0` — лечение: `rm -rf /root/.cache/torch/pyannote`
+  в контейнере + `docker restart mnema-worker-1` (HF_TOKEN в контейнере есть,
+  скачается заново).
+- Проверка после деплоя: `docker compose ps`, `curl -s localhost:8000/health`,
+  `docker exec mnema-worker-1 printenv ASR_DEVICE DIAR_FP16` (ожидание: `cuda:0`, `0`).
