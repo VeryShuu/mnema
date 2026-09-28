@@ -6,7 +6,11 @@
 <div class="card">
   <h3>Запланировать встречу</h3>
   <form method="post" action="/jobs/create" style="display:flex;gap:.5rem;flex-wrap:wrap" onsubmit="return validateSchedule(this)">
-    <input name="meeting_link" placeholder="Ссылка-приглашение Zoom или номер встречи" size="50" required>
+    <select name="preset_id" onchange="applyPreset(this)" title="Предопределённая ссылка">
+      <option value="">— своя ссылка —</option>
+      {% for p in presets %}<option value="{{ p.id }}" data-link="{{ p.meeting_link }}">{{ p.title }}</option>{% endfor %}
+    </select>
+    <input name="meeting_link" placeholder="Ссылка-приглашение Zoom или номер встречи" size="50">
     <input name="topic" placeholder="Тема">
     <input name="start_at" type="datetime-local" step="300" min="0" title="Пусто — записать сейчас. Время московское">
     <input name="end_at" type="datetime-local" step="300" min="0" title="Предполагаемое окончание созвона. После него начинается проверка тишины. Время московское">
@@ -22,9 +26,33 @@
   <p class="muted">Принудительно сразу запустить запись уже идущей встречи.</p>
   <form method="post" action="/jobs/create" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center" onsubmit="return validateZoomLink(this)">
     <input type="hidden" name="start_now" value="1">
-    <input name="meeting_link" placeholder="Ссылка уже идущей встречи" size="50" required>
+    <select name="preset_id" onchange="applyPreset(this)" title="Предопределённая ссылка">
+      <option value="">— своя ссылка —</option>
+      {% for p in presets %}<option value="{{ p.id }}" data-link="{{ p.meeting_link }}">{{ p.title }}</option>{% endfor %}
+    </select>
+    <input name="meeting_link" placeholder="Ссылка уже идущей встречи" size="50">
     <input name="topic" placeholder="Тема">
     <button type="submit" class="primary">Начать запись сейчас</button>
+  </form>
+</div>
+<div class="card">
+  <h3>Предопределённые ссылки</h3>
+  <p class="muted">Ссылки с паролями для быстрого выбора при планировании и запуске встречи.</p>
+  {% for p in presets %}
+  <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:.3rem;flex-wrap:wrap">
+    <strong>{{ p.title }}</strong>
+    <code>{{ p.meeting_link }}</code>
+    {% if p.pwd_ref %}<span class="muted">пароль сохранён</span>{% endif %}
+    <button hx-post="/presets/{{ p.id }}/delete" hx-on="click: location.reload()">Удалить</button>
+  </div>
+  {% else %}
+  <p class="muted">Предопределённых ссылок пока нет.</p>
+  {% endfor %}
+  <form method="post" action="/presets/add" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem">
+    <input name="title" placeholder="Название (например: Совет директоров)" required>
+    <input name="meeting_link" placeholder="Ссылка Zoom (или номер встречи)" size="50" required>
+    <input name="pwd" placeholder="Пароль (если в ссылке нет pwd)">
+    <button type="submit" class="primary">Добавить ссылку</button>
   </form>
 </div>
 <div class="card">
@@ -61,7 +89,19 @@
 {% endblock %}
 {% block scripts %}
 <script>
+function applyPreset(sel){
+  var form = sel.form;
+  var opt = sel.options[sel.selectedIndex];
+  if(sel.value && opt.dataset.link){
+    form.meeting_link.value = opt.dataset.link;
+    form.meeting_link.readOnly = true;
+  } else {
+    form.meeting_link.value = "";
+    form.meeting_link.readOnly = false;
+  }
+}
 function validateZoomLink(form){
+  if(form.preset_id && form.preset_id.value) return true;
   var v=(form.meeting_link.value||"").trim();
   var ok=/^\d{9,11}$/.test(v)
       || /zoom\.us\/j\/\d{9,11}/i.test(v)

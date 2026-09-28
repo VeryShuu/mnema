@@ -74,6 +74,17 @@ class Upload(Base):
     job: Mapped[Job] = relationship(back_populates="uploads")
 
 
+class PresetLink(Base):
+    """Predopredelennaya ssylka Zoom s parolem i opisaniem (vybor iz menyu v WEB)."""
+    __tablename__ = "preset_links"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(255))  # opisanie/dlya menyu
+    meeting_link: Mapped[str] = mapped_column(String(1024))
+    pwd_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class SessionEvent(Base):
     __tablename__ = "session_events"
 

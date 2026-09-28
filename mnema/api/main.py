@@ -20,11 +20,12 @@ from ..core import registry
 from ..core.capabilities import capability_status
 from ..core.db import Base, get_engine, get_session
 from ..core.jobs_api import cancel_job, create_job, delete_job, rename_job
-from ..core.models import (AudioFile, Job, Notification, Protocol,
+from ..core.models import (AudioFile, Job, Notification, PresetLink, Protocol,
                            ReviewRequest, Segment, SessionEvent, SessionHealth,
                            Upload, VoiceProfile)
 from ..core.notify import NotifyService
 from ..core.pipeline import review_requests_resolved, transition
+from ..core.presets_api import add_preset, delete_preset, get_preset_join, list_presets
 from ..core.scheduler import import_ics, start_default_jobs
 from ..core.secrets_store import get_pwd
 from ..core.zoom_link import link_valid
@@ -848,10 +849,31 @@ def web_jobs(request: Request, status: str | None = None, error: str | None = No
     error_text = {"link": "Некорректная ссылка Zoom: нужна ссылка вида "
                           "https://us06web.zoom.us/j/123456789?pwd=... или ID встречи (9–11 цифр)",
                   "date": "Некорректная дата начала",
+                  "preset": "Предопределённая ссылка не найдена",
                   "end_before_start": "Время окончания должно быть позже времени начала"}.get(error or "", None)
     return templates.TemplateResponse(request, "jobs.html", {
         "request": request, "jobs": jobs, "status_filter": status,
+        "presets": list_presets(),
         "error_text": error_text})
+
+
+@app.post("/presets/add")
+async def web_preset_add(request: Request):
+    form = await request.form()
+    try:
+        add_preset(title=str(form.get("title", "")),
+                   meeting_link=str(form.get("meeting_link", "")),
+                   pwd=str(form.get("pwd", "")).strip() or None)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return RedirectResponse("/jobs", status_code=303)
+
+
+@app.post("/presets/{pid}/delete")
+async def web_preset_delete(pid: int):
+    if not delete_preset(pid):
+        raise HTTPException(404)
+    return HTMLResponse("ok")
 
 
 class WebJobForm(BaseModel):
@@ -863,7 +885,17 @@ class WebJobForm(BaseModel):
 @app.post("/jobs/create")
 async def web_job_create(request: Request):
     form = await request.form()
+    preset_id = str(form.get("preset_id", "")).strip()
     link = str(form.get("meeting_link", "")).strip()
+    pwd: str | None = None
+    if preset_id and not link:
+        try:
+            preset = get_preset_join(int(preset_id))
+        except ValueError:
+            return RedirectResponse("/jobs?error=preset", status_code=303)
+        if preset is None:
+            return RedirectResponse("/jobs?error=preset", status_code=303)
+        link, pwd = preset
     topic = str(form.get("topic", "")).strip()
     start_raw = form.get("start_at", "")
     start_now = str(form.get("start_now", "")).lower() in ("1", "true", "on") \
@@ -888,7 +920,7 @@ async def web_job_create(request: Request):
     if end_at is not None and start_at is not None and end_at <= start_at:
         return RedirectResponse("/jobs?error=end_before_start", status_code=303)
     try:
-        job = create_job(meeting_link=link, topic=topic, start_at=start_at,
+        job = create_job(meeting_link=link, pwd=pwd, topic=topic, start_at=start_at,
                          end_at=end_at, created_by="web")
     except ValueError:
         return RedirectResponse("/jobs?error=end_before_start", status_code=303)
