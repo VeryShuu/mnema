@@ -21,12 +21,23 @@
 <tr><th>№</th><th>ФИО</th><th>Табельный №</th><th>Эталонов</th><th>Согласие</th><th>Метрики распознавания</th><th></th></tr>
 {% for p in profiles %}
 <tr>
- <td>{{ p.id }}</td><td>{{ p.employee_name }}</td><td>{{ p.employee_id or '—' }}</td>
+ <td>{{ p.id }}</td>
+ <td><span id="nm_{{ p.id }}">{{ p.employee_name }}</span>
+     <button type="button" title="Изменить ФИО и табельный" onclick="editProfile({{ p.id }})">✎</button></td>
+ <td id="empid_{{ p.id }}">{{ p.employee_id or '—' }}</td>
  <td>{{ p.sample_paths|length if p.sample_paths else 0 }}</td>
  <td>{{ 'Есть' if p.consent_ts else 'Нет' }}</td>
- <td class="muted">{{ p.match_stats or {} }}</td>
- <td><button class="danger" onclick="delProfile({{ p.id }})">Удалить</button></td>
+ <td class="muted" id="stats_{{ p.id }}">{{ stats_text(p.match_stats) }}</td>
+ <td style="white-space:nowrap">
+   <button type="button" onclick="toggleDetails({{ p.id }})">Кластеры и эталоны</button>
+   <button type="button" title="Пересобрать эталон и заново опознать все встречи человека (выполнит worker)"
+           onclick="reverify({{ p.id }})">Перепроверить</button>
+   <button class="danger" onclick="delProfile({{ p.id }})">Удалить</button>
+ </td>
 </tr>
+<tr><td colspan="7" style="background:transparent;border:none;padding:0">
+  <div id="det_{{ p.id }}" style="display:none" class="card"></div>
+</td></tr>
 {% else %}
 <tr><td colspan="7" class="muted">Профилей пока нет</td></tr>
 {% endfor %}
@@ -67,6 +78,79 @@ document.getElementById('recbtn').onclick = async function(){
   mediaRecorder.start();
   document.getElementById('recstatus').textContent='Идёт запись… нажмите ещё раз, чтобы завершить.';
 };
+const loaded = {};
+async function toggleDetails(id){
+  const det = document.getElementById('det_'+id);
+  if (det.style.display !== 'none'){ det.style.display='none'; return; }
+  det.style.display='block';
+  if (!loaded[id]){ det.innerHTML = '<p class="muted">Загрузка…</p>'; await loadDetails(id); }
+}
+async function loadDetails(id){
+  const det = document.getElementById('det_'+id);
+  let html = '';
+  // --- эталоны (записи с микрофона), прослушивание ---
+  const smp = await (await fetch('/api/voice-profiles/'+id+'/samples')).json();
+  html += '<h4>Эталоны (записи с микрофона)</h4>';
+  if (!smp.length) html += '<p class="muted">Нет записанных эталонов. Добавьте запись или подтвердите кластеры — эталон соберётся из встреч.</p>';
+  for (const s of smp){
+    html += `<p>`;
+    if (s.exists) html += `<audio controls preload="none" src="${s.url}"></audio>`;
+    else html += `<span class="muted">${s.name} — файл утерян</span>`;
+    if (s.exists) html += ` <button type="button" class="danger" onclick="delSample(${id}, ${s.index})">Удалить эталон</button>`;
+    html += `</p>`;
+  }
+  // --- кластеры человека по встречам, прослушивание фрагментов ---
+  const cls = await (await fetch('/api/voice-profiles/'+id+'/clusters')).json();
+  html += '<h4>Кластеры в встречах</h4>';
+  if (!cls.length) html += '<p class="muted">Кластеров пока нет — распознавание ещё не подтверждало этот голос.</p>';
+  for (const c of cls){
+    const st = c.status === 'pending' ? 'ждёт уточнения' : 'подтверждён';
+    const autob = c.answered_by === 'voiceprint' ? ' (автоматически)' : '';
+    html += `<div style="border-left:3px solid ${c.status==='pending' ? 'var(--warn)' : 'var(--ok, #2a2)'};padding-left:.6rem;margin:.6rem 0">`;
+    html += `<p><b>Встреча №${c.job_id}</b> ${c.topic ? '('+esc(c.topic)+')' : ''} — кластер «${esc(c.cluster_label)}», ${st}${autob}, похожесть ${(c.similarity*100||0).toFixed(0)}%.</p>`;
+    if (!c.has_audio) html += '<p class="muted">Аудио встречи уже удалено с диска — прослушать нельзя.</p>';
+    else if (!c.segments.length) html += '<p class="muted">Фрагментов кластера нет (все исключены).</p>';
+    for (const seg of c.segments){
+      html += `<p><audio controls preload="none" src="/api/jobs/${c.job_id}/audio?format=${c.audio_format}#t=${seg.t_start},${seg.t_end}"></audio> `
+            + `<span class="muted">${fmt_t(seg.t_start)}–${fmt_t(seg.t_end)}: ${esc(seg.text)}</span></p>`;
+    }
+    if (c.status === 'pending') html += `<p><a href="/reviews?job_id=${c.job_id}">Ответить в очереди уточнений →</a></p>`;
+    html += `</div>`;
+  }
+  det.innerHTML = html;
+  loaded[id] = true;
+}
+function esc(s){ const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+function fmt_t(t){ const m=Math.floor(t/60), s=Math.round(t%60); return m+':'+String(s).padStart(2,'0'); }
+async function delSample(vid, idx){
+  if(!confirm('Удалить этот эталон? Эталонный голосовой профиль будет пересобран worker по оставшимся источникам.')) return;
+  const r = await fetch(`/api/voice-profiles/${vid}/samples/${idx}`, {method:'DELETE'});
+  if(!r.ok){ alert('Не удалось удалить эталон: '+r.status); return; }
+  delete loaded[vid];
+  location.reload();
+}
+async function editProfile(id){
+  const name = prompt('ФИО сотрудника:', document.getElementById('nm_'+id).textContent);
+  if (name === null) return;
+  if (!name.trim()){ alert('ФИО не может быть пустым'); return; }
+  const empId = prompt('Табельный номер (пусто — сбросить):',
+    document.getElementById('empid_'+id).textContent.replace('—','').trim());
+  if (empId === null) return;
+  const r = await fetch('/api/voice-profiles/'+id, {method:'PATCH', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({employee_name:name.trim(), employee_id:empId.trim()||null})});
+  const j = await r.json();
+  if(!r.ok){ alert('Не удалось сохранить: '+(j.detail||r.status)); return; }
+  location.reload();
+}
+async function reverify(id){
+  if(!confirm('Перепроверить распознавание для этого человека?\n\nWorker заново соберёт эталон из подтверждённых кластеров и записей и прогонит узнавание по всем его встречам. Новые несовпадения попадут в очередь уточнений.')) return;
+  const r = await fetch('/api/voice-profiles/'+id+'/reverify', {method:'POST'});
+  const j = await r.json();
+  if(!r.ok){ alert('Не удалось поставить задачу: '+(j.detail||r.status)); return; }
+  alert(j.queued
+    ? 'Задача перепроверки поставлена в очередь worker. Обновите страницу через несколько минут — результат будет в метриках и в очереди уточнений.'
+    : 'Redis/worker сейчас недоступны — задача не поставлена. Повторите позже.');
+}
 async function delProfile(id){
   if(!confirm('Удалить профиль со всеми эталонными записями?')) return;
   await fetch('/api/voice-profiles/'+id,{method:'DELETE'});

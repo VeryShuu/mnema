@@ -5,6 +5,7 @@ nulya. Vne-zavisimosti (gigastt/ollama) — capability, FT-39.
 """
 from __future__ import annotations
 
+import datetime as dt
 import os
 import shutil
 from pathlib import Path
@@ -389,6 +390,63 @@ def run_voice_enroll(job_id: int, cluster_label: str) -> None:
     with get_session() as s:
         s.add(SessionEvent(job_id=job_id, event="voice_enroll",
                            detail=f"klaster {cluster_label} -> profil {r.candidate_profile_id}"))
+        s.commit()
+
+
+def run_profile_reembed(profile_id: int) -> None:
+    """ Udalenie/ugolovnoe etalona: pereschitat' embedding profila po
+    ostavshimsya istochnikam. Tol'ko v workere (est' pyannote)."""
+    from ..core.speaker import _embedding_backend
+    if _embedding_backend() != "pyannote":
+        return
+    try:
+        from ..core.speaker_backfill import recompute_profile_embedding
+        detail = recompute_profile_embedding(profile_id)
+    except Exception as e:  # noqa: BLE001 — reembed ne lonit udalenie etalona
+        print(f"profile_reembed fail (profil {profile_id}): {e}", flush=True)
+        return
+    _profile_event(profile_id, "profile_reembed", detail)
+
+
+def run_reverify_profile(profile_id: int) -> None:
+    """Ruchnaya pereproverka cheloveka: zanovo sobrat' etalon i pere-machnut'
+    vse vstrechi, gdye on podtverzhdён. Otkryvayut novyye utochneniya,
+    zakryvayutsya совпавшiye; trudnich vkladov v match_stats ne delaetsya."""
+    from ..core.speaker import _embedding_backend
+    if _embedding_backend() != "pyannote":
+        return
+    try:
+        from ..core.speaker_backfill import (profile_review_jobs,
+                                             recompute_profile_embedding)
+        detail = recompute_profile_embedding(profile_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"reverify fail (profil {profile_id}): {e}", flush=True)
+        _profile_event(profile_id, "reverify_failed", str(e)[:500])
+        return
+    jobs = profile_review_jobs(profile_id)
+    rematched = 0
+    from ..core.speaker_backfill import rematch_job
+    for job_id in jobs:
+        try:
+            rematch_job(job_id)
+            rematched += 1
+        except Exception as e:  # noqa: BLE001 — odin plotnoy job ne lonit pereproverku
+            print(f"reverify rematch fail (job {job_id}): {e}", flush=True)
+    _profile_event(profile_id, "reverify_done",
+                   f"{detail}; pere-macheno vstrech: {rematched}/{len(jobs)}")
+
+
+def _profile_event(profile_id: int, event: str, detail: str) -> None:
+    """Sobytie v match_stats profilya (poslednie statusy pereproverok dla UI):
+    SessionEvent privyazan k jobu, a protsess profile-level."""
+    with get_session() as s:
+        v = s.get(VoiceProfile, profile_id)
+        if v is None:
+            return
+        stats = dict(v.match_stats or {})
+        stats[event] = {"ts": dt.datetime.now(dt.timezone.utc).isoformat(),
+                        "detail": detail}
+        v.match_stats = stats
         s.commit()
 
 

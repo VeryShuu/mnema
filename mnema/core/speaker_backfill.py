@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -134,6 +135,71 @@ def rematch_job(job_id: int) -> None:
         s.commit()
     from .pipeline import resume_after_reviews
     return resume_after_reviews(job_id)
+
+
+def profile_review_jobs(profile_id: int, max_jobs: int | None = None) -> list[int]:
+    """Joby, gdye profil' podtverzhdён otvetom utora (pervye svidetelstva
+    'eto on') — zona perepromowerki pri ruchnoy pereproverke."""
+    with get_session() as s:
+        rows = s.scalars(
+            select(ReviewRequest.job_id)
+            .where(ReviewRequest.candidate_profile_id == profile_id,
+                   ReviewRequest.status == "confirmed")
+            .order_by(ReviewRequest.id.desc())).all()
+    out: list[int] = []
+    for job_id in rows:
+        if job_id not in out:
+            out.append(job_id)
+        if max_jobs is not None and len(out) >= max_jobs:
+            break
+    return out
+
+
+def recompute_profile_embedding(profile_id: int) -> str:
+    """Zanovo sobrat' etalon profilya: zapisi s mikrofona + podtverzhdennye
+    klastery proshlykh vstrech (bez avtomaticheskikh otvetov). Vozvrajeta
+    cheloveko-chitaemyy rezultat dla zhurnalnykh sobytiy."""
+    from .speaker import _embedding_backend
+    if _embedding_backend() != "pyannote":
+        raise RuntimeError(
+            "embedding backend niedostupen (nuzhen pyannote) — "
+            "pereproverku delaet worker, ne api")
+    from .speaker import compute_embedding_for_file
+    with get_session() as s:
+        v = s.get(VoiceProfile, profile_id)
+        if v is None:
+            return "profil' udalen"
+        samples = [p for p in (v.sample_paths or []) if Path(p).is_file()]
+    vecs: list[list[float]] = []
+    for p in samples:
+        try:
+            emb = compute_embedding_for_file(Path(p))
+            if emb:
+                vecs.append(_l2_normalize(emb))
+        except Exception:  # noqa: BLE001 — odin ploskoy etalon ne lonit vsyo
+            continue
+    n_clusters = 0
+    for job_id, cluster in profile_backfill_sources(profile_id):
+        try:
+            emb = cluster_embedding_for(job_id, cluster)
+            if emb:
+                vecs.append(_l2_normalize(emb))
+                n_clusters += 1
+        except Exception:  # noqa: BLE001
+            continue
+    if not vecs:
+        return "net istochnikov etalona (etalonov i zhivykh klasteov)"
+    mean = mean_embedding(vecs)
+    with get_session() as s2:
+        vp = s2.get(VoiceProfile, profile_id)
+        if vp is None:
+            return "profil' udalen"
+        vp.embedding = mean
+        stats = dict(vp.match_stats or {})
+        stats["backfill_clusters"] = n_clusters
+        vp.match_stats = stats
+        s2.commit()
+    return f"etalon: {len(samples)} zapisey + {n_clusters} klasteov"
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -65,6 +65,24 @@ templates.env.filters["msk"] = lambda v: fmt_local(v)
 templates.env.filters["human_duration"] = human_duration
 templates.env.filters["msk_sec"] = lambda v: fmt_local(v, "%d.%m.%Y %H:%M:%S")
 templates.env.filters["human_size"] = human_size
+
+
+def stats_text(stats: dict | None) -> str:
+    """Match_stats profilya v cheloveko-chitayemom vide (vmesto syrovogo dict)."""
+    if not stats:
+        return "—"
+    labels = [("confirmed", "подтверждено"), ("auto_confirmed", "авто"),
+              ("enrollments", "enroll"), ("backfill_clusters", "кластеров в эталоне")]
+    parts = [f"{lbl}: {stats[key]}" for key, lbl in labels if stats.get(key)]
+    for ev in ("reverify_done", "reverify_failed", "profile_reembed"):
+        info = stats.get(ev)
+        if isinstance(info, dict) and info.get("ts"):
+            mark = "oshibka pereproverki" if ev == "reverify_failed" else ev
+            parts.append(f"{mark}: {info['ts'][:16].replace('T', ' ')} ({info.get('detail', '')})")
+    return "; ".join(parts) or "—"
+
+
+templates.env.globals["stats_text"] = stats_text
 templates.env.globals["app_tz_label"] = app_tz_label
 templates.env.globals["local_utc_offset"] = local_utc_offset
 STATIC_DIR = Path(__file__).parent / "static"
@@ -665,6 +683,170 @@ async def api_upload_sample(vid: int, file: UploadFile = File(...)):
                 (e + n) / 2 for e, n in zip(existing, emb)]
         s.commit()
     return {"ok": True}
+
+
+SAMPLE_MIME = {".webm": "audio/webm", ".wav": "audio/wav", ".mp3": "audio/mpeg",
+               ".ogg": "audio/ogg", ".m4a": "audio/mp4"}
+
+
+def _profile_or_404(vid: int):
+    with get_session() as s:
+        return s.get(VoiceProfile, vid)
+
+
+def _profile_sample_paths(vid: int) -> list[str]:
+    v = _profile_or_404(vid)
+    if v is None:
+        raise HTTPException(404)
+    return list(v.sample_paths or [])
+
+
+@app.get("/api/voice-profiles/{vid}/samples")
+def api_profile_samples(vid: int):
+    """Spisok etalonov profilya: kazhdyiy dostupen dlya proslushivaniya po url."""
+    out = []
+    for i, p in enumerate(_profile_sample_paths(vid)):
+        path = Path(p)
+        out.append({"index": i, "name": path.name, "exists": path.is_file(),
+                    "size": path.stat().st_size if path.is_file() else None,
+                    "url": f"/api/voice-profiles/{vid}/samples/{i}"})
+    return out
+
+
+@app.get("/api/voice-profiles/{vid}/samples/{idx}")
+def api_profile_sample_file(vid: int, idx: int, request: Request = None):
+    """Proslushivat' / skalchat' odin etalon (Range podderzhivaetsya)."""
+    paths = _profile_sample_paths(vid)
+    if idx < 0 or idx >= len(paths) or not Path(paths[idx]).is_file():
+        raise HTTPException(404, "etalon otsutstvuet")
+    path = Path(paths[idx])
+    return _serve_path(path, SAMPLE_MIME.get(path.suffix.lower(),
+                                             "application/octet-stream"), request)
+
+
+@app.delete("/api/voice-profiles/{vid}/samples/{idx}")
+def api_delete_profile_sample(vid: int, idx: int):
+    """Udalit' odin etalon; embedding profila pereschitaetsya v workere po
+    ostavshimsya etalonam/klasteryam."""
+    with get_session() as s:
+        v = s.get(VoiceProfile, vid)
+        if v is None:
+            raise HTTPException(404)
+        paths = list(v.sample_paths or [])
+        if idx < 0 or idx >= len(paths):
+            raise HTTPException(404, "etalon otsutstvuet")
+        removed = paths.pop(idx)
+        v.sample_paths = paths
+        s.commit()
+    try:
+        Path(removed).unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        from ..core.queue import enqueue_job
+        enqueue_job("speaker", "mnema.worker.tasks.run_profile_reembed", vid)
+    except Exception:  # noqa: BLE001 — udalenie ne lonitsya ochered'yu
+        pass
+    return {"ok": True, "samples": len(paths)}
+
+
+class ProfilePatch(BaseModel):
+    employee_name: str | None = None
+    employee_id: str | None = None
+
+
+@app.patch("/api/voice-profiles/{vid}")
+def api_patch_profile(vid: int, body: ProfilePatch):
+    """Pravka reestra: FIO/tabernoy; peremeynovanie rezonya v segmentakh
+    podtverzhdennykh klasteov + osvezhenie vygruzhnykh protokolov."""
+    if body.employee_name is not None and not body.employee_name.strip():
+        raise HTTPException(400, "FIO ne mozhet byt' pustym")
+    touched_protocol_ids: list[int] = []
+    with get_session() as s:
+        v = s.get(VoiceProfile, vid)
+        if v is None:
+            raise HTTPException(404)
+        old_name = v.employee_name
+        if body.employee_name is not None:
+            v.employee_name = body.employee_name.strip()
+        if body.employee_id is not None:
+            v.employee_id = body.employee_id.strip() or None
+        name = v.employee_name
+        if v.employee_name != old_name:
+            reviews = s.scalars(select(ReviewRequest).where(
+                ReviewRequest.candidate_profile_id == vid,
+                ReviewRequest.status == "confirmed")).all()
+            job_ids = {r.job_id for r in reviews}
+            for r in reviews:
+                for seg in s.scalars(select(Segment).where(
+                        Segment.job_id == r.job_id,
+                        Segment.speaker_id == r.cluster_label,
+                        Segment.speaker_name == old_name)).all():
+                    seg.speaker_name = name
+                    seg.speaker_source = "voiceprint"
+            if job_ids:
+                touched_protocol_ids = s.scalars(select(Protocol.id).where(
+                    Protocol.job_id.in_(job_ids))).all()
+        s.commit()
+    if touched_protocol_ids:
+        try:
+            from ..core.protocol_md import refresh_protocol
+            for pid in touched_protocol_ids:
+                refresh_protocol(pid)
+        except Exception:  # noqa: BLE001 — vygruzki ne kritichny dlya pravki
+            pass
+    return {"ok": True, "employee_name": name}
+
+
+@app.get("/api/voice-profiles/{vid}/clusters")
+def api_profile_clusters(vid: int):
+    """Klastry cheloveka (podtverzhdennye + zhdushchie utochneniya) s fragmentami
+    dlya proslushivaniya: audio + #t= (kak v /reviews)."""
+    with get_session() as s:
+        if s.get(VoiceProfile, vid) is None:
+            raise HTTPException(404)
+        rows = s.scalars(select(ReviewRequest).where(
+            ReviewRequest.candidate_profile_id == vid,
+            ReviewRequest.status.in_(("confirmed", "pending")))
+            .order_by(ReviewRequest.id.desc())).all()
+        out = []
+        for r in rows:
+            job = s.get(Job, r.job_id)
+            files = s.scalars(select(AudioFile).where(
+                AudioFile.job_id == r.job_id,
+                AudioFile.kind.in_(("wav", "mp3")))).all()
+            by_kind = {f.kind: f for f in files if Path(f.path).exists()}
+            picked = by_kind.get("wav") or by_kind.get("mp3")
+            segs = s.scalars(select(Segment).where(
+                Segment.job_id == r.job_id,
+                Segment.speaker_id == r.cluster_label,
+                Segment.excluded.is_(False)).order_by(Segment.t_start)).all()
+            out.append({"review_id": r.id, "job_id": r.job_id,
+                        "topic": job.topic if job else "",
+                        "cluster_label": r.cluster_label, "status": r.status,
+                        "answered_by": r.answered_by, "similarity": r.similarity,
+                        "has_audio": picked is not None,
+                        "audio_format": picked.kind if picked else None,
+                        "segments": [{"t_start": round(seg.t_start, 2),
+                                      "t_end": round(seg.t_end, 2),
+                                      "text": (seg.text or "")[:160]}
+                                     for seg in segs]})
+        return out
+
+
+@app.post("/api/voice-profiles/{vid}/reverify")
+def api_reverify_profile(vid: int):
+    """Ruchnoy перезапуск raspoznavaniya dlya cheloveka: peresobrat' etalon iz
+    podtverzhdennykh klasteov i zanovo opoznat' vse egо vstrechi (vrabotaet
+    v workere, tam pyannote)."""
+    if _profile_or_404(vid) is None:
+        raise HTTPException(404)
+    from ..core.queue import enqueue_job
+    try:
+        rq = enqueue_job("speaker", "mnema.worker.tasks.run_reverify_profile", vid)
+    except Exception:  # noqa: BLE001 — esli redis lez, otkazyvaem s Chestnо otvetom
+        rq = None
+    return {"ok": True, "queued": rq is not None}
 
 
 # ------------------------------------------------- upload arhivnyh zapisey (FT-upload)
