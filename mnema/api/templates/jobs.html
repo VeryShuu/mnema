@@ -12,8 +12,14 @@
     </select>
     <input name="meeting_link" placeholder="Ссылка-приглашение Zoom или номер встречи" size="50">
     <input name="topic" placeholder="Тема">
-    <input name="start_at" type="datetime-local" step="300" min="0" title="Пусто — записать сейчас. Время московское">
-    <input name="end_at" type="datetime-local" step="300" min="0" title="Предполагаемое окончание созвона. После него начинается проверка тишины. Время московское">
+    <div class="dt-range" title="Время московское. Начало пусто — записать сейчас. Окончание: после него начинается проверка тишины">
+      <span class="dt-range-icon" aria-hidden="true">🗓</span>
+      <label class="dt-range-label" for="id_start_at">Начало</label>
+      <input id="id_start_at" name="start_at" type="datetime-local" step="300" min="0">
+      <span class="dt-range-arrow" aria-hidden="true">→</span>
+      <label class="dt-range-label" for="id_end_at">До</label>
+      <input id="id_end_at" name="end_at" type="datetime-local" step="300" min="0">
+    </div>
     <button type="submit" class="primary">Запланировать</button>
   </form>
   <form method="post" action="/jobs/import-ics" enctype="multipart/form-data" style="margin-top:.7rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">

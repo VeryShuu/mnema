@@ -150,6 +150,16 @@ progress{width:100%;height:10px;accent-color:var(--accent)}
   main{padding:0 .8rem}
 }
 input[type="datetime-local"]::-webkit-calendar-picker-indicator{opacity:0;cursor:pointer}
+/* Группировка начала и конца встречи в один контрол диапазона */
+.dt-range{display:inline-flex;align-items:center;gap:.45rem;background:var(--bg-elev);
+  border:1px solid var(--border);border-radius:.55rem;padding:.3rem .7rem}
+.dt-range:focus-within{outline:2px solid var(--accent);outline-offset:1px}
+.dt-range input[type="datetime-local"]{border:none;background:transparent;padding:0;min-width:0;font-variant-numeric:tabular-nums}
+.dt-range input[type="datetime-local"]:focus{outline:none}
+.dt-range-icon{font-size:.95rem;line-height:1}
+.dt-range-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-faint);white-space:nowrap}
+.dt-range-arrow{color:var(--text-faint);font-size:.85rem}
+@media (max-width:640px){.dt-range{flex:1 1 100%;flex-wrap:wrap}}
 .dtp{position:fixed;z-index:50;display:flex;gap:.5rem;background:var(--bg-card);border:1px solid var(--border);border-radius:.7rem;box-shadow:var(--shadow);padding:.6rem}
 .dtp[hidden]{display:none}
 .dtp-cal{min-width:15rem}
