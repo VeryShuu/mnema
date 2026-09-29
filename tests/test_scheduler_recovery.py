@@ -59,6 +59,33 @@ def test_reschedule_empty(db):
     assert scheduler.reschedule_missed_jobs() == 0
 
 
+def _ics(start: str, end: str) -> str:
+    return ("BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:1@x\nSUMMARY:T\n"
+            f"DTSTART:{start}\nDTEND:{end}\n"
+            "DESCRIPTION:https://zoom.us/j/123456789\nEND:VEVENT\nEND:VCALENDAR")
+
+
+def test_parse_ics_floating_times_use_app_tz(monkeypatch):
+    """Floating (bez Z i TZID) DTSTART/DTEND = lokal'noe vremya (MSK):
+    14:00-15:00 -> start 11:00 UTC, dlitel'nost' 60 min, a ne 3+1=4 chasa."""
+    from mnema.core import scheduler
+    monkeypatch.setenv("APP_TZ", "Europe/Moscow")
+    evs = scheduler.parse_ics(_ics("20261001T140000", "20261001T150000"))
+    assert len(evs) == 1
+    assert evs[0]["start_at"] == dt.datetime(2026, 10, 1, 11, 0,
+                                             tzinfo=dt.timezone.utc)
+    assert evs[0]["duration_max_min"] == 60
+
+
+def test_parse_ics_utc_times_passthrough(monkeypatch):
+    from mnema.core import scheduler
+    monkeypatch.setenv("APP_TZ", "Europe/Moscow")
+    evs = scheduler.parse_ics(_ics("20261001T140000Z", "20261001T150000Z"))
+    assert evs[0]["start_at"] == dt.datetime(2026, 10, 1, 14, 0,
+                                             tzinfo=dt.timezone.utc)
+    assert evs[0]["duration_max_min"] == 60
+
+
 def test_reschedule_survives_single_failure(db, monkeypatch):
     from mnema.core import scheduler
     ok_id = _mk_job("scheduled")

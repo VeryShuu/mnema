@@ -44,7 +44,11 @@ def parse_ics(text: str) -> list[dict]:
         if end is not None:
             end_dt = end.dt
             if end_dt.tzinfo is None:
-                end_dt = end_dt.replace(tzinfo=dt.timezone.utc)
+                # floating time (RFC 5545): naivnye DTSTART/DTEND — oboe
+                # lokal'noe vremya; traktovat DTEND kak UTC sdvigalo
+                # dlitel'nost' na +3ch (14:00-15:00 -> 4 chasa)
+                from .tz import local_to_utc
+                end_dt = local_to_utc(end_dt)
             dur_min = int((end_dt - start_dt).total_seconds() // 60)
         link_src = f"{desc} {loc} {summary}"
         mid = pwd = None

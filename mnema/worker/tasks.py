@@ -572,6 +572,16 @@ def _fmt(sec: float) -> str:
     return f"{sec // 3600:02d}:{(sec % 3600) // 60:02d}:{sec % 60:02d}"
 
 
+def _archive_day(date_value: dt.datetime | None) -> str:
+    """Katalog arhiva po dnyu lokal'nogo poyasa (FT-20): date iz BDB — naivnyy
+    UTC, vechernyaya vstrecha (23:xx MSK) inache popadayet v predydushchiy den'.
+    """
+    if date_value is None:
+        return "unknown"
+    from ..core.tz import to_local
+    return to_local(date_value).strftime("%Y-%m-%d")
+
+
 def _run_structure(job_id: int) -> None:
     """FT-17: LLM protocol. Pri llm=not_configured/misconfigured -> awaiting_llm."""
     from ..core.capabilities import capability_status
@@ -635,8 +645,7 @@ def _build_protocol(job_id: int) -> None:
         s.commit()
     data = structure_transcript(transcript, topic=job.topic)
     archive_dir = Path(os.environ.get("ARCHIVE_DIR", "/data/archive"))
-    date_str = (job.ended_ts or job.start_at)
-    day = date_str.strftime("%Y-%m-%d") if date_str else "unknown"
+    day = _archive_day(job.ended_ts or job.start_at)
     slug = "".join(c if c.isalnum() else "-" for c in (job.topic or f"job{job_id}"))[:40] or f"job{job_id}"
     out = archive_dir / day / slug
     md, docx = assemble_protocol(job, data, segs, out)

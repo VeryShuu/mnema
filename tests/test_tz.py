@@ -62,3 +62,14 @@ def test_app_tz_label():
 
 def test_local_utc_offset():
     assert local_utc_offset() == "+03:00"
+
+
+def test_archive_day_uses_local_date_evening_utc(monkeypatch):
+    """23:30 MSK = 20:30 UTC sleduyushchego... kataloh arhiva — po MSK-dnyu."""
+    monkeypatch.setenv("APP_TZ", "Europe/Moscow")
+    from mnema.worker.tasks import _archive_day
+    naive_utc_2030 = dt.datetime(2026, 9, 29, 20, 30)  # = 23:30 MSK 29.09
+    assert _archive_day(naive_utc_2030) == "2026-09-29"
+    naive_utc_2100 = dt.datetime(2026, 9, 29, 21, 0)   # = 00:00 MSK 30.09
+    assert _archive_day(naive_utc_2100) == "2026-09-30"
+    assert _archive_day(None) == "unknown"
