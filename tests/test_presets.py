@@ -80,6 +80,25 @@ def test_create_job_from_preset_substitutes_link_and_pwd(client):
     assert j["zoom_meeting_id"] == "my/corp.gold"
 
 
+def test_create_job_from_preset_uses_preset_pwd_when_link_prefilled(client):
+    """applyPreset() kopiruet ssylku v formu: пароль dolzhen vzyatsya iz
+    presaeta, a ne teryat'sya (vstrecha 56: pwd_ref=NULL, bot na pinesscode)."""
+    client.post("/presets/add", data={
+        "title": "VIP",
+        "meeting_link": "https://us06web.zoom.us/my/corp.vip?pwd=pin.42"})
+    from mnema.core.presets_api import list_presets
+    pid = list_presets()[0].id
+    r = client.post("/jobs/create",
+                    data={"preset_id": str(pid), "topic": "Planerka",
+                          "meeting_link": "https://us06web.zoom.us/my/corp.vip"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    jid = r.headers["location"].rsplit("/", 1)[-1]
+    info = client.get(f"/api/jobs/{jid}/join-info").json()
+    assert info["pwd"] == "pin.42"
+    assert info["join_link"] == "https://us06web.zoom.us/my/corp.vip"
+
+
 def test_create_job_with_unknown_preset_redirects_with_error(client):
     r = client.post("/jobs/create", data={"preset_id": "999"}, follow_redirects=False)
     assert r.status_code == 303

@@ -1084,7 +1084,11 @@ async def web_job_create(request: Request):
     preset_id = str(form.get("preset_id", "")).strip()
     link = str(form.get("meeting_link", "")).strip()
     pwd: str | None = None
-    if preset_id and not link:
+    if preset_id:
+        # applyPreset() заполняет meeting_link ссылкой пресета (readonly), а
+        # пароль в полях формы нет: пресет важнее скопированной ссылки.
+        # Условие "and not link" раньше его пропускало -> job без pwd_ref,
+        # бот упирался в экран пинкода (vstrecha 56).
         try:
             preset = get_preset_join(int(preset_id))
         except ValueError:

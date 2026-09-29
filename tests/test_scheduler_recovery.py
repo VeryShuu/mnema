@@ -31,10 +31,10 @@ def _mk_job(status: str, start_at=None):
         return j.id
 
 
-def _mk_naive_local(dt_value: dt.datetime) -> dt.datetime:
-    """SQLite hranit naivno v local po yasu prilozheniya."""
-    from mnema.core.tz import to_local
-    return to_local(dt_value).replace(tzinfo=None)
+def _mk_naive_utc(dt_value: dt.datetime) -> dt.datetime:
+    """SQLite (DateTime(timezone=True)) otdaet sohrannyy aware UTC naivno,
+    v tom vide kak ego real'no vозvraschaet БД."""
+    return(dt_value.replace(tzinfo=None))
 
 
 @pytest.mark.parametrize("status", ["scheduled", "launching", "recording",
@@ -114,11 +114,26 @@ def test_schedule_job_for_future_respects_prejoin(db, monkeypatch):
     monkeypatch.setattr(jobs_launch, "enqueue_launch",
                         lambda jid, run_at: called.append((jid, run_at)) or True)
     expected = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)
-    jid = _mk_job("scheduled", _mk_naive_local(expected))
+    jid = _mk_job("scheduled", _mk_naive_utc(expected))
     scheduler.schedule_job_for(jid)
     assert len(called) == 1
     delta = abs((called[0][1] - (expected - dt.timedelta(seconds=120))).total_seconds())
-    assert delta < 1  # SQLite okruglyaet / traktuet naivnyy datetime po local tz
+    assert delta < 1  # naivnyy datetime iz SQLite = UTC, bez povornogo SDVIGA
+
+
+def test_schedule_job_for_naive_utc_not_shifted_by_app_tz(db, monkeypatch):
+    """Regressiya vstrechi 56: 14:00 MSK -> run_at 13:58 UTC, a ne na 3 chasa ranshe."""
+    from mnema.core import scheduler, jobs_launch
+    called: list[tuple[int, dt.datetime]] = []
+    monkeypatch.setenv("APP_TZ", "Europe/Moscow")
+    monkeypatch.setenv("BOT_PREJOIN_SECONDS", "120")
+    monkeypatch.setattr(jobs_launch, "enqueue_launch",
+                        lambda jid, run_at: called.append((jid, run_at)) or True)
+    start = dt.datetime(2099, 1, 1, 14, 0, tzinfo=dt.timezone.utc)  # hranitsya kak UTC
+    jid = _mk_job("scheduled", start.replace(tzinfo=None))
+    scheduler.schedule_job_for(jid)
+    assert len(called) == 1
+    assert called[0][1] == start - dt.timedelta(seconds=120)
 
 
 def test_reschedule_end_to_end_past_job_pushes_launch(db, monkeypatch):

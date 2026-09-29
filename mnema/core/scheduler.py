@@ -76,8 +76,11 @@ def schedule_job_for(job_id: int) -> None:
         run_at = nowts
     else:
         if start_at.tzinfo is None:
-            from .tz import local_to_utc
-            start_at = local_to_utc(start_at)
+            # SQLite вернёт start_at наивным: записан он всегда aware UTC
+            # (web/API переводят локальный ввод в UTC до записи), значит
+            # наивное значение из БД — это UTC, а НЕ локальное время.
+            # Повторный local_to_utc сдвигал запуск на -3ч (vstrecha 56/57).
+            start_at = start_at.replace(tzinfo=dt.timezone.utc)
         run_at = max(start_at - dt.timedelta(seconds=prejoin), nowts)
     jobs_launch.enqueue_launch(job_id, run_at)
 
