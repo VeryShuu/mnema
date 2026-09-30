@@ -56,7 +56,15 @@ if [ ! -f docker-compose.override.yml ]; then
 fi
 
 # esli izmeneny requirements/docker — sobudet zanovo; inache keskh i nothing to do
-\$COMPOSE up -d --build
+\$COMPOSE build
+
+# migratsii BDD do zapuska: create_all dobavlyaet tol'ko tablitsy, no ne kolonki
+# v sushchestvuyushchikh (esli zabies' shag — Pydantic/SQLAlchemy padayut na
+# "no such column" pri permom zhe chtenii Job/VoiceProfile)
+echo "    alembic upgrade head..."
+\$COMPOSE run --rm --no-deps api python -m alembic upgrade head
+
+\$COMPOSE up -d
 
 echo "    proverka zapuska:"
 \$COMPOSE ps --format "{{.Name}} {{.Status}}"

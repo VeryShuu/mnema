@@ -27,15 +27,30 @@ def _retry_sec() -> float:
 
 
 def diarize(wav: Path, vad_segments: list[dict]) -> list[str]:
+    labels, _turns, _ratios = diarize_with_turns(wav, vad_segments)
+    return labels
+
+
+def diarize_with_turns(wav: Path, vad_segments: list[dict]
+                       ) -> tuple[list[str], list | None, list | None]:
+    """(labels, turns, cov_ratios); turns — [[t_start, t_end, label], ...] po
+    vsey zapisi (None esli diari niedostupen), cov_ratios — dlya kazhdogo
+    VAD-segmenta dolya dominantnogo govoryashchego. Metka VAD-segmenta — po
+    pokrytiyu (dominantny), a ne po seredine: segment na styke smeny golosa
+    popadaet k kryashchemu ego golosu, no low-coverage segment yemnitsya kak
+    overlap."""
     backend = _get_pyannote()
     if backend is None:
-        return ["SPEAKER_UNKNOWN"] * len(vad_segments)
+        return ["SPEAKER_UNKNOWN"] * len(vad_segments), None, None
     try:
-        return _pyannote_labels(backend, wav, vad_segments)
+        res = _pyannote_labels(backend, wav, vad_segments)
+        if isinstance(res, tuple):
+            return res
+        return res, None, None  # testovye zaglushki, vozvrashchayushchie tol'ko metki
     except Exception as e:  # noqa: BLE001
         print(f"pyannote: vypolnenie sdalosya s oshibkoy ({e!r}) — "
               f"{len(vad_segments)} segm kak SPEAKER_UNKNOWN", flush=True)
-        return ["SPEAKER_UNKNOWN"] * len(vad_segments)
+        return ["SPEAKER_UNKNOWN"] * len(vad_segments), None, None
 
 
 # Sostoyanie _pipe:
@@ -121,22 +136,39 @@ def _run_pipeline(pipe, wav: Path):
     return pipe(str(wav))
 
 
-def _pyannote_labels(pipe, wav: Path, vad_segments: list[dict]) -> list[str]:
+def _pyannote_labels(pipe, wav: Path,
+                     vad_segments: list[dict]) -> tuple[list[str], list, list]:
     diar = _run_pipeline(pipe, wav)
+    turns = [[float(t.start), float(t.end), str(spk)]
+             for t, _, spk in diar.itertracks(yield_label=True)]
     out: list[str] = []
+    ratios: list[float] = []
     for seg in vad_segments:
-        t = (seg["t_start"] + seg["t_end"]) / 2
-        label = _label_at(diar, t) or "SPEAKER_UNKNOWN"
-        out.append(label)
-    return out
+        label, ratio = _dominant_label(turns, seg["t_start"], seg["t_end"])
+        out.append(label or "SPEAKER_UNKNOWN")
+        ratios.append(ratio)
+    return out, turns, ratios
 
 
-def _label_at(diar, t: float) -> str | None:
-    best = None
-    best_dur = 0.0
-    for turn, _, spk in diar.itertracks(yield_label=True):
-        if turn.start <= t <= turn.end:
-            d = turn.end - turn.start
-            if d > best_dur:
-                best, best_dur = spk, d
-    return best
+def _dominant_label(turns: list, t0: float, t1: float) -> tuple[str | None, float]:
+    """(govoryashchiy s naibol'shim pokrytiem, dolya pokrytiya segmenta).
+
+    Ranshe bralsya povorot, soderzhashchiy seredinyu, — segment na styke
+    dvukh govorivykh (a VAD-rezhet i po 15 s prinuditel'no) otdestovalsya
+    odnomu golosu tselikom i portil etalon klastera. Dolya < 1 signaliruet
+    na lozhenie (overlap) — takiy fragment v embedding brat nel'zya."""
+    dur = max(1e-9, t1 - t0)
+    cov: dict[str, float] = {}
+    for ts, te, spk in turns:
+        ov = min(te, t1) - max(ts, t0)
+        if ov > 0:
+            cov[spk] = cov.get(spk, 0.0) + ov
+    if not cov:
+        return None, 0.0
+    best = max(cov, key=cov.get)
+    return best, min(1.0, cov[best] / dur)
+
+
+def label_at_turns(turns: list, t0: float, t1: float) -> tuple[str | None, float]:
+    """Pokrytie dlya vneshnikh vyzov (seriailizovannye turns iz BDD)."""
+    return _dominant_label(turns, t0, t1)

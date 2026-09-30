@@ -72,7 +72,12 @@ document.getElementById('recbtn').onclick = async function(){
     const r = await fetch('/api/voice-profiles/'+document.getElementById('vid').value+'/sample',
       {method:'POST', body: fd});
     const j = await r.json();
-    if(j.ok){ alert('Запись добавлена в профиль'); location.reload(); }
+    if(j.ok){
+      alert(j.pending_embedding
+        ? 'Запись принята. Эталонный голос построит worker (GPU) — узнавание заработает после обработки.'
+        : 'Запись добавлена в профиль');
+      location.reload();
+    }
     else { alert('Низкое качество записи: '+j.reason+' — перезапишите'); }
   };
   mediaRecorder.start();

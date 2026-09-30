@@ -20,7 +20,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from .db import get_session
-from .models import ReviewRequest, Segment, SessionEvent, VoiceProfile
+from .models import Job, ReviewRequest, Segment, SessionEvent, VoiceProfile
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:
@@ -29,12 +29,17 @@ def _l2_normalize(vec: list[float]) -> list[float]:
 
 
 def mean_embedding(vecs: list[list[float]]) -> list[float] | None:
-    """Srednee po vektoram s L2-normalizaciey (porogi kosinusa okoli 0.45/0.65
-    ostayutsya osmyslennymi)."""
+    """Srednee po vektoram odinovoy razmernosti s L2-normalizaciey.
+
+    Vektory drugoi razmernosti (legendnie 32-D hash-stuby, poyavlennye
+    starym api-bez-pyannote) propuskayutsya: `v[i]` po pervomu vektoru
+    uekal by ih v srednee i portil kesh embeddinga."""
     if not vecs:
         return None
-    n = len(vecs[0])
-    return _l2_normalize([sum(v[i] for v in vecs) / len(vecs) for i in range(n)])
+    dims = [len(v) for v in vecs]
+    dim = max(set(dims), key=dims.count)
+    use = [v for v in vecs if len(v) == dim]
+    return _l2_normalize([sum(v[i] for v in use) / len(use) for i in range(dim)])
 
 
 def profile_backfill_sources(profile_id: int, max_jobs: int = 10) -> list[tuple[int, str]]:
@@ -65,19 +70,24 @@ def profile_backfill_sources(profile_id: int, max_jobs: int = 10) -> list[tuple[
 
 
 def cluster_embedding_for(job_id: int, cluster: str) -> list[float] | None:
-    """Embedding klastera po zapisi vstrechi (zhivoy pyannote, ne stub)."""
+    """Embedding klastera po zapisi vstrechi (zhivoy pyannote, ne stub).
+
+    Esli v jobe sohraneny turns diagramizatsii, v embedding berutsya tol'ko
+    chisty podinterval klastera (bez nakhalozheniya chuzhoy rechi)."""
     from ..worker.tasks import _cluster_embedding, _job_paths
     wav = _job_paths(job_id)["wav"]
     if not wav.exists():
         return None
     with get_session() as s:
+        job = s.get(Job, job_id)
+        turns = job.diar_turns if job is not None else None
         segs = list(s.scalars(select(Segment).where(
             Segment.job_id == job_id,
             Segment.speaker_id == cluster,
             Segment.excluded.is_(False))).all())
     if not segs:
         return None
-    return _cluster_embedding(wav, segs)
+    return _cluster_embedding(wav, segs, turns=turns)
 
 
 def backfill_profile_embeddings(refresh: bool = False, max_jobs: int = 10,
@@ -87,6 +97,7 @@ def backfill_profile_embeddings(refresh: bool = False, max_jobs: int = 10,
         raise RuntimeError(
             "embedding backend niedostupen (nuzhen pyannote + HF_TOKEN) — "
             "zpuskayte backfill v konteynere workera, a ne api")
+    from .speaker import compute_embedding_for_file
     results: dict[int, str] = {}
     with get_session() as s:
         profiles = [(v.id, v.employee_name, v.embedding)
@@ -96,11 +107,22 @@ def backfill_profile_embeddings(refresh: bool = False, max_jobs: int = 10,
             results[pid] = f"{name}: skip (embedding yest')"
             continue
         vecs: list[list[float]] = []
+        keys: list[str] = []
+        samples = _profile_sample_paths(pid)
+        for sp in samples:
+            try:
+                emb = compute_embedding_for_file(Path(sp))
+                if emb:
+                    vecs.append(_l2_normalize(emb))
+                    keys.append(f"path:{sp}")
+            except Exception:  # noqa: BLE001
+                continue
         for job_id, cluster in profile_backfill_sources(pid, max_jobs):
             try:
                 emb = cluster_embedding_for(job_id, cluster)
                 if emb:
                     vecs.append(_l2_normalize(emb))
+                    keys.append(f"job:{job_id}:{cluster}")
             except Exception:  # noqa: BLE001 — odin plotnyi job ne lonit wsye
                 continue
         if not vecs:
@@ -114,6 +136,7 @@ def backfill_profile_embeddings(refresh: bool = False, max_jobs: int = 10,
             vp = s2.get(VoiceProfile, pid)
             if vp is None:
                 continue
+            _store_refs(vp, vecs, sources_keys=keys)
             vp.embedding = mean
             stats = dict(vp.match_stats or {})
             stats["backfill_clusters"] = len(vecs)
@@ -121,6 +144,62 @@ def backfill_profile_embeddings(refresh: bool = False, max_jobs: int = 10,
             s2.commit()
         results[pid] = f"{name}: embedding iz {len(vecs)} klasterov"
     return results
+
+
+def _profile_sample_paths(profile_id: int) -> list[str]:
+    with get_session() as s:
+        v = s.get(VoiceProfile, profile_id)
+        return [p for p in ((v.sample_paths if v else None) or []) if Path(p).is_file()]
+
+
+def _store_refs(vp: VoiceProfile, vecs: list[list[float]],
+                sources_keys: list[str]) -> None:
+    """Perepisyvaet maset etalonov profila (ref_embeddings) + match_stats.ref_sources.
+
+    Kazhdy vektor — otdel'nyy istochnik; matsching (speaker.profile_similarity)
+    idyot po max cosine po vsem refam, embedding — srednee kesh. Klyuchi
+    ('job:<id>:<klaster>' / 'path:<fayl>') sopostavleny refam po poziciyam."""
+    take = list(zip(sources_keys[-_REF_SET_MAX:], vecs[-_REF_SET_MAX:]))
+    vp.ref_embeddings = [v for _k, v in take]
+    stats = dict(vp.match_stats or {})
+    stats["ref_sources"] = list(sources_keys[-_REF_SET_MAX:])
+    vp.match_stats = stats
+    sync_ref_cache(vp)
+
+
+def append_ref(vp: VoiceProfile, emb: list[float], key: str) -> bool:
+    """Dobavit' odin etalon s klyuchom istochnika (False esli takoy uzhe yest').
+
+    Sushchestvuyushchiy odinochnyy embedding migriruetsya v set' pri pervom
+    dopolnenii; vp.embedding vsegda — srednee po seti (geton klya
+    match_cluster po staremu)."""
+    keys = [str(k) for k in ((vp.match_stats or {}).get("ref_sources") or [])]
+    if key in keys:
+        return False
+    refs = [list(x) for x in (vp.ref_embeddings or [])]
+    if not refs:
+        keys = []  # ref-set pusty — klyuchi ot nesootvetstvuyushchikh legacy ne zna4imy
+        if vp.embedding and len(vp.embedding) == len(emb):
+            refs = [list(vp.embedding)]  # migrate: odinochnyy vektor -> pervyy ref
+            keys = ["legacy"]
+        # inye razmernosti — legendniy hash-stub (32-D) iz starogo api: v set'
+        # ne idyot, zhivoy vektor ego zamenshat
+    refs.append(_l2_normalize(emb))
+    keys.append(key)
+    refs, keys = refs[-_REF_SET_MAX:], keys[-_REF_SET_MAX:]
+    vp.ref_embeddings = refs
+    stats = dict(vp.match_stats or {})
+    stats["ref_sources"] = keys
+    vp.match_stats = stats
+    sync_ref_cache(vp)
+    return True
+
+
+def sync_ref_cache(vp: VoiceProfile) -> None:
+    vp.embedding = mean_embedding(vp.ref_embeddings or []) or vp.embedding
+
+
+_REF_SET_MAX = 24
 
 
 def rematch_job(job_id: int) -> None:
@@ -171,11 +250,13 @@ def recompute_profile_embedding(profile_id: int) -> str:
             return "profil' udalen"
         samples = [p for p in (v.sample_paths or []) if Path(p).is_file()]
     vecs: list[list[float]] = []
+    keys: list[str] = []
     for p in samples:
         try:
             emb = compute_embedding_for_file(Path(p))
             if emb:
                 vecs.append(_l2_normalize(emb))
+                keys.append(f"path:{p}")
         except Exception:  # noqa: BLE001 — odin ploskoy etalon ne lonit vsyo
             continue
     n_clusters = 0
@@ -184,6 +265,7 @@ def recompute_profile_embedding(profile_id: int) -> str:
             emb = cluster_embedding_for(job_id, cluster)
             if emb:
                 vecs.append(_l2_normalize(emb))
+                keys.append(f"job:{job_id}:{cluster}")
                 n_clusters += 1
         except Exception:  # noqa: BLE001
             continue
@@ -195,6 +277,7 @@ def recompute_profile_embedding(profile_id: int) -> str:
         if vp is None:
             return "profil' udalen"
         vp.embedding = mean
+        _store_refs(vp, vecs, sources_keys=keys)
         stats = dict(vp.match_stats or {})
         stats["backfill_clusters"] = n_clusters
         vp.match_stats = stats

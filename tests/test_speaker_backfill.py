@@ -189,7 +189,7 @@ def _mk_segments(job_id, n, cluster="SPEAKER_00"):
 def _speaker_env(monkeypatch, verdict, profile_id, sim):
     import mnema.core.speaker as sp
     monkeypatch.setattr("mnema.worker.tasks._cluster_embedding",
-                        lambda wav, segs: [1.0, 0.0])
+                        lambda wav, segs, turns=None: [1.0, 0.0])
     monkeypatch.setattr(sp, "match_cluster",
                         lambda emb: (verdict, s_profile(profile_id), sim))
     monkeypatch.setattr(sp, "thresholds", lambda: (0.65, 0.45))
@@ -358,23 +358,49 @@ def test_enroll_sets_embedding_from_cluster(db, monkeypatch):
         assert len(evs) == 1
 
 
-def test_enroll_blends_with_weight_existing(db, monkeypatch):
-    """Nakoplenny po 8 klasteram etalon (backfill_clusters=8) odin novyi
-    otvet sdygayet malo."""
+def test_enroll_appends_ref_instead_of_blending(db, monkeypatch):
+    """Ref-set vmesto EMA: novyy etapton — otdel'nyy ref; srednee embedding
+    ne perepisyvaet predydushchie vklady kak odin smesannyy vektor, a max-
+    cosine matsching (profile_similarity) sravnivaet so vsemi etalonami."""
     monkeypatch.setattr("mnema.core.speaker._embedding_backend", lambda: "pyannote")
     monkeypatch.setattr("mnema.core.speaker_backfill.cluster_embedding_for",
                         lambda job_id, cluster: [0.0, 1.0])
     _mk_segments(912, 2)
-    pid = _add_profile("Enroll Blend", embedding=[1.0, 0.0],
-                       match_stats={"backfill_clusters": 8})
+    pid = _add_profile("Enroll Ref", embedding=[1.0, 0.0],
+                       match_stats={"ref_sources": ["legacy"]})
     _add_review(912, "SPEAKER_00", pid)
     from mnema.worker.tasks import run_voice_enroll
     run_voice_enroll(912, "SPEAKER_00")
     from mnema.core.db import get_session
     from mnema.core.models import VoiceProfile
+    from mnema.core.speaker import cosine, profile_similarity
     with get_session() as s:
-        emb = s.get(VoiceProfile, pid).embedding
-        assert emb[0] > 0.9  # novyi vklad 1/(n+1) mal
+        v = s.get(VoiceProfile, pid)
+        assert len(v.ref_embeddings) == 2
+        assert v.ref_embeddings[1] == [0.0, 1.0]
+        # maximum po refam sohranyaet oba golosa, a ne sredneye, semyayushchee v 0.707
+        assert profile_similarity([1.0, 0.0], v) == pytest.approx(1.0)
+        assert profile_similarity([0.0, 1.0], v) == pytest.approx(1.0)
+        assert cosine([1.0, 0.0], v.embedding) < 1.0  # srednee — tol'ko kesh
+
+
+def test_enroll_skips_duplicate_cluster_source(db, monkeypatch):
+    """Povtornyy enroll togo zhe klastera ne mnozhit odin i tot zhe etalon."""
+    monkeypatch.setattr("mnema.core.speaker._embedding_backend", lambda: "pyannote")
+    monkeypatch.setattr("mnema.core.speaker_backfill.cluster_embedding_for",
+                        lambda job_id, cluster: [1.0, 0.0])
+    _mk_segments(916, 2)
+    pid = _add_profile("Enroll Dup")
+    _add_review(916, "SPEAKER_00", pid)
+    from mnema.worker.tasks import run_voice_enroll
+    run_voice_enroll(916, "SPEAKER_00")
+    run_voice_enroll(916, "SPEAKER_00")
+    from mnema.core.db import get_session
+    from mnema.core.models import VoiceProfile
+    with get_session() as s:
+        v = s.get(VoiceProfile, pid)
+        assert len(v.ref_embeddings or []) == 1
+        assert v.match_stats.get("enroll_skipped_dup") == 1
 
 
 def test_enroll_skips_voiceprint_auto_answer(db, monkeypatch):

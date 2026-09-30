@@ -660,29 +660,56 @@ def api_delete_profile(vid: int):
 
 @app.post("/api/voice-profiles/{vid}/sample")
 async def api_upload_sample(vid: int, file: UploadFile = File(...)):
-    """Zapis' s mikrofona brauzera (FT-29a, MediaRecorder webm) -> embedding."""
+    """FT-29a: zapis' s mikrofona (MediaRecorder webm). Embedding schitaet
+    WORKER (tam pyannote + GPU): v api-bez-ASR ranshe zapisyvalsya 32-D
+    hash-zaglushka, kotoryy bezvoz vratno portil profil' (cosine k 512-D
+    etalonam ~0). Esli API sobran s ASR — schitaem inline, inache v ochered'.
+
+    Udalennyy rezhim kacheira: kachestvo proveryaetsya zdes' (ffmpeg est'
+    v oboih obraze), embedding — v workere."""
+    with get_session() as s:
+        if s.get(VoiceProfile, vid) is None:
+            raise HTTPException(404)
     dest_dir = Path(os.environ.get("DATA_DIR", "/data")) / "voice_samples" / str(vid)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"sample_{dt.datetime.now(dt.timezone.utc):%Y%m%d_%H%M%S}.webm"
     dest.write_bytes(await file.read())
-    from ..core.speaker import compute_embedding_for_file, quality_gate
+    from ..core.speaker import _embedding_backend, compute_embedding_for_file, quality_gate
     ok, reason = quality_gate(dest)
     if not ok:
         dest.unlink(missing_ok=True)
         return {"ok": False, "reason": reason}
-    emb = compute_embedding_for_file(dest)
+    if _embedding_backend() == "pyannote":
+        emb = compute_embedding_for_file(dest)
+        if not emb:
+            return {"ok": False,
+                    "reason": "ne udalos' postroit' embedding (srabrable?)"}
+        with get_session() as s:
+            v = s.get(VoiceProfile, vid)
+            if v is None:
+                raise HTTPException(404)
+            v.sample_paths = list(v.sample_paths or []) + [str(dest)]
+            _append_sample_ref(s, v, emb)
+            s.commit()
+        return {"ok": True}
+    # api bez pyannote: etalon dobazhaetsya (DATA_DIR — obshiy volume s worker),
+    # embedding postavit worker
     with get_session() as s:
         v = s.get(VoiceProfile, vid)
         if v is None:
             raise HTTPException(404)
-        paths = list(v.sample_paths or []) + [str(dest)]
-        v.sample_paths = paths
-        if emb:
-            existing = v.embedding or []
-            v.embedding = emb if not existing else [
-                (e + n) / 2 for e, n in zip(existing, emb)]
+        v.sample_paths = list(v.sample_paths or []) + [str(dest)]
         s.commit()
-    return {"ok": True}
+    from ..core.queue import enqueue_job
+    enqueued = enqueue_job("speaker", "mnema.worker.tasks.run_profile_sample_enroll",
+                           vid, str(dest)) is not None
+    return {"ok": True, "pending_embedding": True, "worker_queued": enqueued}
+
+
+def _append_sample_ref(s, v: VoiceProfile, emb: list[float]) -> None:
+    """Dobavit' etalon zapisi v set' ref_embeddings (idempotentnost' po puti)."""
+    from ..core.speaker_backfill import append_ref
+    append_ref(v, emb, f"path:{v.sample_paths[-1] if v.sample_paths else 'ref'}")
 
 
 SAMPLE_MIME = {".webm": "audio/webm", ".wav": "audio/wav", ".mp3": "audio/mpeg",

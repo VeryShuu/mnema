@@ -140,22 +140,33 @@ def run_speaker_id(job_id: int) -> None:
         if not segs:
             return
         vad = [{"t_start": s.t_start, "t_end": s.t_end} for s in segs]
-        from ..core.diarize import diarize
+        from ..core.diarize import diarize_with_turns
         with get_session() as s:
             s.add(SessionEvent(job_id=job_id, event="diar_start",
                                detail=f"{len(segs)} segm"))
             s.commit()
         try:
-            labels = diarize(wav, vad)
+            labels, turns, ratios = diarize_with_turns(wav, vad)
         except Exception as e:  # noqa: BLE001
             print(f"diarize fail ({e}) — vse SPEAKER_UNKNOWN", flush=True)
-            labels = ["SPEAKER_UNKNOWN"] * len(segs)
+            labels, turns, ratios = ["SPEAKER_UNKNOWN"] * len(segs), None, None
         with get_session() as s:
             rows = s.scalars(select(Segment).where(Segment.job_id == job_id)
                              .order_by(Segment.t_start, Segment.id)).all()
-            for row, label in zip(rows, labels):
+            for i, row in enumerate(rows):
+                label = labels[i] if i < len(labels) else "SPEAKER_UNKNOWN"
                 row.speaker_id = label
                 row.diar_label = label
+                ratio = ratios[i] if (ratios and i < len(ratios)) else None
+                if turns and ratio is not None and ratio < _overlap_ratio_min():
+                    # v segmente dva golosa: embedding iz nego nyat' nel'zya,
+                    # imya ne prisvaivaem — tol'ko review. Bez turns (CPU/diari
+                    # otsutstvuet) coverage ne izvesen — ne kleit.
+                    row.speaker_source = "multi_voice"
+                    row.needs_review = True
+            job = s.get(Job, job_id)
+            if job is not None:
+                job.diar_turns = turns
             s.add(SessionEvent(job_id=job_id, event="diar_done",
                                detail=f"{len(set(labels))} klaster"))
             s.commit()
@@ -163,6 +174,14 @@ def run_speaker_id(job_id: int) -> None:
     except Exception as e:  # noqa: BLE001
         _fail_branch(job_id, e, "speaker_error")
         raise
+
+
+def _overlap_ratio_min() -> float:
+    """Dolya dominantnogo govoryashchego, priseyusha segm smeshannym (overlap)."""
+    try:
+        return float(os.environ.get("OVERLAP_MIN_COVERAGE", "0.7") or 0.7)
+    except ValueError:
+        return 0.7
 
 
 def run_join(job_id: int) -> None:
@@ -345,12 +364,15 @@ def run_structure(job_id: int) -> None:
 
 
 def run_voice_enroll(job_id: int, cluster_label: str) -> None:
-    """Reestr golosa: utocnenie klastera operatorom (ili taym-autom) updatelyaet
-    embedding profila po etomu klasteru. Tol'ko v workere (est' pyannote);
-    v api s backends=None vyhod bezhash-musora. Auto-otvety voiceprint
-    isklyucheny, chtoby ne usilivat' obratnyu svyaz."""
+    """Reestr golosa: utocnenie klastera operatorom (ili taym-autom) dokuchaet
+    profil' novym etalonom-embdom klastera. Tol'ko v workere (est' pyannote);
+    v api s backends=None vyhod bez hash-musora. Auto-otvety voiceprint
+    isklyucheny, chtoby ne usilivat' obratnyu svyazi.
+
+    Ref-set vmesto EMA: kazhdy istochnik — otdel'nyy etalon (ref_embeddings),
+    matsching idyot po max cosine; srednee embedding — produsirovanno kesh.
+    EMA, peremeshivayushchiy vseh v odin vektor, razmyval pohozhie golosa."""
     from ..core.speaker import _embedding_backend
-    from ..core.models import ReviewRequest
     if _embedding_backend() != "pyannote":
         return
     with get_session() as s:
@@ -360,37 +382,74 @@ def run_voice_enroll(job_id: int, cluster_label: str) -> None:
             ReviewRequest.status == "confirmed")).first()
         if r is None or not r.candidate_profile_id or r.answered_by == "voiceprint":
             return
-        profile = s.get(VoiceProfile, r.candidate_profile_id)
-        if profile is None:
+        if profile_absent(s, r.candidate_profile_id):
             return
+        profile_id = r.candidate_profile_id
     try:
-        from ..core.speaker_backfill import cluster_embedding_for, _l2_normalize
+        from ..core.speaker_backfill import cluster_embedding_for
         emb = cluster_embedding_for(job_id, cluster_label)
     except Exception as e:  # noqa: BLE001 — enroll ne lonit utochnenie
         print(f"voice_enroll fail (job {job_id}): {e}", flush=True)
         return
     if not emb:
         return
-    emb = _l2_normalize(emb)
+    from ..core.speaker_backfill import append_ref
     with get_session() as s:
-        profile = s.get(VoiceProfile, r.candidate_profile_id)
+        profile = s.get(VoiceProfile, profile_id)
         if profile is None:
             return
+        if not append_ref(profile, emb, _cluster_source_key(job_id, cluster_label)):
+            stats = dict(profile.match_stats or {})
+            stats["enroll_skipped_dup"] = stats.get("enroll_skipped_dup", 0) + 1
+            profile.match_stats = stats
+            s.commit()
+            return
         stats = dict(profile.match_stats or {})
-        if profile.embedding and len(profile.embedding) == len(emb):
-            n = int(stats.get("backfill_clusters", 0)) + int(stats.get("enrollments", 1))
-            w_new = 1.0 / (n + 1)
-            profile.embedding = _l2_normalize(
-                [(1 - w_new) * a + w_new * b for a, b in zip(profile.embedding, emb)])
-        elif not profile.embedding:
-            profile.embedding = emb
         stats["enrollments"] = stats.get("enrollments", 0) + 1
         profile.match_stats = stats
         s.commit()
     with get_session() as s:
         s.add(SessionEvent(job_id=job_id, event="voice_enroll",
-                           detail=f"klaster {cluster_label} -> profil {r.candidate_profile_id}"))
+                           detail=f"klaster {cluster_label} -> profil {profile_id}"))
         s.commit()
+
+
+def _cluster_source_key(job_id: int, cluster_label: str) -> str:
+    return f"job:{job_id}:{cluster_label}"
+
+
+def profile_absent(s, profile_id: int) -> bool:
+    return s.get(VoiceProfile, profile_id) is None
+
+
+def run_profile_sample_enroll(profile_id: int, sample_path: str) -> None:
+    """Embedding novoy zapisi s mikrofona (K1): api bez ASR-skada tol'ho fayl,
+    zhivoy vektor stroit worker i dokhlyaet v set' etalonov. Idempotentno po
+    puti v ref_sources."""
+    from ..core.speaker import _embedding_backend, compute_embedding_for_file
+    if _embedding_backend() != "pyannote":
+        return
+    p = Path(sample_path)
+    if not p.is_file():
+        print(f"profile_sample_enroll: fayl ne naiden {sample_path}", flush=True)
+        return
+    emb = compute_embedding_for_file(p)
+    if not emb:
+        print(f"profile_sample_enroll: embedding ne poluchen ({sample_path})",
+              flush=True)
+        return
+    from ..core.speaker_backfill import append_ref
+    with get_session() as s:
+        v = s.get(VoiceProfile, profile_id)
+        if v is None:
+            return
+        if not append_ref(v, emb, f"path:{sample_path}"):
+            return
+        stats = dict(v.match_stats or {})
+        stats["enrollments"] = stats.get("enrollments", 0) + 1
+        v.match_stats = stats
+        s.commit()
+    _profile_event(profile_id, "sample_enrolled", sample_path)
 
 
 def run_profile_reembed(profile_id: int) -> None:
@@ -451,25 +510,52 @@ def _profile_event(profile_id: int, event: str, detail: str) -> None:
 
 
 def _run_speaker(job_id: int) -> None:
-    """FT-25..28: emgeddingi klasteov + matsching + review zapolnenie."""
-    from ..core.speaker import (compute_embedding_for_file, match_cluster,
-                                thresholds)
+    """FT-25..28: emgeddingi klasteov + matsching + review zapolnenie.
+
+    V5: klastery s otvetom operatora (confirmed ne avtomatom) — zamochony:
+    povtornyy matsching (rematch posle backfill) ne perekhodyaet v nih imena.
+    multi_voice segmenty (na lozhenie dvuh golosov) v embedding ne berutsya."""
+    from ..core.speaker import match_cluster
     p = _job_paths(job_id)
     wav = p["wav"]
     with get_session() as s:
         s.add(SessionEvent(job_id=job_id, event="voiceprint_start"))
         s.commit()
     with get_session() as s:
+        job = s.get(Job, job_id)
+        turns = job.diar_turns if job is not None else None
         segs = s.scalars(select(Segment).where(
             Segment.job_id == job_id).order_by(Segment.t_start)).all()
         by_cluster: dict[str, list] = {}
         for seg in segs:
             by_cluster.setdefault(seg.diar_label or "unknown", []).append(seg)
         for label, cl in by_cluster.items():
-            embedding = _cluster_embedding(wav, cl)
+            from datetime import datetime, timezone
+            from ..core.models import ReviewRequest
+            existing = s.scalars(select(ReviewRequest).where(
+                ReviewRequest.job_id == job_id,
+                ReviewRequest.cluster_label == label,
+                ReviewRequest.status == "pending")).first()
+            if existing is None:
+                existing = s.scalars(select(ReviewRequest).where(
+                    ReviewRequest.job_id == job_id,
+                    ReviewRequest.cluster_label == label,
+                    ReviewRequest.status.in_(("confirmed", "excluded",
+                                              "superseded")))).first()
+            operator_locked = (existing is not None
+                               and existing.status == "confirmed"
+                               and existing.answered_by not in (None, "voiceprint"))
+            clean = [x for x in cl if x.speaker_source != "multi_voice"]
+            embedding = _cluster_embedding(wav, clean, turns=turns)
             verdict, profile, sim = match_cluster(embedding) if embedding else ("unresolved", None, 0.0)
-            t_conf, t_hint = thresholds()
             for seg in cl:
+                if operator_locked:
+                    continue  # otvet cheloveka vertnee lyubogo novogo verdicta
+                if seg.speaker_source == "multi_voice":
+                    # v fragmente dva golosa: imya ne prisvaivaem, v embedding
+                    # on bez togo ne beretsya — tol'ko flag dlya stenogrammy
+                    seg.needs_review = True
+                    continue
                 if verdict == "auto" and profile:
                     seg.speaker_name = profile.employee_name
                     seg.speaker_source = "voiceprint"
@@ -482,34 +568,19 @@ def _run_speaker(job_id: int) -> None:
                     seg.speaker_name = None
                     seg.speaker_source = "unresolved"
                     seg.needs_review = True
-            # sozdat' review-request (odin na klaster); auto-sovpadenie
-            # zakryvaetsya avtomatom — operatoru ostat'sya hint/unresolved
-            from datetime import datetime, timezone
-            from ..core.models import ReviewRequest
-            existing = s.scalars(select(ReviewRequest).where(
-                ReviewRequest.job_id == job_id,
-                ReviewRequest.cluster_label == label,
-                ReviewRequest.status == "pending")).first()
-            human_answered = False
-            if existing is None:
-                existing = s.scalars(select(ReviewRequest).where(
-                    ReviewRequest.job_id == job_id,
-                    ReviewRequest.cluster_label == label,
-                    ReviewRequest.status.in_(("confirmed", "excluded",
-                                              "superseded")))).first()
             auto = verdict == "auto" and profile is not None
             if existing is not None:
                 if existing.status == "pending":
                     if profile is not None:
                         existing.candidate_profile_id = profile.id
                     existing.similarity = sim
-                if auto and existing.status == "pending":
-                    existing.status = "confirmed"
-                    existing.answered_by = "voiceprint"
-                    existing.answered_ts = datetime.now(timezone.utc)
-                    stats = dict(profile.match_stats or {})
-                    stats["auto_confirmed"] = stats.get("auto_confirmed", 0) + 1
-                    profile.match_stats = stats
+                    if auto:
+                        existing.status = "confirmed"
+                        existing.answered_by = "voiceprint"
+                        existing.answered_ts = datetime.now(timezone.utc)
+                        stats = dict(profile.match_stats or {})
+                        stats["auto_confirmed"] = stats.get("auto_confirmed", 0) + 1
+                        profile.match_stats = stats
             else:
                 rv = ReviewRequest(job_id=job_id, cluster_label=label,
                                    candidate_profile_id=(profile.id if verdict in ("auto", "hint") and profile else None),
@@ -529,23 +600,72 @@ def _run_speaker(job_id: int) -> None:
         s.commit()
 
 
-def _cluster_embedding(wav: Path, segs: list) -> list[float] | None:
+EMBED_MIN_S = 1.5          # fragmenta korotse — v embedding ne idut
+EMBED_MAX_SEGS = 10        # luchshih fragmentov na klaster (kachestvo > skorost')
+
+
+def _cluster_embedding(wav: Path, segs: list, turns: list | None = None
+                       ) -> list[float] | None:
+    """Srednee po LUCHSHIM cistym fragmentam klastera.
+
+    Ranshe bralis' pervye 5 segmetov >= 1.5 s — samye rannie, a ne samye
+    bogatye; teper' otbor po dlitel'nosti. Esli yest' turns diagramizatsii,
+    v embedding berezhetsya tol'ko chast' segmenta, pokrytaya turnom klastera
+    (chisty podinterval >= EMBED_MIN_S); segmenty s na lozheniem propuskayutsya."""
     from ..core.vad import extract_wav_slice
+    from ..core.diarize import label_at_turns
     import tempfile
-    vecs = []
+    cands: list[tuple[float, float, float]] = []  # (dur, t0, t1)
+    overlap_min = 0.7
     for seg in segs:
-        if seg.t_end - seg.t_start < 1.5:
+        if seg.speaker_source == "multi_voice":
             continue
+        t0, t1 = seg.t_start, seg.t_end
+        if turns:
+            label, ratio = label_at_turns(turns, t0, t1)
+            if ratio >= overlap_min and label:
+                clean = _turn_subrange(turns, t0, t1, label)
+                if clean is None:
+                    continue
+                t0, t1 = clean
+            else:
+                continue  # na lozhenie / metka ne yasna — v noysnye etalony ne idyot
+        if t1 - t0 >= EMBED_MIN_S:
+            cands.append((t1 - t0, t0, t1))
+    cands.sort(reverse=True)
+    cands = cands[:EMBED_MAX_SEGS]
+    if not cands:
+        return None
+    vecs = []
+    for _dur, t0, t1 in cands:
         with tempfile.NamedTemporaryFile(suffix=".wav") as tf:
-            extract_wav_slice(wav, seg.t_start, seg.t_end, Path(tf.name))
-            from ..core.speaker import compute_embedding_for_file, _fallback_embedding
-            vecs.append(compute_embedding_for_file(Path(tf.name)) or _fallback_embedding(Path(tf.name)))
-        if len(vecs) >= 5:
-            break
+            extract_wav_slice(wav, t0, t1, Path(tf.name))
+            from ..core.speaker import compute_embedding_for_file
+            vec = compute_embedding_for_file(Path(tf.name))
+        if vec:
+            vecs.append(vec)
     if not vecs:
         return None
     n = len(vecs[0])
-    return [sum(v[i] for v in vecs) / len(vecs) for i in range(n)]
+    mean = [sum(v[i] for v in vecs) / len(vecs) for i in range(n)]
+    import math
+    norm = math.sqrt(sum(x * x for x in mean)) or 1.0
+    return [x / norm for x in mean]
+
+
+def _turn_subrange(turns: list, t0: float, t1: float, label: str
+                   ) -> tuple[float, float] | None:
+    """Samyy dlinnyy podinterval [t0, t1], pokrytyy turnom `label`."""
+    best: tuple[float, float] | None = None
+    for ts, te, spk in turns:
+        if spk != label:
+            continue
+        a, b = max(ts, t0), min(te, t1)
+        if b - a <= 0:
+            continue
+        if best is None or (b - a) > (best[1] - best[0]):
+            best = (a, b)
+    return best
 
 
 def _write_steno(job_id: int, p: dict) -> Path:

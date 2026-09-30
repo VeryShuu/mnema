@@ -172,3 +172,64 @@ def rms_at(wav: Path, t: float, dur: float = 1.0) -> float:
     if not samples:
         return 0.0
     return (sum(s * s for s in samples) / n) ** 0.5
+
+
+def decode_pcm16_16k(path: Path) -> bytes | None:
+    """Lyuboy audioformat -> PCM s16le mono 16 kГц baytami (None esli ne chinaetsya)."""
+    if shutil.which("ffmpeg") is None:
+        return None
+    try:
+        r = subprocess.run(["ffmpeg", "-v", "quiet", "-i", str(path),
+                            "-ar", "16000", "-ac", "1", "-f", "s16le", "-"],
+                           capture_output=True)
+    except FileNotFoundError:
+        return None
+    if r.returncode != 0 or not r.stdout:
+        return None
+    return r.stdout
+
+
+def snr_db(path: Path) -> float:
+    """Ocenka SNR v dB: p90 (rotevoy uroven') / p10 (noys-floor) po 30-msok kadram.
+
+    -1.0 esli fayl ne chinaetsya. Shum-ot-noisy zapis' daet ~0-2 dB;
+    chistaya rech' — 10+ dB."""
+    data = decode_pcm16_16k(path)
+    if not data or len(data) < 4:
+        return -1.0
+    n = len(data) // 2
+    samples = struct.unpack(f"<{n}h", data[: 2 * n])
+    sr = 16000
+    frame = int(sr * 0.03)
+    energies = []
+    for i in range(0, len(samples) - frame + 1, frame):
+        chunk = samples[i:i + frame]
+        energies.append((sum(s * s for s in chunk) / frame) ** 0.5)
+    if not energies:
+        return -1.0
+    srt = sorted(energies)
+    noise = srt[max(0, int(len(srt) * 0.10))]
+    loud = srt[min(len(srt) - 1, int(len(srt) * 0.90))]
+    if noise <= 0:
+        return 60.0 if loud > 0 else -1.0
+    import math
+    return 20.0 * math.log10(max(loud, 1e-6) / noise)
+
+
+def speech_level(path: Path) -> float:
+    """RMS vseh 'gromkih' kadrov (p90): mrtvy mikrofon / tishina — pochti 0."""
+    data = decode_pcm16_16k(path)
+    if not data or len(data) < 4:
+        return 0.0
+    n = len(data) // 2
+    samples = struct.unpack(f"<{n}h", data[: 2 * n])
+    sr = 16000
+    frame = int(sr * 0.03)
+    energies = []
+    for i in range(0, len(samples) - frame + 1, frame):
+        chunk = samples[i:i + frame]
+        energies.append((sum(s * s for s in chunk) / frame) ** 0.5)
+    if not energies:
+        return 0.0
+    srt = sorted(energies)
+    return srt[min(len(srt) - 1, int(len(srt) * 0.90))]

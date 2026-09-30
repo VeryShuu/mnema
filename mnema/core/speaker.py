@@ -39,17 +39,18 @@ def _embedding_backend():
 
 
 def compute_embedding_for_file(path: Path) -> list[float] | None:
-    """Zhivoy embedding (pyannote). V dev/stub — stabil'ny determin. hash-vektor
+    """Zhivoy embedding (pyannote); None pri otkazhanii model'i.
 
-    po soderzhanimou fayla, chtoby matj po rosshnosti rabotal na testah.
-    """
-    backend = _embedding_backend()
-    if backend == "pyannote":
-        try:
-            return _pyannote_embedding(path)
-        except Exception:  # noqa: BLE001
-            return _fallback_embedding(path)
-    return _fallback_embedding(path)
+    Hash-stub iz zhivykh putey ubran: 32-D vektor-surtseg, zapisiannyi v
+     profil' pri saze pyannote, vechno daoitsya s 512-D etalonami (cosine ~0
+    i profil' ne uzaetsya). None chesno otpravlyaet klaster v unresolved."""
+    if _embedding_backend() != "pyannote":
+        return None
+    try:
+        return _pyannote_embedding(path)
+    except Exception as e:  # noqa: BLE001
+        print(f"embedding fail ({path.name}): {e}", flush=True)
+        return None
 
 
 _inference_cache: dict = {}
@@ -70,44 +71,52 @@ def _get_inference(device_str: str):
     return inference
 
 
+# Fil'tr podgotovki dlya embeddingov: highpass sbrasyvaet guditel' seti/konditsionera,
+# loudnorm privodit raznyy trakt (browser-mik/zal/Zoom) k odnomu urovnyu — bez nego
+# cosine sistematicheski zanimaetsya mezhdu 'studioynym' etalonom i zapisyu vstrechi.
+EMBED_AFILTER = "highpass=f=70,loudnorm=I=-16:TP=-1.5:LRA=11"
+
+
 def _pyannote_embedding(path: Path) -> list[float]:
     device_str = os.environ.get("ASR_DEVICE", "cpu")
     inference = _get_inference(device_str)
     import tempfile
+    from .audio import run
     with tempfile.NamedTemporaryFile(suffix=".wav") as tf:
-        from .audio import webm_to_wav16k
-        p = Path(path)
-        if p.suffix.lower() in (".webm", ".mp3", ".ogg"):
-            webm_to_wav16k(p, Path(tf.name))
-            vec = inference(Path(tf.name))
-        else:
-            vec = inference(p)
+        r = run(["ffmpeg", "-y", "-i", str(path), "-af", EMBED_AFILTER,
+                 "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", tf.name])
+        if r.returncode != 0:
+            raise RuntimeError(f"ffmpeg embed-prep: {r.stderr[-300:]}")
+        vec = inference(tf.name)
     import numpy as np
     arr = np.asarray(vec).flatten()
     norm = float(np.linalg.norm(arr)) or 1.0
     return (arr / norm).tolist()
 
 
-def _fallback_embedding(path: Path) -> list[float]:
-    """Determin-stub dlya testov/offline-bez-modeli: hash->edininichny vektor 32-D."""
-    import hashlib
-    import math
-    data = Path(path).read_bytes()
-    h = hashlib.sha256(data).digest()
-    vals = [b / 127.5 - 1.0 for b in h[:32]]
-    norm = math.sqrt(sum(x * x for x in vals)) or 1.0
-    return [x / norm for x in vals]
-
-
 def quality_gate(path: Path) -> tuple[bool, str]:
-    """FT-29a: SNR/dlitel'nost' — iache periezapis'. V1 minimal'no: dur >= 1.5 s."""
-    from .audio import ffprobe_duration, wav_duration_s
+    """FT-29a: dlitel'nost' + SNR/uroven' — inache periezapis'.
+
+    'Mertvy' mikrofon (RMS ~0) i noy s SNR < ~3 dB otbrasyvayutsya:
+    embedding s takogo zapisa zagryazhaet profil'. Пороги env-тюнингуемые."""
+    from .audio import ffprobe_duration, snr_db, speech_level, wav_duration_s
     p = Path(path)
     dur = wav_duration_s(p) if p.suffix == ".wav" else ffprobe_duration(p)
     if dur < 1.5:
         return False, f"slisikom korotko ({dur:.1f} s < 1.5 s)"
     if dur > 120:
         return False, "slishkom dlino (> 120 s)"
+    try:
+        min_snr = float(os.environ.get("ENROLL_MIN_SNR_DB", "3") or 3)
+        min_level = float(os.environ.get("ENROLL_MIN_RMS", "50") or 50)
+    except ValueError:
+        min_snr, min_level = 3.0, 50.0
+    level = speech_level(p)
+    if level < min_level:
+        return False, f"zvuk slishkom tih (RMS {level:.0f} < {min_level:.0f})"
+    snr = snr_db(p)
+    if snr < min_snr:
+        return False, f"shumnyy zapis' (SNR ~{snr:.0f} dB < {min_snr:.0f} dB)"
     return True, "ok"
 
 
@@ -128,6 +137,28 @@ def thresholds() -> tuple[float, float]:
     return t_conf, t_hint
 
 
+def profile_similarity(embedding: list[float], v: VoiceProfile) -> float:
+    """Max cosine po vsem etalonom profilya (srednee + ref_embeddings).
+
+    Otnositel'no usrednennogo vektora max-po-setu sohanyaet razlichimost'
+    pohozhih golosov (usrednenie razmyvaet varyacii) i toleriruet 'rezhim'
+    zapisi (doklad/razgovor) mezhdu etalonom i vstrechey.
+    Razmernosti nesovpadayushchie s zaprosom otbrosyvaetsya: cosine s zip
+    daet 'uosechkoy' sluchaynoe znachenie, a legacie 32-D hash-stuby iz BDB
+    (staroy api) s 512-D etalonami sravnivat'sya vovse ne dolzhny."""
+    dim = len(embedding)
+    best = 0.0
+    if v.embedding and len(v.embedding) == dim:
+        best = cosine(embedding, v.embedding)
+    for ref in (v.ref_embeddings or []):
+        if len(ref) != dim:
+            continue
+        s = cosine(embedding, ref)
+        if s > best:
+            best = s
+    return best
+
+
 def match_cluster(embedding: list[float]) -> tuple[str, VoiceProfile | None, float]:
     """Vozvr. ('auto'|'hint'|'unresolved', profil'|None, similarity)."""
     t_conf, t_hint = thresholds()
@@ -135,9 +166,9 @@ def match_cluster(embedding: list[float]) -> tuple[str, VoiceProfile | None, flo
     best_sim = 0.0
     with get_session() as s:
         for v in s.scalars(select(VoiceProfile)).all():
-            if not v.embedding:
+            if not v.embedding and not v.ref_embeddings:
                 continue
-            sim = cosine(embedding, v.embedding)
+            sim = profile_similarity(embedding, v)
             if sim > best_sim:
                 best_sim, best_profile = sim, v
     if best_profile and best_sim >= t_conf:
@@ -158,13 +189,16 @@ def _cluster_embedding_for(s, job_id: int, cluster_label: str) -> list[float] | 
         return None
     try:
         from ..worker.tasks import _cluster_embedding, _job_paths
+        from .models import Job
         wav = _job_paths(job_id)["wav"]
         if not wav.exists():
             return None
+        job = s.get(Job, job_id)
+        turns = job.diar_turns if job is not None else None
         segs = list(s.scalars(select(Segment).where(
             Segment.job_id == job_id, Segment.speaker_id == cluster_label,
             Segment.excluded.is_(False))).all())
-        return _cluster_embedding(wav, segs)
+        return _cluster_embedding(wav, segs, turns=turns)
     except Exception:  # noqa: BLE001
         return None
 
@@ -192,6 +226,12 @@ def apply_review_answer(rid: int, employee_id: int | None, employee_name: str | 
                 emb = _cluster_embedding_for(s, job_id, cluster)
                 if emb:
                     v.embedding = emb
+                    # embedding etalona iz utocnennogo klastera — srazu v set'
+                    # refov, chtoby max-cosine matsching uchityval ego s razu
+                    v.ref_embeddings = [emb]
+                    stats = dict(v.match_stats or {})
+                    stats["ref_sources"] = [f"job:{job_id}:{cluster}"]
+                    v.match_stats = stats
         elif employee_id:
             v = s.get(VoiceProfile, employee_id)
             name = v.employee_name if v else employee_name
