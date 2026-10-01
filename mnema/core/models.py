@@ -46,6 +46,8 @@ class Job(Base):
     # pyannote-turns [[t_start, t_end, label], ...] — границы говорящих для
     # чистых (без наложения) диапазонов эмбеддингов при enroll/backfill
     diar_turns: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # выгрузка в самба-зеркало: {stem, dir, audio, protocol_md, protocol_docx, attempts}
+    export_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     events: Mapped[list["SessionEvent"]] = relationship(back_populates="job")
     audio_files: Mapped[list["AudioFile"]] = relationship(back_populates="job")

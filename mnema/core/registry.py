@@ -72,6 +72,16 @@ REGISTRY: tuple[Block, ...] = (
             readers="web-bot", when="FT-5", if_empty="10 min"),
         Key("SILENCE_END_TIMEOUT_MIN", DEFAULTED, "5",
             readers="web-bot", when="FT-4", if_empty="5 min"),
+        Key("SILENCE_GRACE_MIN", DEFAULTED, "30",
+            readers="web-bot", when="avovyhod po tişine", if_empty="30 min",
+            comment="posle vklyucheniya zapisi zhdyom eto vremya; RMS nizhe "
+                    "SILENCE_LEVEL_DB >= SILENCE_END_TIMEOUT_MIN nepreryvno -> "
+                    "vyvod iz konferentsii (Leave + podtverzhdeniye)"),
+        Key("SILENCE_LEVEL_DB", DEFAULTED, "-50",
+            readers="web-bot", when="porog zvuka v dBFS dlya detektora tişiny",
+            if_empty="-50",
+            comment="otzyv vyshe poroga sbrasyvaet taymer; comfort-noise Zoom "
+                    "~ -60..-70 dBFS, shëpot ~ -45"),
         Key("BOT_MAX_DURATION_MIN", DEFAULTED, "360",
             readers="web-bot", when="FT-4", if_empty="6 ch"),
         Key("PAGE_RELOAD_RETRIES", DEFAULTED, "2",
@@ -136,8 +146,10 @@ REGISTRY: tuple[Block, ...] = (
         Key("ALERT_DIGEST_CRON", DEFAULTED, "0 9 * * *",
             readers="scheduler", when="FT-35v", if_empty="09:00"),
         Key("NOTIFY_EVENTS", DEFAULTED,
-            "job_failed=email,session_relogin_due=email,protocol_ready=email",
-            readers="notifier", when="FT-36", if_empty="defolt iz FT-36"),
+            "job_failed=email,session_relogin_due=email,protocol_ready=email,"
+            "job_export_failed=email",
+            readers="notifier", when="FT-36; v kljade otkaza vygruzki v sampu",
+            if_empty="defolt iz FT-36 + job_export_failed"),
     )),
     Block("asr (capability:asr; worker kak klient)", (
         Key("ASR_ENGINE", DEFAULTED, "gigastt",
@@ -152,6 +164,9 @@ REGISTRY: tuple[Block, ...] = (
         Key("ASR_MODEL", CAPABILITY, "ml_ctc_large", capability="asr",
             readers="worker:asr", when="vybor modeli gigastt",
             if_empty="ml_ctc_large"),
+        Key("ASR_MAX_UPLOAD_MB", DEFAULTED, "1024",
+            readers="worker:asr", when="gigastt >=2.21 (GIGASTT_BODY_LIMIT_BYTES=1 GiB)",
+            if_empty="40 MB (chunkovanie)"),
         Key("ASR_DEVICE", DEFAULTED, "cpu",
             readers="worker", when="fallback-whisper i embeddingy",
             if_empty="cpu | cuda:0"),
@@ -205,6 +220,12 @@ REGISTRY: tuple[Block, ...] = (
         Key("KEEP_UPLOADED_SOURCE", DEFAULTED, "1",
             readers="worker", when="posle izvlecheniya audio iz arhiva",
             if_empty="hranit' ishodnik (0 = udalyat' posle konversii)"),
+        Key("EXPORT_DIR", DEFAULTED, "",
+            readers="api/worker", when="vygruzka v samba-zerkalo (/export)",
+            if_empty="vyvodka vyklyuchena (no-op)"),
+        Key("EXPORT_HOST_DIR", DEFAULTED, "",
+            readers="docker-compose", when="hostovyy CIFS-maunt dlya /export",
+            if_empty="maunt neaktivny (skript scripts/smb-mount.sh)"),
     )),
 )
 

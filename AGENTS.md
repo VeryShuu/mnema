@@ -51,3 +51,18 @@
   скачается заново).
 - Проверка после деплоя: `docker compose ps`, `curl -s localhost:8000/health`,
   `docker exec mnema-worker-1 printenv ASR_DEVICE DIAR_FP16` (ожидание: `cuda:0`, `0`).
+
+## Выгрузка в самба-шару (SMB-зеркало, `mnema/core/export.py`)
+
+- Транспорт — CIFS-маунт на хосте (`//server/share` → `/mnt/mnema-export`,
+  настройка: `scripts/smb-mount.sh`), bind-mount в `worker`/`api` как `/export`.
+  В коде — обычная запись файлов, SMB-библиотек нет.
+- Хостовый маунт **обязательно** с `iocharset=utf8` (есть в fstab-строке
+  скрипта), иначе имена кириллицей бьются.
+- `.env` на сервере (untracked): `EXPORT_HOST_DIR=/mnt/mnema-export`,
+  `EXPORT_DIR=/export`. Без них выгрузка — no-op (`export_configured()=False`).
+- Проверка после деплоя: `docker exec mnema-worker-1 printenv EXPORT_DIR`
+  (ожидание `/export`) и запись тестового файла в `/export/` внутри worker.
+- Отказ сети не роняет job: ошибка → SessionEvent `export_error`, ретраи в
+  `maintenance_job` (каждые 5 мин, ≤5 за проход, после 6 неудач — уведомление
+  `job_export_failed`).

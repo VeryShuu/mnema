@@ -136,4 +136,6 @@ def refresh_protocol(pid: int) -> bool:
             write_docx(job, data, segs, Path(docx_path_str))
         except Exception:  # noqa: BLE001 — docx nie kritichen (md glavnyy)
             pass
+    from . import export
+    export.export_protocol_files(p.job_id)  # zerkalo: vnutri try/except
     return True

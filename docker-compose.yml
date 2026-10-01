@@ -10,9 +10,16 @@ services:
       - ARCHIVE_DIR=/data/archive
       - TZ=Europe/Moscow
       - APP_TZ=Europe/Moscow
+      - EXPORT_DIR=${EXPORT_DIR:-}
     volumes:
       - data:/data
       - ./templates:/app/templates:ro
+      # Samba-export: bind-mount hostovogo CIFS-maunta (/mnt/mnema-export) v
+      # konteyner. Pustaya EXPORT_HOST_DIR (peremennaya ne zadana) ->
+      # neaktivnyy katalog v /dev/null-export-deactivated (ne sudshchestvuet,
+      # togda export_configured()=False i vygruzka — no-op). Nastroyka maunta:
+      # scripts/smb-mount.sh.
+      - "${EXPORT_HOST_DIR:-/dev/null-export-deactivated}:/export"
     ports:
       - "8000:8000"
     depends_on:
@@ -32,9 +39,11 @@ services:
       - ARCHIVE_DIR=/data/archive
       - TZ=Europe/Moscow
       - APP_TZ=Europe/Moscow
+      - EXPORT_DIR=${EXPORT_DIR:-}
     volumes:
       - data:/data
       - hf-cache:/root/.cache/huggingface
+      - "${EXPORT_HOST_DIR:-/dev/null-export-deactivated}:/export"
     depends_on:
       - redis
     restart: unless-stopped

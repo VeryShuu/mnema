@@ -155,6 +155,11 @@ def maintenance_job() -> None:
         gc_stale_uploads()
     except Exception:  # noqa: BLE001 — GC ne dolzhen lonit' maintenance
         pass
+    try:
+        from .export import retry_pending_exports
+        retry_pending_exports()
+    except Exception:  # noqa: BLE001 — export ne dolzhen lonit' maintenance
+        pass
 
 
 def import_ics(text: str) -> int:

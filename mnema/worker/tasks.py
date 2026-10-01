@@ -78,6 +78,8 @@ def run_prep(job_id: int) -> list[dict]:
         s.add(SessionEvent(job_id=job_id, event="vad_done",
                            detail=f"{len(raw_segs)} segm"))
         s.commit()
+    from ..core import export
+    export.export_recording(job_id)  # zerkalo samba: vnutri try/except, ne lonit' konveyer
     return raw_segs
 
 
@@ -782,6 +784,8 @@ def _build_protocol(job_id: int) -> None:
         s.add(SessionEvent(job_id=job_id, event="llm_done",
                            detail=f"model={llm_model()}"))
         s.commit()
+    from ..core import export
+    export.export_protocol_files(job_id)  # zerkalo: vnutri try/except
     # utochneniya (4.6) ili done
     _route_after_structure(job_id)
 
