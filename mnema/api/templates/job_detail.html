@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-head">
   <h2>Встреча №{{ job.id }} — <span id="topic-text">{{ job.topic }}</span>
-    <button type="button" class="icon-btn" id="rename-btn" title="Переименовать" onclick="startRename()">✎</button>
+    <button type="button" class="icon-btn" id="rename-btn" title="Редактировать" onclick="startEdit()">✎</button>
     <button type="button" class="icon-btn danger" title="Удалить встречу"
             onclick="deleteMeeting({{ job.id }})">🗑</button>
     {% if job.source == 'upload' %}<span class="badge upload">Архив</span>{% endif %}
@@ -14,6 +14,31 @@
     <button type="button" onclick="cancelRename()">Отмена</button>
     <span id="rename-status" class="muted"></span>
   </p>
+  {% if job.status == 'scheduled' %}
+  <form id="edit-row" method="post" action="/jobs/{{ job.id }}/update" style="display:none;flex-direction:column;gap:.5rem;margin-top:.4rem"
+        onsubmit="var s=this.start_at.value,e=this.end_at.value;if(s&&e&&e<=s){alert('Время окончания должно быть позже времени начала');this.end_at.focus();return false}">
+    <label>Название
+      <input name="topic" size="50" value="{{ job.topic|e }}" required></label>
+    <label>Ссылка Zoom
+      <input name="meeting_link" size="50" placeholder="Ссылка-приглашение Zoom или номер встречи" value="{{ job.join_link|e if job.join_link else job.zoom_meeting_id }}">
+      <span class="muted" title="Если пароль уже сохранён и поле оставить пустым, он не изменится. Новый пароль можно взять прямо из ссылки (?pwd=...)">пароль пустой — сохранить текущий</span>
+    </label>
+    <label>Пароль (если нужно заменить)
+      <input name="pwd" size="20" autocomplete="off"></label>
+    <div class="dt-range">
+      <span class="dt-range-icon" aria-hidden="true">🗓</span>
+      <label class="dt-range-label" for="edit_start_at">Начало</label>
+      <input id="edit_start_at" name="start_at" type="datetime-local" step="300" value="{{ job.start_at|dt_local }}">
+      <span class="dt-range-arrow" aria-hidden="true">→</span>
+      <label class="dt-range-label" for="edit_end_at">До</label>
+      <input id="edit_end_at" name="end_at" type="datetime-local" step="300" value="{{ job.end_at|dt_local }}">
+    </div>
+    <p>
+      <button type="submit" class="primary">Сохранить</button>
+      <button type="button" onclick="cancelEdit()">Отмена</button>
+    </p>
+  </form>
+  {% endif %}
 </div>
 <div class="card">
   <div class="table-wrap">
@@ -94,6 +119,19 @@
 {% endblock %}
 {% block scripts %}
 <script>
+function startEdit() {
+  const edit = document.getElementById('edit-row');
+  if (edit) {
+    document.getElementById('rename-row').style.display = 'none';
+    edit.style.display = 'flex';
+    edit.topic.focus();
+    return;
+  }
+  startRename();
+}
+function cancelEdit() {
+  document.getElementById('edit-row').style.display = 'none';
+}
 function startRename() {
   document.getElementById('rename-row').style.display = '';
   const inp = document.getElementById('rename-input');

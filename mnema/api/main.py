@@ -19,7 +19,8 @@ from sqlalchemy import select
 from ..core import registry
 from ..core.capabilities import capability_status
 from ..core.db import Base, get_engine, get_session
-from ..core.jobs_api import cancel_job, create_job, delete_job, rename_job
+from ..core.jobs_api import (cancel_job, create_job, delete_job, rename_job,
+                             update_job)
 from ..core.models import (AudioFile, Job, Notification, PresetLink, Protocol,
                            ReviewRequest, Segment, SessionEvent, SessionHealth,
                            Upload, VoiceProfile)
@@ -65,6 +66,8 @@ templates.env.filters["msk"] = lambda v: fmt_local(v)
 templates.env.filters["human_duration"] = human_duration
 templates.env.filters["msk_sec"] = lambda v: fmt_local(v, "%d.%m.%Y %H:%M:%S")
 templates.env.filters["human_size"] = human_size
+templates.env.filters["dt_local"] = lambda v: (
+    fmt_local(v, "%Y-%m-%dT%H:%M") if v else "")
 
 
 def stats_text(stats: dict | None) -> str:
@@ -1177,13 +1180,42 @@ async def web_job_rename(jid: int, request: Request):
     return HTMLResponse(job.topic)
 
 
+@app.post("/jobs/{jid}/update")
+async def web_job_update(jid: int, request: Request):
+    """Redaktirovanie vseyh parametrov eshchyo ne nachatoy vstrechi."""
+    form = await request.form()
+    start_raw = str(form.get("start_at", "")).strip()
+    end_raw = str(form.get("end_at", "")).strip()
+    start_at = end_at = None
+    try:
+        if start_raw:
+            start_at = local_to_utc(dt.datetime.fromisoformat(start_raw))
+        if end_raw:
+            end_at = local_to_utc(dt.datetime.fromisoformat(end_raw))
+    except ValueError:
+        raise HTTPException(422, "Nekorrektnoe vremya")
+    link = str(form.get("meeting_link", "")).strip()
+    if link and not link_valid(link):
+        raise HTTPException(422, "Nekorrektnaya ssylka Zoom")
+    try:
+        job = update_job(jid, meeting_link=link,
+                         pwd=str(form.get("pwd", "")).strip(),
+                         topic=str(form.get("topic", "")),
+                         start_at=start_at, end_at=end_at)
+    except KeyError:
+        raise HTTPException(404)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return RedirectResponse(f"/jobs/{job.id}", status_code=303)
+
+
 @app.post("/jobs/{jid}/delete")
 async def web_job_delete(jid: int):
     with get_session() as s:
         job = s.get(Job, jid)
         if job is None:
             raise HTTPException(404)
-        if job.status in ("scheduled", "launching", "recording"):
+        if job.status in ("launching", "recording"):
             raise HTTPException(409, "Ostanovite vstrechu pered udaleniem")
     delete_job(jid)
     return RedirectResponse("/jobs", status_code=303)

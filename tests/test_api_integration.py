@@ -128,8 +128,82 @@ def test_delete_cancelled_job_removes_it(client):
     assert client.get(f"/api/jobs/{jid}").status_code == 404
 
 
+def test_delete_scheduled_job_removes_it(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "111222337",
+                                         "topic": "Ne nachata"}).json()["id"]
+    assert client.get(f"/api/jobs/{jid}").json()["status"] == "scheduled"
+    r = client.post(f"/jobs/{jid}/delete", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/jobs"
+    assert client.get(f"/api/jobs/{jid}").status_code == 404
+
+
+def test_delete_launching_job_rejected(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "111222338"}).json()["id"]
+    client.post(f"/api/jobs/{jid}/status", json={"status": "launching"})
+    r = client.post(f"/jobs/{jid}/delete", follow_redirects=False)
+    assert r.status_code == 409
+    assert client.get(f"/api/jobs/{jid}").status_code == 200
+
+
 def test_delete_job_not_found(client):
     assert client.post("/jobs/999999/delete").status_code == 404
+
+
+def test_update_scheduled_job_params(client):
+    jid = client.post("/api/jobs", json={
+        "meeting_id": "111222401", "topic": "Staraia"}).json()["id"]
+    new_start = "2030-01-01T10:00"  # datetime-local = lokal'noe vremyo
+    r = client.post(f"/jobs/{jid}/update", follow_redirects=False, data={
+        "topic": "Novaa", "meeting_link": "https://zoom.us/j/999888777"
+                                        "?pwd=abcDEF123",
+        "start_at": new_start, "end_at": "2030-01-01T11:30"})
+    assert r.status_code == 303 and r.headers["location"] == f"/jobs/{jid}"
+    j = client.get(f"/api/jobs/{jid}").json()
+    assert j["topic"] == "Novaa"
+    assert j["zoom_meeting_id"] == "999888777"
+    assert j["start_at"].startswith("2030-01-01T07:00")  # UTC = MSK-3
+    from mnema.core.secrets_store import get_pwd
+    from mnema.core.db import get_session
+    from mnema.core.models import Job
+    with get_session() as s:
+        job = s.get(Job, jid)
+        ref = job.pwd_ref
+        assert job.end_at.strftime("%Y-%m-%dT%H:%M") == "2030-01-01T08:30"
+    assert get_pwd(ref) == "abcDEF123"
+
+
+def test_update_job_empty_topic_rejected(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "111222402"}).json()["id"]
+    r = client.post(f"/jobs/{jid}/update", data={"topic": "   "})
+    assert r.status_code == 422
+
+
+def test_update_job_end_before_start_rejected(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "111222403"}).json()["id"]
+    r = client.post(f"/jobs/{jid}/update", data={
+        "topic": "T", "start_at": "2030-01-01T10:30",
+        "end_at": "2030-01-01T10:00"})
+    assert r.status_code == 422
+
+
+def test_update_job_bad_link_rejected(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "111222404"}).json()["id"]
+    r = client.post(f"/jobs/{jid}/update",
+                    data={"topic": "T", "meeting_link": "net-linka"})
+    assert r.status_code == 422
+
+
+def test_update_recording_job_rejected(client):
+    jid = client.post("/api/jobs", json={"meeting_id": "111222405"}).json()["id"]
+    client.post(f"/api/jobs/{jid}/status", json={"status": "launching"})
+    client.post(f"/api/jobs/{jid}/status", json={"status": "recording"})
+    r = client.post(f"/jobs/{jid}/update", data={"topic": "Nyelzya"})
+    assert r.status_code == 422
+
+
+def test_update_job_not_found(client):
+    r = client.post("/jobs/999999/update", data={"topic": "Net"})
+    assert r.status_code == 404
 
 
 def test_leave_job_not_found(client):

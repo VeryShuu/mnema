@@ -97,6 +97,60 @@ def rename_job(job_id: int, topic: str) -> Job | None:
         return job
 
 
+def update_job(job_id: int, *, meeting_link: str = "", pwd: str = "",
+               topic: str = "", start_at: dt.datetime | None = None,
+               end_at: dt.datetime | None = None) -> Job:
+    """Parametry ESHCHYO NE NACHATOY vstrechi (status scheduled).
+
+    KeyError esli vstrechi net; ValueError pri validacii ili popytke
+    redaktirovat' zapushchennuyu vstrechu. Naivnye start_at/end_at —
+    lokal'noe vremya operatora (kak v create_job). Pustaya pwd/ssylka —
+    bez izmeneniya. Posle smeny vremeni planovyy zapusk perenaznachaetsya.
+    """
+    topic = (topic or "").strip()[:512]
+    if not topic:
+        raise ValueError("Nazvanie ne mozhet byt' pustym")
+    meeting_link = (meeting_link or "").strip()
+    pwd = (pwd or "").strip()
+    if start_at is not None and start_at.tzinfo is None:
+        from .tz import local_to_utc
+        start_at = local_to_utc(start_at)
+    if end_at is not None and end_at.tzinfo is None:
+        from .tz import local_to_utc
+        end_at = local_to_utc(end_at)
+    if end_at is not None and start_at is not None and end_at <= start_at:
+        raise ValueError("Vremya okonchaniya dolzhno byt' pozhe nachala")
+    with get_session() as s:
+        job = s.get(Job, job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if job.status != "scheduled":
+            raise ValueError(
+                "Menyat' parametry mozhno tol'ko do nachala vstrechi")
+        job.topic = topic
+        extracted_pwd = None
+        if meeting_link:
+            mid, extracted_pwd = extract_meeting_id(meeting_link)
+            job.zoom_meeting_id = mid
+            job.join_link = normalize_join_link(meeting_link)
+        new_pwd = pwd or extracted_pwd
+        if new_pwd:
+            if job.pwd_ref:
+                delete_pwd(job.pwd_ref)
+            job.pwd_ref = store_pwd(job.zoom_meeting_id or str(job_id),
+                                    new_pwd)
+        if start_at is not None:
+            job.start_at = start_at
+        job.end_at = end_at
+        s.add(SessionEvent(job_id=job_id, event="updated",
+                           detail="parametry vstrechi izmeneny"))
+        s.commit()
+        s.refresh(job)
+    from .scheduler import schedule_job_for
+    schedule_job_for(job.id)
+    return job
+
+
 def delete_job(job_id: int) -> bool:
     """Polnoe udalenie vstrechi: BDD-zapisi + fayly na diske + secret.
 
