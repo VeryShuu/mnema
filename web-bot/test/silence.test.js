@@ -153,3 +153,59 @@ test("endAt null/undefined — padenie na grace-rezhim (obratnaya sovmestimost')
   }));
   assert.equal(early.leave, false);
 });
+
+// --- накопитель пика уровня (между опросами цикла раз в 10 s) ---
+
+import { pushSample, readPeak } from "../src/silence.js";
+
+const empty = () => ({ peak: null, seen: false });
+
+test("pushSample: pustoy chital i pik — pik novogo", () => {
+  assert.deepEqual(pushSample(empty(), -60), { peak: -60, seen: true });
+});
+
+test("pushSample: kopyot MAKSIMUM, a ne posledniy", () => {
+  let st = pushSample(empty(), -70);
+  st = pushSample(st, -30);
+  st = pushSample(st, -55);
+  assert.deepEqual(st, { peak: -30, seen: true });
+});
+
+test("pushSample: null/undefined/NaN ni sbrasyvayet ni popolyayet okno", () => {
+  const st = pushSample({ peak: -30, seen: true }, null);
+  assert.deepEqual(st, { peak: -30, seen: true });
+  assert.deepEqual(pushSample({ peak: -30, seen: true }, undefined),
+    { peak: -30, seen: true });
+  assert.deepEqual(pushSample({ peak: -30, seen: true }, NaN),
+    { peak: -30, seen: true });
+});
+
+test("readPeak: puskoe okno — null (nie путать с tişinoy)", () => {
+  const { levelDb, next } = readPeak(empty());
+  assert.equal(levelDb, null);
+  assert.deepEqual(next, empty());
+});
+
+test("readPeak: vazvraschaet pik i ochishchayet okno", () => {
+  const { levelDb, next } = readPeak({ peak: -33.5, seen: true });
+  assert.equal(levelDb, -33.5);
+  assert.deepEqual(next, empty());
+});
+
+test("pik reki perezhivyayet tiku bez izmereniy (net analyzera/ctx)", () => {
+  let st = pushSample(empty(), -40);
+  st = pushSample(st, null);
+  const { levelDb, next } = readPeak(st);
+  assert.equal(levelDb, -40);
+  assert.equal(isSoundLevel(levelDb, -50), true);
+  assert.deepEqual(next, empty());
+});
+
+test("regressiya job 9: fon mezhu frazami na tikhah + odin tik s rech'yu — pik vyše poroga", () => {
+  let st = empty();
+  // 10 s tikov: 99 % — comfort-noise mezhu frazami, edinye tiku s rech'yu
+  for (let i = 0; i < 99; i++) st = pushSample(st, -65);
+  st = pushSample(st, -35); // 1 % tik popal v frazu
+  const { levelDb } = readPeak(st);
+  assert.equal(isSoundLevel(levelDb, -50), true);
+});

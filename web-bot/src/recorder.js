@@ -1337,16 +1337,35 @@ const INIT_SCRIPT = `
 
   // Uroven zvuka sozwona na mikshe udalennyh dorozhek: RMS v dBFS
   // (-120..0). Net payplayna/analyzera — null (nie путать с tişinoy).
-  window.__mnemaLevel = function () {
-    if (!analyser || !ctx || ctx.state !== 'running') return null;
+  // Monitoret tikajet kazhdye 100 ms i KOPIT MAKSIMUM do chteniya. Oprosyvaet
+  // ego tsykl waitForEnd raz v 10 s: odinochnyy snimok 43 ms (fft 2048 pri
+  // 48 kGts) lovit rech s vyeroytiny edv. protsentov (job 9: chas sozwona s
+  // rech'yu davno "tišinu" 29.9 min — nik odnogo snimoka ne popal v frazu).
+  // Semantika kak u pushSample/readPeak v silence.js (testy tam): tik bez
+  // dostupnogo izmereniya nie sbrasyvaet pik, a oknoBezIzmereniy chital
+  // poluchayet null (taymer tishiny nie dvigaetsya, kak ran'şe).
+  let lvlSt = { peak: null, seen: false };
+  function sampleLevel() {
+    if (!analyser || !ctx || ctx.state !== 'running') return;
     try {
       analyser.getFloatTimeDomainData(anaBuf);
       let sum = 0;
       for (let i = 0; i < anaBuf.length; i++) sum += anaBuf[i] * anaBuf[i];
       const rms = Math.sqrt(sum / anaBuf.length);
-      if (rms <= 0) return -120;
-      return Math.max(-120, 20 * Math.log10(rms));
-    } catch (e) { return null; }
+      const db = rms <= 0 ? -120 : Math.max(-120, 20 * Math.log10(rms));
+      lvlSt = (lvlSt.peak === null || db > lvlSt.peak) ? { peak: db, seen: true } : lvlSt;
+    } catch (e) { /* pusty okno kak yest' */ }
+  }
+  setInterval(sampleLevel, 100);
+  window.__mnemaLevel = function () {
+    // sine-otik i vnutri chteniya: v skrytoy vkladke Chrome trevhklaet taymery
+    // (inensive throttling), interval ne idyot — okno pusteelelo by i tişina
+    // nabegala by pri zhivoy rech' (scenariy job 9). Snyomka po zaprosu ot
+    // taymerov nie zavisit.
+    sampleLevel();
+    const out = lvlSt.seen ? lvlSt.peak : null;
+    lvlSt = { peak: null, seen: false };
+    return out;
   };
 
   // FT-10: odin raz vlit' wav v kanal mikrofona (micMixerDest -> Zoom ->
