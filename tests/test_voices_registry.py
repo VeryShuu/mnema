@@ -209,6 +209,47 @@ def test_patch_404_unknown_profile(client):
                         json={"employee_name": "X"}).status_code == 404
 
 
+# ---- dolzhnost' (vozvrashchena vmesto tabel'nogo v /voices) -------------------
+def test_create_profile_with_position(client):
+    r = client.post("/api/voice-profiles",
+                    json={"employee_name": "Petrova P.P.",
+                          "position": "Nachal'nik otdela", "consent": True})
+    assert r.status_code == 200
+    lst = client.get("/api/voice-profiles").json()
+    p = next(x for x in lst if x["id"] == r.json()["id"])
+    assert p["position"] == "Nachal'nik otdela"
+
+
+def test_patch_profile_sets_and_clears_position(client):
+    vid = _mk_profile(client)
+    r = client.patch(f"/api/voice-profiles/{vid}", json={"position": "Director"})
+    assert r.status_code == 200
+    p = next(x for x in client.get("/api/voice-profiles").json() if x["id"] == vid)
+    assert p["position"] == "Director"
+    client.patch(f"/api/voice-profiles/{vid}", json={"position": "   "})
+    p = next(x for x in client.get("/api/voice-profiles").json() if x["id"] == vid)
+    assert p["position"] is None
+
+
+def test_patch_position_does_not_break_rename_fields(client):
+    vid = _mk_profile(client, "Odin O.O.")
+    client.patch(f"/api/voice-profiles/{vid}", json={"position": "Zam_directora"})
+    r = client.patch(f"/api/voice-profiles/{vid}", json={"employee_name": "Dva D.D."})
+    assert r.status_code == 200
+    p = next(x for x in client.get("/api/voice-profiles").json() if x["id"] == vid)
+    assert p["employee_name"] == "Dva D.D." and p["position"] == "Zam_directora"
+
+
+def test_voices_page_shows_position_column(client):
+    vid = _mk_profile(client, "Dolzhnaya D.D.", position="Glavnyy ekspert")
+    r = client.get("/voices")
+    assert r.status_code == 200
+    assert "Должность" in r.text
+    assert "Табельный" not in r.text
+    assert "Glavnyy ekspert" in r.text
+    assert "emp_position" in r.text
+
+
 # ---- GET /api/voice-profiles/{vid}/clusters ----------------------------------
 def _mk_review_row(client, vid, jid, cluster="SPEAKER_00", status="confirmed",
                    answered_by="web"):

@@ -750,22 +750,40 @@ def _get_job(job_id: int) -> Job:
         return s.get(Job, job_id)
 
 
+def _llm_roster(s, segs: list) -> str:
+    """Spravka 'FIО — dolzhnost' po uchastnikam vstrechi (dlya LLM-konteksta).
+
+    Tol'ko te, kogo opoznali v segmentakh i u kogo zapolnena dolzhnost'.
+    V protokole/otchete ne otrazhaetsya."""
+    from ..core.models import VoiceProfile
+    names = {seg.speaker_name for seg in segs if seg.speaker_name}
+    if not names:
+        return ""
+    rows = s.scalars(select(VoiceProfile).where(
+        VoiceProfile.employee_name.in_(names))).all()
+    return "; ".join(f"{v.employee_name} — {v.position}"
+                     for v in sorted(rows, key=lambda v: v.employee_name)
+                     if v.position)
+
+
 def _build_protocol(job_id: int) -> None:
     from ..core.llm_client import structure_transcript, llm_model
     from ..core.protocol_md import assemble_protocol
     from ..core.pipeline import transition
+    from ..core.models import VoiceProfile
     p = _job_paths(job_id)
     with get_session() as s:
         segs = s.scalars(select(Segment).where(
             Segment.job_id == job_id, Segment.excluded.is_(False)
         ).order_by(Segment.t_start)).all()
         job = s.get(Job, job_id)
+        roster = _llm_roster(s, segs)
     transcript = _transcript_lines(segs)
     with get_session() as s:
         s.add(SessionEvent(job_id=job_id, event="llm_start",
                            detail=f"{len(segs)} segm"))
         s.commit()
-    data = structure_transcript(transcript, topic=job.topic)
+    data = structure_transcript(transcript, topic=job.topic, roster=roster)
     archive_dir = Path(os.environ.get("ARCHIVE_DIR", "/data/archive"))
     day = _archive_day(job.ended_ts or job.start_at)
     slug = "".join(c if c.isalnum() else "-" for c in (job.topic or f"job{job_id}"))[:40] or f"job{job_id}"

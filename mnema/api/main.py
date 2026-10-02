@@ -614,7 +614,7 @@ def api_profiles():
     with get_session() as s:
         rows = s.scalars(select(VoiceProfile)).all()
         return [{"id": v.id, "employee_name": v.employee_name,
-                 "employee_id": v.employee_id,
+                 "employee_id": v.employee_id, "position": v.position,
                  "samples": len(v.sample_paths or []),
                  "consent": v.consent_ts is not None,
                  "match_stats": v.match_stats} for v in rows]
@@ -623,6 +623,7 @@ def api_profiles():
 class ProfileIn(BaseModel):
     employee_name: str
     employee_id: str | None = None
+    position: str | None = None
     consent: bool = False
 
 
@@ -633,6 +634,7 @@ def api_create_profile(body: ProfileIn):
         raise HTTPException(400, "GT-31: bez soglasiya profil' ne sozdaetsya")
     with get_session() as s:
         v = VoiceProfile(employee_name=body.employee_name, employee_id=body.employee_id,
+                         position=(body.position or "").strip() or None,
                          consent_ts=dt.datetime.now(dt.timezone.utc))
         s.add(v)
         s.commit()
@@ -780,11 +782,12 @@ def api_delete_profile_sample(vid: int, idx: int):
 class ProfilePatch(BaseModel):
     employee_name: str | None = None
     employee_id: str | None = None
+    position: str | None = None
 
 
 @app.patch("/api/voice-profiles/{vid}")
 def api_patch_profile(vid: int, body: ProfilePatch):
-    """Pravka reestra: FIO/tabernoy; peremeynovanie rezonya v segmentakh
+    """Pravka reestra: FIO/dolzhnost'; peremeynovanie rezonya v segmentakh
     podtverzhdennykh klasteov + osvezhenie vygruzhnykh protokolov."""
     if body.employee_name is not None and not body.employee_name.strip():
         raise HTTPException(400, "FIO ne mozhet byt' pustym")
@@ -798,6 +801,8 @@ def api_patch_profile(vid: int, body: ProfilePatch):
             v.employee_name = body.employee_name.strip()
         if body.employee_id is not None:
             v.employee_id = body.employee_id.strip() or None
+        if body.position is not None:
+            v.position = body.position.strip() or None
         name = v.employee_name
         if v.employee_name != old_name:
             reviews = s.scalars(select(ReviewRequest).where(

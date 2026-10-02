@@ -5,7 +5,7 @@
   <h3>Регистрация нового голоса</h3>
   <form method="post" action="#" onsubmit="return false;">
     <input id="emp_name" placeholder="ФИО" required>
-    <input id="emp_id" placeholder="Табельный номер (необязательно)">
+    <input id="emp_position" placeholder="Должность (необязательно)">
     <label><input type="checkbox" id="consent"> Согласен на обработку голосовых биометрических данных</label>
     <button class="primary" onclick="createProfile()">Создать профиль</button>
   </form>
@@ -18,13 +18,13 @@
 </div>
 <div class="table-wrap">
 <table>
-<tr><th>№</th><th>ФИО</th><th>Табельный №</th><th>Эталонов</th><th>Согласие</th><th>Метрики распознавания</th><th></th></tr>
+<tr><th>№</th><th>ФИО</th><th>Должность</th><th>Эталонов</th><th>Согласие</th><th>Метрики распознавания</th><th></th></tr>
 {% for p in profiles %}
 <tr>
  <td>{{ p.id }}</td>
  <td><span id="nm_{{ p.id }}">{{ p.employee_name }}</span>
-     <button type="button" title="Изменить ФИО и табельный" onclick="editProfile({{ p.id }})">✎</button></td>
- <td id="empid_{{ p.id }}">{{ p.employee_id or '—' }}</td>
+     <button type="button" title="Изменить ФИО и должность" onclick="editProfile({{ p.id }})">✎</button></td>
+ <td id="pos_{{ p.id }}">{{ p.position or '—' }}</td>
  <td>{{ p.sample_paths|length if p.sample_paths else 0 }}</td>
  <td>{{ 'Есть' if p.consent_ts else 'Нет' }}</td>
  <td class="muted" id="stats_{{ p.id }}">{{ stats_text(p.match_stats) }}</td>
@@ -52,7 +52,7 @@ async function createProfile(){
   const name = document.getElementById('emp_name').value.trim();
   if(!name){ alert('Укажите ФИО'); return; }
   const r = await fetch('/api/voice-profiles', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({employee_name:name, employee_id:document.getElementById('emp_id').value||null, consent:true})});
+    body: JSON.stringify({employee_name:name, position:document.getElementById('emp_position').value.trim()||null, consent:true})});
   const j = await r.json();
   document.getElementById('vid').value = j.id;
   document.getElementById('rec').style.display='block';
@@ -138,11 +138,11 @@ async function editProfile(id){
   const name = prompt('ФИО сотрудника:', document.getElementById('nm_'+id).textContent);
   if (name === null) return;
   if (!name.trim()){ alert('ФИО не может быть пустым'); return; }
-  const empId = prompt('Табельный номер (пусто — сбросить):',
-    document.getElementById('empid_'+id).textContent.replace('—','').trim());
-  if (empId === null) return;
+  const position = prompt('Должность (пусто — сбросить):',
+    document.getElementById('pos_'+id).textContent.replace('—','').trim());
+  if (position === null) return;
   const r = await fetch('/api/voice-profiles/'+id, {method:'PATCH', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({employee_name:name.trim(), employee_id:empId.trim()||null})});
+    body: JSON.stringify({employee_name:name.trim(), position:position.trim()})});
   const j = await r.json();
   if(!r.ok){ alert('Не удалось сохранить: '+(j.detail||r.status)); return; }
   location.reload();

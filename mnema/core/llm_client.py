@@ -84,19 +84,29 @@ def validate_protocol(data: dict) -> dict:
     return data
 
 
-def structure_transcript(transcript: str, topic: str = "") -> dict:
-    """Polnaya stenogramma -> protocol JSON. Kosol'sl'zye okna esli > konteksta."""
+def structure_transcript(transcript: str, topic: str = "", roster: str = "") -> dict:
+    """Polnaya stenogramma -> protocol JSON. Kosol'sl'zye okna esli > konteksta.
+
+    roster — spravka 'FIО — dolzhnost' uchastnikov (dlya disambiguacii, v
+    protokole ne otrazhaetsya)."""
+    roster = (roster or "").strip()
     max_chars = int(os.environ.get("LLM_WINDOW_CHARS", "24000"))
     if len(transcript) <= max_chars:
         user = f"TEMA: {topic}\n\nSTENOGRAMMA:\n{transcript}"
+        if roster:
+            user += (f"\n\nSPRAVOCHNIK UCHASTNIKOV (FIО — dolzhnost, dlya poni"
+                     f"maniya, kto chto skazal; v protokole dolzhnosti ne "
+                     f"ukazyvai):\n{roster}")
         reply = _chat([{"role": "system", "content": SYSTEM_PROMPT},
                        {"role": "user", "content": user}])
         return validate_protocol(_extract_json(reply))
-    return _map_reduce(transcript, topic, max_chars)
+    return _map_reduce(transcript, topic, max_chars, roster)
 
 
-def _map_reduce(transcript: str, topic: str, max_chars: int) -> dict:
+def _map_reduce(transcript: str, topic: str, max_chars: int, roster: str = "") -> dict:
     windows = []
+    roster_block = (f"\n\nSPRAVOCHNIK UCHASTNIKOV (FIО — dolzhnost):\n{roster}"
+                    if roster else "")
     step = int(max_chars * 0.8)
     i = 0
     while i < len(transcript):
@@ -106,7 +116,7 @@ def _map_reduce(transcript: str, topic: str, max_chars: int) -> dict:
     for idx, w in enumerate(windows):
         user = (f"OKNO {idx + 1} iz {len(windows)}. Vytashi iz eta fragmanta "
                 f"po skHEME (chastichno): resheniya, zadachi, otkrytye voprosy, "
-                f"upomyanutykh lyudey.\n\n{w}")
+                f"upomyanutykh lyudey.\n\n{w}" + roster_block)
         try:
             reply = _chat([{"role": "system", "content": SYSTEM_PROMPT},
                            {"role": "user", "content": user}])

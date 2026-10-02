@@ -159,6 +159,7 @@ class VoiceProfile(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     employee_name: Mapped[str] = mapped_column(String(255))
     employee_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    position: Mapped[str | None] = mapped_column(String(255), nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
     # набор эталонных эмбеддингов (по источнику: запись/кластер встречи);
     # матчинг — max cosine по ним (multi-prototype), embedding — среднее
