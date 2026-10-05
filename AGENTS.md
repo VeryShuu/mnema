@@ -32,7 +32,8 @@
 - Сервер: `user@mnema-gpu.internal` (`gpu-ssh-alias`), каталог: `/data_local/docker/mnema`.
 - Деплой из репо: `./scripts/deploy-gpu.sh` — пуш ветки в origin, на сервере
   `git fetch origin + git reset --hard origin/<branch>`, затем
-  `docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.override.yml up -d --build`.
+  `docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.override.yml build` +
+  `up -d --force-recreate api worker web-bot` (redis не пересоздавать — сбросит очередь).
   Требует чистое дерево (иначе выходит с ошибкой); коммитить нужно до деплоя.
 - **ВАЖНО: все команды compose на сервере — только с тремя `-f`.** Без
   `docker-compose.gpu.yml` worker поднимется из лёгкого CPU-образа и

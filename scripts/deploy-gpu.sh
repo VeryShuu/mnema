@@ -5,7 +5,8 @@
 #   - na etom hoste delaetsya bundle tekushhey vetki,
 #   - na serve `git fetch <bundle>` + `git reset --hard FETCH_HEAD`,
 #   - untracked fayly serve (.env, docker-compose.override.yml) ne trayutsya,
-#   - zatrem `docker compose up -d --build` s tremya -f (base + gpu + override).
+#   - zatrem `docker compose build` + `up -d --force-recreate api worker web-bot`
+#     s tremya -f (base + gpu + override).
 #
 # Ispolzovanie:  ./scripts/deploy-gpu.sh
 # Peremenkie:    DEST_SSH=user@mnema-gpu.internal  DEST_DIR=/data_local/docker/mnema
@@ -64,7 +65,11 @@ fi
 echo "    alembic upgrade head..."
 \$COMPOSE run --rm --no-deps api python -m alembic upgrade head
 
-\$COMPOSE up -d
+# --force-recreate: bez nego `up -d` mohet ostavit' sluzhby na STAROM obraze,
+# kogda izmeneny tol'ko kod/sloi, a konfiguratsiya compose ne menyalas'
+# (proveryalos' na serve: obrazy peresobrany, a konteinery - 2-ndavney datchy).
+# redis ne recreationim — on trigger, nego SSOT; persozdanie sbrosit ochered'.
+\$COMPOSE up -d --force-recreate api worker web-bot
 
 echo "    proverka zapuska:"
 \$COMPOSE ps --format "{{.Name}} {{.Status}}"
