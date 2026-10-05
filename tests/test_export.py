@@ -238,7 +238,7 @@ def test_refresh_protocol_calls_export(env, monkeypatch, tmp_path):
     # refresh_protocol perepisyvaet md lokal'no po dannym BDD (render_markdown),
     # zerkalo dolzhno soderzhat' tu zhe svezhuyu kopiyu
     assert out_md.read_text(encoding="utf-8") == md.read_text(encoding="utf-8")
-    assert "# Protocol: Refresh" in out_md.read_text(encoding="utf-8")
+    assert "# Протокол: Refresh" in out_md.read_text(encoding="utf-8")
     assert out_md.read_text(encoding="utf-8") != "# Prot\n"  # ne staryy fail
 
 

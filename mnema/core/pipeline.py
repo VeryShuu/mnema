@@ -156,7 +156,7 @@ def review_timeout_check() -> int:
                     r.status = "timeout"
                     r.answered_ts = now
                     r.answered_by = "timeout"
-                j.note = "utochnenie po taym-autu (FT-28): publikuem kak opredeleno"
+                j.note = "уточнение по тайм-ауту (FT-28): публикуем как определено"
                 ids.append(j.id)
         s.commit()
     # 5.1: posle taym-atau LLM-analiz vse ravno vypolnyaetsya (nezavershonnyy

@@ -66,7 +66,7 @@ def cancel_job(job_id: int) -> Job | None:
             for up in job.uploads:
                 if up.status in ("pending", "uploading"):
                     up.status = "failed"
-                    up.error = "otmeneno vmeste s vstrechey"
+                    up.error = "отменено вместе со встречей"
                     Path(up.path).unlink(missing_ok=True)
             s.commit()
     if cur in ("recording", "launching"):
@@ -143,7 +143,7 @@ def update_job(job_id: int, *, meeting_link: str = "", pwd: str = "",
             job.start_at = start_at
         job.end_at = end_at
         s.add(SessionEvent(job_id=job_id, event="updated",
-                           detail="parametry vstrechi izmeneny"))
+                           detail="параметры встречи изменены"))
         s.commit()
         s.refresh(job)
     from .scheduler import schedule_job_for

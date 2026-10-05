@@ -210,7 +210,7 @@ def rematch_job(job_id: int) -> None:
     _run_speaker(job_id)
     with get_session() as s:
         s.add(SessionEvent(job_id=job_id, event="voiceprint_rematch",
-                           detail="posle backfill embeddingtonov"))
+                           detail="после backfill embedding-ов"))
         s.commit()
     from .pipeline import resume_after_reviews
     return resume_after_reviews(job_id)

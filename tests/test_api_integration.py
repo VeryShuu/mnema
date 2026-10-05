@@ -919,8 +919,8 @@ def _make_done_protocol(client, meeting_id):
         job_dir = str(md_path)
         proto.md_path = job_dir
         s.commit()
-    md_path.write_text("# Protocol: Soveshchanie\n\n## Stenogramma\n\n"
-                       "`00:02:05` **Golos SPEAKER_00**: pervaya replika\n",
+    md_path.write_text("# Протокол: Soveshchanie\n\n## Стенограмма\n\n"
+                       "`00:02:05` **Голос SPEAKER_00**: pervaya replika\n",
                        encoding="utf-8")
     return jid, pid, md_path
 
@@ -930,7 +930,7 @@ def test_protocol_md_download_refreshes_speaker_names(client):
     r = client.get(f"/api/protocols/{pid}?format=md")
     assert r.status_code == 200
     assert "Ivanov I. I." in r.text
-    assert "Golos SPEAKER_00" not in r.text
+    assert "Голос SPEAKER_00" not in r.text
     # fail na diske toze perezapisan
     assert "Ivanov I. I." in md_path.read_text(encoding="utf-8")
 
@@ -954,7 +954,7 @@ def test_patch_segments_refreshes_protocol_md(client):
     assert r.status_code == 200 and r.json()["updated"] >= 1
     txt = md_path.read_text(encoding="utf-8")
     assert "Petrov P. P." in txt
-    assert "Golos SPEAKER_00" not in txt
+    assert "Голос SPEAKER_00" not in txt
 
 
 def test_protocol_detail_page_has_source_links_and_playat(client):

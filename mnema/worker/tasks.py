@@ -676,9 +676,9 @@ def _write_steno(job_id: int, p: dict) -> Path:
             Segment.job_id == job_id, Segment.excluded.is_(False)
         ).order_by(Segment.t_start)).all()
         job = s.get(Job, job_id)
-    lines = [f"# Protocol (transkript): {job.topic}", ""]
+    lines = [f"# Протокол (транскрипт): {job.topic}", ""]
     for seg in segs:
-        name = seg.speaker_name or f"Golos {seg.speaker_id}"
+        name = seg.speaker_name or f"Голос {seg.speaker_id}"
         tag = " (trebuetsya utochnenie)" if seg.needs_review else ""
         lines.append(f"{_fmt(seg.t_start)} {name}{tag}: {seg.text}")
     p["steno"].write_text("\n".join(lines), encoding="utf-8")
@@ -817,6 +817,6 @@ def _route_after_structure(job_id: int) -> None:
 def _transcript_lines(segs: list) -> str:
     out = []
     for seg in segs:
-        name = seg.speaker_name or f"Golos {seg.speaker_id}"
+        name = seg.speaker_name or f"Голос {seg.speaker_id}"
         out.append(f"{_fmt(seg.t_start)} {name}: {seg.text}")
     return "\n".join(out)

@@ -15,45 +15,45 @@ def _fmt(sec: float) -> str:
 def render_markdown(job, data: dict, segments: list) -> str:
     lines: list[str] = []
     topic = (data.get("topic") or job.topic)
-    lines.append(f"# Protocol: {topic}")
+    lines.append(f"# Протокол: {topic}")
     lines.append("")
-    lines.append(f"- **Date:** {data.get('date', '')}")
+    lines.append(f"- **Дата:** {data.get('date', '')}")
     if data.get("duration"):
-        lines.append(f"- **Duration:** {int(data['duration'])} s")
+        lines.append(f"- **Длительность:** {int(data['duration'])} с")
     att = data.get("attendees") or []
     if att:
-        lines.append("- **Speakers (po golosu):** " + ", ".join(
+        lines.append("- **Говорящие (по голосу):** " + ", ".join(
             a.get("name", "?") for a in att))
     lines.append("")
     if data.get("agenda"):
-        lines.append("## Agenda")
+        lines.append("## Повестка")
         for a in data["agenda"]:
             lines.append(f"- {a}")
         lines.append("")
     if data.get("decisions"):
-        lines.append("## Resheniya")
+        lines.append("## Решения")
         for d in data["decisions"]:
             lines.append(f"- {d}")
         lines.append("")
     items = data.get("action_items") or []
     if items:
-        lines.append("## Zadachi")
-        lines.append("| Zadacha | Otvetstvenny | Srok | Source |")
+        lines.append("## Задачи")
+        lines.append("| Задача | Ответственный | Срок | Источник |")
         lines.append("|---|---|---|---|")
         for ai in items:
             lines.append(f"| {ai.get('task', '')} | {ai.get('owner') or '—'} | "
                          f"{ai.get('due') or '—'} | {ai.get('source_ts') or ''} |")
         lines.append("")
     if data.get("open_questions"):
-        lines.append("## Otkrytye voprosy")
+        lines.append("## Открытые вопросы")
         for q in data["open_questions"]:
             lines.append(f"- {q}")
         lines.append("")
-    lines.append("## Stenogramma")
+    lines.append("## Стенограмма")
     lines.append("")
     for seg in segments:
-        name = seg.speaker_name or f"Golos {seg.speaker_id}"
-        flag = " [treb.utochneniya]" if seg.needs_review else ""
+        name = seg.speaker_name or f"Голос {seg.speaker_id}"
+        flag = " [треб.уточнения]" if seg.needs_review else ""
         lines.append(f"`{_fmt(seg.t_start)}` **{name}**{flag}: {seg.text}")
     lines.append("")
     return "\n".join(lines)
@@ -64,31 +64,31 @@ def write_docx(job, data: dict, segments: list, path: Path) -> None:
     template = Path(__file__).resolve().parents[2] / "templates" / "protocol.docx"
     doc = Document(str(template)) if template.exists() else Document()
     topic = data.get("topic") or job.topic
-    doc.add_heading(f"Protocol: {topic}", level=0)
-    doc.add_paragraph(f"Date: {data.get('date', '')}")
+    doc.add_heading(f"Протокол: {topic}", level=0)
+    doc.add_paragraph(f"Дата: {data.get('date', '')}")
     if data.get("agenda"):
-        doc.add_heading("Agenda", level=1)
+        doc.add_heading("Повестка", level=1)
         for a in data["agenda"]:
             doc.add_paragraph(a, style="List Bullet")
     if data.get("decisions"):
-        doc.add_heading("Resheniya", level=1)
+        doc.add_heading("Решения", level=1)
         for d in data["decisions"]:
             doc.add_paragraph(d, style="List Bullet")
     items = data.get("action_items") or []
     if items:
-        doc.add_heading("Zadachi", level=1)
+        doc.add_heading("Задачи", level=1)
         table = doc.add_table(rows=1, cols=4)
         hdr = table.rows[0].cells
-        hdr[0].text, hdr[1].text, hdr[2].text, hdr[3].text = "Zadacha", "Otvet.", "Srok", "Source"
+        hdr[0].text, hdr[1].text, hdr[2].text, hdr[3].text = "Задача", "Ответственный", "Срок", "Источник"
         for ai in items:
             row = table.add_row().cells
             row[0].text = ai.get("task", "")
             row[1].text = ai.get("owner") or "—"
             row[2].text = ai.get("due") or "—"
             row[3].text = ai.get("source_ts") or ""
-    doc.add_heading("Stenogramma", level=1)
+    doc.add_heading("Стенограмма", level=1)
     for seg in segments:
-        name = seg.speaker_name or f"Golos {seg.speaker_id}"
+        name = seg.speaker_name or f"Голос {seg.speaker_id}"
         doc.add_paragraph(f"{_fmt(seg.t_start)} {name}: {seg.text}")
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(path))

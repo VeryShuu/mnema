@@ -193,7 +193,7 @@ def finalize(upload_id: int) -> Job:
         with get_session() as s:
             up = s.get(Upload, upload_id)
             up.status = "failed"
-            up.error = "fayl zagruzki otsutstvuet"
+            up.error = "файл загрузки отсутствует"
             s.commit()
         raise ValueError("fayl zagruzki otsutstvuet")
     if expected is not None and path.stat().st_size < expected:
@@ -251,7 +251,7 @@ def cancel_upload(upload_id: int) -> Job:
         job_id = up.job_id
         if up.status in ("pending", "uploading"):
             up.status = "failed"
-            up.error = "otmeneno operatorom"
+            up.error = "отменено оператором"
             Path(up.path).unlink(missing_ok=True)
             s.commit()
     from .pipeline import transition
@@ -280,7 +280,7 @@ def gc_stale_uploads(max_age_hours: int = 24) -> int:
                 continue
             Path(up.path).unlink(missing_ok=True)
             up.status = "failed"
-            up.error = "ochishcheno po taym-autu zagruzki"
+            up.error = "очищено по тайм-ауту загрузки"
             s.add(SessionEvent(job_id=up.job_id, event="upload_gc",
                                detail=str(up.filename)))
             removed += 1

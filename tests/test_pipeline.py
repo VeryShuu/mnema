@@ -136,8 +136,8 @@ def test_steno_format(env):
     _make_webm(p["webm"])
     run_asr_pipeline(job.id)
     text = p["steno"].read_text(encoding="utf-8")
-    assert text.startswith("# Protocol (transkript)")
-    assert "Golos" in text  # imena iz golosovogo mehanizma (unresolved -> Golos N)
+    assert text.startswith("# Протокол (транскрипт)")
+    assert "Голос" in text  # imena iz golosovogo mehanizma (unresolved -> Голос N)
 
 
 def test_transition_failed_notifies_with_data_and_screenshot(env, monkeypatch):

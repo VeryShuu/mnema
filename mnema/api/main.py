@@ -80,7 +80,7 @@ def stats_text(stats: dict | None) -> str:
     for ev in ("reverify_done", "reverify_failed", "profile_reembed"):
         info = stats.get(ev)
         if isinstance(info, dict) and info.get("ts"):
-            mark = "oshibka pereproverki" if ev == "reverify_failed" else ev
+            mark = "ошибка перепроверки" if ev == "reverify_failed" else ev
             parts.append(f"{mark}: {info['ts'][:16].replace('T', ' ')} ({info.get('detail', '')})")
     return "; ".join(parts) or "—"
 
@@ -276,9 +276,9 @@ def api_job_leave(jid: int):
         if job is None:
             raise HTTPException(404)
         if job.status not in ("launching", "recording"):
-            raise HTTPException(409, f"vyhod nemozhno dlya statusa: {job.status}")
+            raise HTTPException(409, f"выход невозможен для статуса: {job.status}")
         s.add(SessionEvent(job_id=jid, event="leave_requested",
-                           detail="ruchnoe zavershenie operatorom"))
+                           detail="ручное завершение оператором"))
         s.commit()
         status = job.status
     stop_queued = request_stop(jid, reason="manual_leave")
@@ -334,11 +334,11 @@ def api_job_vnc(jid: int, request: Request):
         if job is None:
             raise HTTPException(404)
         if job.source == "upload":
-            raise HTTPException(409, "dlya arhivnoy zapisi VNC ne nuzhen")
+            raise HTTPException(409, "для архивной записи VNC не нужен")
         live = vnc_svc.get_for_job(jid)
         if not live or live.get("status") not in VNC_LIVE_STATUSES:
             s.add(SessionEvent(job_id=jid, event="vnc_requested",
-                               detail="individual'nyy ekran vstrechi"))
+                               detail="индивидуальный экран встречи"))
             s.commit()
     url = _vnc_payload(request, live)
     if url:
@@ -550,7 +550,7 @@ def api_exclude_review_segment(rid: int, seg_id: int):
         if r is None or seg is None or seg.job_id != r.job_id or seg.speaker_id != r.cluster_label:
             raise HTTPException(404)
         if r.status != "pending":
-            raise HTTPException(409, "review uzhe otvechen")
+            raise HTTPException(409, "уточнение уже отвечено")
         new_label = f"{r.cluster_label}-x{seg.id}"
         seg.speaker_id = new_label
         seg.speaker_name = None
@@ -594,7 +594,7 @@ def api_exclude_segment_from_analysis(rid: int, seg_id: int):
         if r is None or seg is None or seg.job_id != r.job_id or seg.speaker_id != r.cluster_label:
             raise HTTPException(404)
         if r.status != "pending":
-            raise HTTPException(409, "review uzhe otvechen")
+            raise HTTPException(409, "уточнение уже отвечено")
         seg.excluded = True
         seg.needs_review = False
         seg.speaker_source = "excluded"
@@ -637,7 +637,7 @@ class ProfileIn(BaseModel):
 def api_create_profile(body: ProfileIn):
     """FT-29: registratsiya golosa (embedding dosylayetsya cherez samples)."""
     if not body.consent:
-        raise HTTPException(400, "GT-31: bez soglasiya profil' ne sozdaetsya")
+        raise HTTPException(400, "GT-31: без согласия профиль не создаётся")
     with get_session() as s:
         v = VoiceProfile(employee_name=body.employee_name, employee_id=body.employee_id,
                          position=(body.position or "").strip() or None,
@@ -796,7 +796,7 @@ def api_patch_profile(vid: int, body: ProfilePatch):
     """Pravka reestra: FIO/dolzhnost'; peremeynovanie rezonya v segmentakh
     podtverzhdennykh klasteov + osvezhenie vygruzhnykh protokolov."""
     if body.employee_name is not None and not body.employee_name.strip():
-        raise HTTPException(400, "FIO ne mozhet byt' pustym")
+        raise HTTPException(400, "ФИО не может быть пустым")
     touched_protocol_ids: list[int] = []
     with get_session() as s:
         v = s.get(VoiceProfile, vid)
@@ -1176,7 +1176,7 @@ async def web_job_rename(jid: int, request: Request):
     form = await request.form()
     topic = str(form.get("topic", "")).strip()
     if not topic:
-        raise HTTPException(422, "Nazvanie ne mozhet byt' pustym")
+        raise HTTPException(422, "Название не может быть пустым")
     job = rename_job(jid, topic)
     if job is None:
         raise HTTPException(404)
@@ -1196,10 +1196,10 @@ async def web_job_update(jid: int, request: Request):
         if end_raw:
             end_at = local_to_utc(dt.datetime.fromisoformat(end_raw))
     except ValueError:
-        raise HTTPException(422, "Nekorrektnoe vremya")
+        raise HTTPException(422, "Некорректное время")
     link = str(form.get("meeting_link", "")).strip()
     if link and not link_valid(link):
-        raise HTTPException(422, "Nekorrektnaya ssylka Zoom")
+        raise HTTPException(422, "Некорректная ссылка Zoom")
     try:
         job = update_job(jid, meeting_link=link,
                          pwd=str(form.get("pwd", "")).strip(),
@@ -1219,7 +1219,7 @@ async def web_job_delete(jid: int):
         if job is None:
             raise HTTPException(404)
         if job.status in ("launching", "recording"):
-            raise HTTPException(409, "Ostanovite vstrechu pered udaleniem")
+            raise HTTPException(409, "Остановите встречу перед удалением")
     delete_job(jid)
     return RedirectResponse("/jobs", status_code=303)
 
@@ -1244,7 +1244,7 @@ def web_job_rerun_llm(jid: int):
     except KeyError:
         raise HTTPException(404)
     if not started:
-        raise HTTPException(409, "perezapusk dopustim tol'ko dlya done/awaiting_llm")
+        raise HTTPException(409, "перезапуск допустим только для done/awaiting_llm")
     return {"ok": True, "status": "processing"}
 
 
