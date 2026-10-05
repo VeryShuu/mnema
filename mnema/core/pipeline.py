@@ -31,7 +31,8 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 
 def transition(job_id: int, new_status: str, *, error: str | None = None,
                fail_reason: str | None = None, event: str | None = None,
-               notify: bool = True) -> Job:
+               notify: bool = True,
+               screenshot_path: str | None = None) -> Job:
     with get_session() as s:
         job = s.get(Job, job_id)
         if job is None:
@@ -57,7 +58,8 @@ def transition(job_id: int, new_status: str, *, error: str | None = None,
     if new_status == "failed" and fail_reason and notify:
         NotifyService().enqueue_job_failed(
             job_id=snap["id"], topic=snap["topic"], meeting_id=snap["mid"],
-            fail_reason=fail_reason, attempts=snap["attempts"])
+            fail_reason=fail_reason, attempts=snap["attempts"],
+            screenshot_path=screenshot_path)
     if new_status == "awaiting_llm":
         _notify_awaiting_llm(job_id)
     if new_status == "done" and notify:
@@ -69,12 +71,16 @@ def _notify_awaiting_llm(job_id: int) -> None:
     ns = NotifyService()
     with get_session() as s:
         job = s.get(Job, job_id)
-        ns.enqueue("job_failed",
-                   f"[Mnema] Steno gotova, LLM nedostupen: {job.topic}",
-                   f"Job {job_id}: steno.md sformirovana, strukturirovanie otdozhenno "
-                   f"(llm=not_configured/misconfigured). Donaistrojte LLM i zapustite "
-                   f"povtor processing: {ns.base_url}/jobs/{job_id}",
-                   dedup_key=f"awaiting_llm:{job_id}")
+        topic = job.topic
+    ns.enqueue("awaiting_llm",
+               f"[Mnema] Стенограмма готова, LLM недоступен: {topic}",
+               f"Встреча: {topic or '(без темы)'}\n"
+               "Стенограмма сформирована, структурирование отложено "
+               "(LLM не настроен или недоступен). Донастройте LLM и запустите "
+               f"повторную обработку: {ns.base_url}/jobs/{job_id}",
+               dedup_key=f"awaiting_llm:{job_id}",
+               data={"job_id": job_id, "topic": topic,
+                     "job_url": f"{ns.base_url}/jobs/{job_id}"})
 
 
 def _notify_protocol_ready(job_id: int) -> None:
@@ -82,11 +88,17 @@ def _notify_protocol_ready(job_id: int) -> None:
     with get_session() as s:
         job = s.get(Job, job_id)
         proto = s.scalars(select(Protocol).where(Protocol.job_id == job_id)).first()
-    audio = f"{ns.base_url}/api/protocols/{proto.id}/audio" if proto else ""
+        topic = job.topic
+    audio = f"{ns.base_url}/api/protocols/{proto.id}/audio" if proto else None
     ns.enqueue("protocol_ready",
-               f"[Mnema] Protokol gotov: {job.topic}",
-               f"Protokol: {ns.base_url}/jobs/{job_id}\nAudio: {audio}",
-               dedup_key=f"protocol_ready:{job_id}")
+               f"[Mnema] Протокол готов: {topic}",
+               f"Встреча: {topic or '(без темы)'}\n"
+               f"Протокол: {ns.base_url}/jobs/{job_id}"
+               + (f"\nАудиозапись: {audio}" if audio else ""),
+               dedup_key=f"protocol_ready:{job_id}",
+               data={"job_id": job_id, "topic": topic,
+                     "job_url": f"{ns.base_url}/jobs/{job_id}",
+                     "audio_url": audio})
 
 
 def register_recording_finished(job_id: int, *, webm_path: str | None,

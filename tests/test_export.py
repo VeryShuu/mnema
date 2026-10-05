@@ -292,7 +292,7 @@ def test_retry_skips_exhausted_and_notifies(env, monkeypatch, tmp_path):
     _mk_audio(jid)
     enqueued: list[str] = []
     monkeypatch.setattr(notify.NotifyService, "enqueue",
-                        lambda self, kind, subject, body, dedup_key=None:
+                        lambda self, kind, subject, body, dedup_key=None, data=None:
                         enqueued.append(dedup_key))
     assert export.retry_pending_exports() == 0
     assert _job_export(jid)["attempts"] == 6  # popytok ne bylo

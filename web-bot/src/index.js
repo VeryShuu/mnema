@@ -90,7 +90,8 @@ async function runTask(task, redis) {
     } else if (run.fail_reason === "cancelled") {
       await postStatus(job_id, "cancelled", "manual_leave", run.error).catch(() => {});
     } else {
-      await postStatus(job_id, "failed", run.fail_reason, run.error);
+      await postStatus(job_id, "failed", run.fail_reason, run.error, null,
+                       run.screenshot_path || null);
     }
   } catch (e) {
     console.error(`[job ${job_id}] task error:`, e);
@@ -119,11 +120,12 @@ async function postEvent(jobId, event, detail) {
   if (!r.ok) console.error(`event post ${jobId} -> ${r.status}`);
 }
 
-async function postStatus(jobId, status, failReason, error, attempts) {
+async function postStatus(jobId, status, failReason, error, attempts, screenshotPath) {
   const r = await fetch(`${API}/api/jobs/${jobId}/status`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ status, fail_reason: failReason || null,
-                           error: error || null, attempts: attempts ?? null }),
+                           error: error || null, attempts: attempts ?? null,
+                           screenshot_path: screenshotPath || null }),
   });
   if (!r.ok) console.error(`status post ${jobId} -> ${r.status}: ${await r.text()}`);
 }

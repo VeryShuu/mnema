@@ -337,8 +337,13 @@ def _notify_export_failed(job: Job) -> None:
             dedup_key=dedup,
             subject=f"[Mnema] Не выгружено в сетевую папку: {job.topic or job.id}",
             body=(f"Встреча: {job.topic or '(без темы)'}\n"
-                  f"ID zadachi: {job.id}\n"
+                  f"Задача: {job.id}\n"
                   f"Попыток выгрузки: {MAX_ATTEMPTS} — дальнейшие повторы остановлены.\n"
-                  f"Проверьте доступность самба-шары (/export) и параметры CIFS-маунта."))
+                  f"Проверьте доступность самба-шары (/export) и параметры CIFS-маунта."),
+            data={"job_id": job.id, "topic": job.topic,
+                  "message": (f"Файлы задачи не выгружены в сетевую папку. "
+                              f"Попыток: {MAX_ATTEMPTS} — дальнейшие повторы "
+                              "остановлены. Проверьте доступность самба-шары "
+                              "(/export) и параметры CIFS-маунта.")})
     except Exception:  # noqa: BLE001 — уведомление не должно ронять maintenance
         pass

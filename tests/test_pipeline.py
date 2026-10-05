@@ -138,3 +138,29 @@ def test_steno_format(env):
     text = p["steno"].read_text(encoding="utf-8")
     assert text.startswith("# Protocol (transkript)")
     assert "Golos" in text  # imena iz golosovogo mehanizma (unresolved -> Golos N)
+
+
+def test_transition_failed_notifies_with_data_and_screenshot(env, monkeypatch):
+    """Perekhod v failed sozdaet Notification s data_json i putem skrinshota."""
+    import json
+
+    monkeypatch.setenv("NOTIFY_EMAIL_TO", "ops@example.ru")
+    from mnema.core.db import get_session
+    from mnema.core.models import Notification
+    from mnema.core.pipeline import transition
+
+    job = _mkjob()
+    shot_dir = env / "failure_screenshots"
+    shot_dir.mkdir()
+    shot = shot_dir / f"job_{job.id}.png"
+    shot.write_bytes(b"\x89PNG fake")
+    transition(job.id, "failed", fail_reason="timeout", error="boom",
+               screenshot_path=str(shot))
+    with get_session() as s:
+        n = s.query(Notification).filter_by(kind="job_failed").one()
+        assert n.status == "pending"
+        assert "Не удалось подключиться" in n.subject
+        assert n.screenshot_path == str(shot.resolve())
+        data = json.loads(n.data_json)
+        assert data["fail_reason"] == "timeout"
+        assert data["job_id"] == job.id

@@ -202,6 +202,8 @@ class Notification(Base):
     dedup_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     subject: Mapped[str] = mapped_column(String(512))
     body: Mapped[str] = mapped_column(Text)
+    data_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # strukt. dannye pisma (JSON)
+    screenshot_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     to_addr: Mapped[str] = mapped_column(String(255))
     cc_addr: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)  # pending|sent|digest|suppressed|error

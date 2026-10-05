@@ -147,7 +147,7 @@ REGISTRY: tuple[Block, ...] = (
             readers="scheduler", when="FT-35v", if_empty="09:00"),
         Key("NOTIFY_EVENTS", DEFAULTED,
             "job_failed=email,session_relogin_due=email,protocol_ready=email,"
-            "job_export_failed=email",
+            "awaiting_llm=email,job_export_failed=email",
             readers="notifier", when="FT-36; v kljade otkaza vygruzki v sampu",
             if_empty="defolt iz FT-36 + job_export_failed"),
     )),

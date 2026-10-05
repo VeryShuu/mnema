@@ -68,6 +68,21 @@ export const EVENT = { // FT-9
   CHUNKS_SAVED: "chunks_saved", SILENCE: "silence", RELOAD: "reload", ERROR: "error",
 };
 
+// Скриншот страницы в момент сбоя: png на общем volume (/data), API заберёт
+// путь из POST /status и вложит в письмо. Страница может быть мертва —
+// любая ошибка гасится, возвращаем null (письмо уйдёт без картинки).
+export async function captureFailureShot(page, jobId, cfg) {
+  try {
+    const dir = path.join(cfg.dataDir, "failure_screenshots");
+    fs.mkdirSync(dir, { recursive: true });
+    const p = path.join(dir, `job_${jobId}.png`);
+    await page.screenshot({ path: p, type: "png" });
+    return fs.existsSync(p) ? p : null;
+  } catch {
+    return null;
+  }
+}
+
 // vnc — descriptor sessii menedzhera {display, profileDir, slot, wsPort} | null.
 // Esl' est' — pishem headful na individual'nom ekrane (operator mozhet voyti
 // cherez noVNC i proyti capchu); net — headless na kopii profilya (bazovyy
@@ -196,7 +211,9 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
   try {
     const attemptRes = await joinMeeting(page, cfg, state, onEvent, jobId);
     if (!attemptRes.ok) {
-      return { ok: false, fail_reason: attemptRes.reason, error: attemptRes.error };
+      const screenshot_path = await captureFailureShot(page, jobId, cfg);
+      return { ok: false, fail_reason: attemptRes.reason, error: attemptRes.error,
+               screenshot_path };
     }
     state.joinedAt = Date.now();
     // tuslyar skryt do dvizheniya myshi — bez etohto mikrofon/knopki NE vidimy UI
@@ -251,8 +268,10 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
     }
 
     if (end.reason === "reload_exhausted") {
+      const screenshot_path = await captureFailureShot(page, jobId, cfg);
       return { ok: false, fail_reason: "page_crash",
-               error: "stranitsa utochen posle vseh reloadov", webm: webmPath };
+               error: "stranitsa utochen posle vseh reloadov", webm: webmPath,
+               screenshot_path };
     }
     const segs = [...frameFiles.values()];
     for (const rec of segs) { try { fs.closeSync(rec.fd); } catch { /* */ } }

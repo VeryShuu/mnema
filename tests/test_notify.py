@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 from email.message import EmailMessage
 
 import pytest
@@ -9,7 +10,7 @@ from mnema.core.db import Base, set_engine_for_test
 from mnema.core import notify
 from mnema.core.notify import (NotifyService, build_job_failed_body,
                                job_failed_subject, parse_notify_events,
-                               should_notify)
+                               safe_screenshot_path, should_notify)
 
 
 @pytest.fixture()
@@ -25,8 +26,14 @@ def env_base(monkeypatch):
     monkeypatch.setenv("NOTIFY_EMAIL_TO", "ops@example.ru")
     monkeypatch.setenv("NOTIFY_EMAIL_ADMIN", "admin@example.ru")
     monkeypatch.setenv("ALERT_COOLDOWN_MIN", "60")
+    monkeypatch.setenv("DATA_DIR", "/tmp/mnema-test-data")
     monkeypatch.setenv("NOTIFY_EVENTS",
-                       "job_failed=email,session_relogin_due=email,protocol_ready=email")
+                       "job_failed=email,session_relogin_due=email,"
+                       "protocol_ready=email,awaiting_llm=email")
+
+
+def _walk(msg, content_type: str) -> list:
+    return [p for p in msg.walk() if p.get_content_type() == content_type]
 
 
 def test_parse_notify_events_default():
@@ -42,18 +49,19 @@ def test_should_notify_respects_events(monkeypatch, env_base):
 
 def test_build_body_has_required_fields():
     body = build_job_failed_body(
-        topic="Planerka", meeting_id="9814832357", job_id=7,
+        topic="Планёрка", meeting_id="9814832357", job_id=7,
         attempted_at=dt.datetime(2026, 9, 17, 10, 0, tzinfo=dt.timezone.utc),
         fail_reason="auth_session_missing", attempts=1,
         job_url="http://h/jobs/7")
-    for token in ("Planerka", "9814832357", "auth_session_missing",
-                  "http://h/jobs/7", "ID zadachi: 7"):
+    for token in ("Планёрка", "9814832357", "auth_session_missing",
+                  "http://h/jobs/7", "Задача: 7", "Причина отказа",
+                  "Рекомендуемое действие"):
         assert token in body
     assert "pwd" not in body.lower()
 
 
 def test_subject_format():
-    assert job_failed_subject("X") == "[Mnema] Ne udalos' podklyuchit'sya: X"
+    assert job_failed_subject("X") == "[Mnema] Не удалось подключиться: X"
 
 
 def test_enqueue_first_is_pending(env_base, session):
@@ -61,6 +69,47 @@ def test_enqueue_first_is_pending(env_base, session):
     n = ns.enqueue_job_failed(job_id=1, topic="T", meeting_id="111",
                               fail_reason="timeout", attempts=1)
     assert n.status == "pending"
+
+
+def test_enqueue_saves_data_json_and_screenshot(env_base, session, monkeypatch,
+                                                tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    shot_dir = tmp_path / "failure_screenshots"
+    shot_dir.mkdir()
+    shot = shot_dir / "job_5.png"
+    shot.write_bytes(b"\x89PNG fake")
+    ns = NotifyService(sender=lambda m: None)
+    n = ns.enqueue_job_failed(job_id=5, topic="T", meeting_id="111",
+                              fail_reason="timeout", attempts=1,
+                              screenshot_path=str(shot))
+    assert n.screenshot_path == str(shot.resolve())
+    data = json.loads(n.data_json)
+    assert data["job_id"] == 5 and data["fail_reason"] == "timeout"
+    assert data["meeting_id"] == "111"
+
+
+def test_screenshot_path_outside_root_rejected(env_base, session, monkeypatch,
+                                               tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    ns = NotifyService(sender=lambda m: None)
+    n = ns.enqueue_job_failed(job_id=6, topic="T", meeting_id="111",
+                              fail_reason="timeout", attempts=1,
+                              screenshot_path="/etc/passwd")
+    assert n.screenshot_path is None
+
+
+def test_safe_screenshot_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    root = tmp_path / "failure_screenshots"
+    root.mkdir()
+    ok = root / "job_1.png"
+    ok.write_bytes(b"x")
+    assert safe_screenshot_path(str(ok)) == str(ok.resolve())
+    assert safe_screenshot_path(str(tmp_path / "evil.png")) is None
+    assert safe_screenshot_path("/etc/passwd") is None
+    assert safe_screenshot_path(None) is None
+    # выход из корня через ..
+    assert safe_screenshot_path(str(root / ".." / ".." / "secret.png")) is None
 
 
 def test_duplicate_same_reason_within_cooldown_goes_to_digest(env_base, session):
@@ -100,14 +149,83 @@ def test_after_cooldown_new_pending(env_base, session, monkeypatch):
     assert b.status == "pending"
 
 
-def test_dispatch_sends_pending(env_base, session):
+def test_build_message_multipart_alternative(env_base, session):
+    ns = NotifyService(sender=lambda m: None)
+    n = ns.enqueue_job_failed(job_id=1, topic="T", meeting_id="111",
+                              fail_reason="timeout", attempts=1)
+    msg = ns.build_message(n)
+    assert msg.get_content_type() == "multipart/alternative"
+    assert _walk(msg, "text/plain") and _walk(msg, "text/html")
+    html = _walk(msg, "text/html")[0].get_content()
+    assert "Не удалось подключиться к совещанию" in html
+    assert "111" in html
+
+
+def test_build_message_job_failed_with_screenshot_related(env_base, session,
+                                                          monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    shot_dir = tmp_path / "failure_screenshots"
+    shot_dir.mkdir()
+    shot = shot_dir / "job_3.png"
+    shot.write_bytes(b"\x89PNG\r\n\x1a\n fake png bytes")
+    ns = NotifyService(sender=lambda m: None)
+    n = ns.enqueue_job_failed(job_id=3, topic="T", meeting_id="333",
+                              fail_reason="timeout", attempts=2,
+                              screenshot_path=str(shot))
+    msg = ns.build_message(n)
+    assert msg.get_content_subtype() == "related"
+    imgs = _walk(msg, "image/png")
+    assert len(imgs) == 1
+    assert imgs[0]["Content-ID"] == "<failure_screenshot>"
+    html = _walk(msg, "text/html")[0].get_content()
+    assert "cid:failure_screenshot" in html
+    assert "multipart/alternative" in [p.get_content_type() for p in msg.walk()]
+
+
+def test_build_message_missing_screenshot_falls_back(env_base, session,
+                                                     monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    ghost = tmp_path / "failure_screenshots" / "job_4.png"  # не создаём
+    ns = NotifyService(sender=lambda m: None)
+    n = ns.enqueue_job_failed(job_id=4, topic="T", meeting_id="444",
+                              fail_reason="timeout", attempts=1,
+                              screenshot_path=str(ghost))
+    assert n.screenshot_path  # путь сохранён
+    msg = ns.build_message(n)
+    assert msg.get_content_type() == "multipart/alternative"  # без related
+    assert not _walk(msg, "image/png")
+    html = _walk(msg, "text/html")[0].get_content()
+    assert "cid:failure_screenshot" not in html
+
+
+def test_build_message_legacy_row_without_data_json(env_base, session):
+    """Риск из плана: старая pending-строка без data_json не роняет dispatch."""
+    from mnema.core.models import Notification
+    with session() as s:
+        n = Notification(kind="job_failed", subject="[Mnema] Старое письмо",
+                         body="legacy plain body", data_json=None,
+                         to_addr="ops@example.ru", status="pending")
+        s.add(n)
+        s.commit()
+        n_id = n.id
+    ns = NotifyService(sender=lambda m: None)
+    sent: list[EmailMessage] = []
+    ns._sender = lambda m: sent.append(m)
+    assert ns.dispatch_pending() == 1
+    msg = sent[0]
+    assert msg.get_content_type() == "multipart/alternative"
+    assert "legacy plain body" in _walk(msg, "text/html")[0].get_content()
+
+
+def test_dispatch_renders_russian_html(env_base, session):
     sent: list[EmailMessage] = []
     ns = NotifyService(sender=lambda m: sent.append(m))
-    ns.enqueue_job_failed(job_id=1, topic="T", meeting_id="111",
+    ns.enqueue_job_failed(job_id=1, topic="Тема", meeting_id="111",
                           fail_reason="timeout", attempts=1)
     cnt = ns.dispatch_pending()
     assert cnt == 1
-    assert sent and "111" in sent[0].get_payload()
+    html = _walk(sent[0], "text/html")[0].get_content()
+    assert "Не удалось подключиться" in html and "111" in html
     from mnema.core.models import Notification
     with session() as s:
         assert s.query(Notification).filter_by(status="sent").count() == 1
@@ -134,13 +252,71 @@ def test_digest_collects_and_clears(env_base, session):
                               fail_reason="timeout", attempts=1)
     d = ns.build_digest()
     assert d is not None and d.status == "pending"
+    assert "Сводка событий" in d.subject
     from mnema.core.models import Notification
     with session() as s:
         assert s.query(Notification).filter_by(status="digest").count() == 0
 
 
+def test_digest_renders_russian_list(env_base, session):
+    ns = NotifyService(sender=lambda m: None)
+    for _ in range(2):
+        ns.enqueue_job_failed(job_id=1, topic="Т", meeting_id="111",
+                              fail_reason="timeout", attempts=1)
+    d = ns.build_digest()
+    msg = ns.build_message(d)
+    html = _walk(msg, "text/html")[0].get_content()
+    assert "Сводка событий Mnema" in html
+    text = _walk(msg, "text/plain")[0].get_content()
+    assert "Сводка событий Mnema" in text
+
+
+def test_render_escapes_html_injection(env_base, session):
+    ns = NotifyService(sender=lambda m: None)
+    n = ns.enqueue_job_failed(job_id=1, topic="<script>alert(1)</script>",
+                              meeting_id="111", fail_reason="timeout", attempts=1)
+    ns._sender = lambda m: None
+    msg = ns.build_message(n)
+    html = _walk(msg, "text/html")[0].get_content()
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_render_every_kind_has_russian_fields():
+    from mnema.core.email_render import render_email
+
+    class N:
+        def __init__(self, kind, subject, data, body="", screenshot_path=None):
+            self.kind, self.subject, self.body = kind, subject, body
+            self.data_json = json.dumps(data, ensure_ascii=False)
+            self.screenshot_path = screenshot_path
+
+    _, html, text = render_email(N("protocol_ready", "[Mnema] Протокол готов: В",
+                                   {"topic": "В", "job_url": "http://h/jobs/1",
+                                    "audio_url": "http://h/a"}))
+    assert "Протокол готов" in html and "Протокол" in html
+    assert "Протокол готов" in text
+    _, html, text = render_email(N("awaiting_llm", "[Mnema] Стенограмма: В",
+                                   {"topic": "В", "job_url": "http://h/jobs/2"}))
+    assert "LLM" in html and "Стенограмма" in html and "Стенограмма" in text
+    _, html, _ = render_email(N("alert", "[Mnema] reCAPTCHA",
+                                {"message": "Нужна ручная капча"},
+                                body="Нужна ручная капча"))
+    assert "Внимание" in html and "капча" in html
+    _, html, _ = render_email(N("job_export_failed", "[Mnema] Не выгружено: В",
+                                {"job_id": 9, "topic": "В",
+                                 "message": "Шара недоступна"}))
+    assert "Шара недоступна" in html
+    # неизвестный kind -> фолбэк по body, без падения
+    _, html, text = render_email(N("weird_kind", "[Mnema] Что-то", {},
+                                   body="текст тела"))
+    assert "текст тела" in html and "Что-то" in text
+
+
 def test_no_pwd_anywhere_in_email(env_base, session):
     ns = NotifyService(sender=lambda m: None)
-    n = ns.enqueue_job_failed(job_id=1, topic="Sov secret",
+    n = ns.enqueue_job_failed(job_id=1, topic="Сов secret",
                               meeting_id="333", fail_reason="not_started", attempts=2)
     assert "pwd" not in n.subject and "pwd" not in n.body.lower()
+    msg = ns.build_message(n)
+    assert "pwd" not in msg.as_string().lower()

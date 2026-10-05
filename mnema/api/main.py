@@ -24,7 +24,7 @@ from ..core.jobs_api import (cancel_job, create_job, delete_job, rename_job,
 from ..core.models import (AudioFile, Job, Notification, PresetLink, Protocol,
                            ReviewRequest, Segment, SessionEvent, SessionHealth,
                            Upload, VoiceProfile)
-from ..core.notify import NotifyService
+from ..core.notify import NotifyService, safe_screenshot_path
 from ..core.pipeline import review_requests_resolved, transition
 from ..core.presets_api import add_preset, delete_preset, get_preset_join, list_presets
 from ..core.scheduler import import_ics, start_default_jobs
@@ -198,6 +198,7 @@ class StatusIn(BaseModel):
     fail_reason: str | None = None
     error: str | None = None
     attempts: int | None = None
+    screenshot_path: str | None = None
 
 
 @app.post("/api/jobs/{jid}/events")
@@ -221,7 +222,8 @@ def api_job_status(jid: int, body: StatusIn):
             s.commit()
     try:
         transition(jid, body.status, fail_reason=body.fail_reason, error=body.error,
-                   event=f"status:{body.status}")
+                   event=f"status:{body.status}",
+                   screenshot_path=safe_screenshot_path(body.screenshot_path))
     except ValueError as e:
         raise HTTPException(409, str(e))
     return {"ok": True, "status": body.status}
@@ -451,7 +453,8 @@ def api_alert(body: AlertIn):
     """Vnutrenniy signal ot web-bot (napr. reCAPTCHA, §12) -> e-mail."""
     n = NotifyService().enqueue("alert",
                                 f"[Mnema] {body.subject}", body.body,
-                                dedup_key=body.dedup_key or "alert")
+                                dedup_key=body.dedup_key or "alert",
+                                data={"message": body.body})
     NotifyService().dispatch_pending(limit=5)
     return {"queued": n.id if n else None}
 
