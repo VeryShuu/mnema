@@ -35,7 +35,7 @@ function playAt(h, m, s) {
   <h3>Стенограмма <span class="muted" style="font-weight:400">(нажмите на время, чтобы перемотать и прослушать фрагмент)</span></h3>
   {% for s in segments %}
   <p><a href="#" onclick="playAt({{ (s.t_start // 3600)|int }},{{ ((s.t_start % 3600) // 60)|int }},{{ (s.t_start % 60)|int }});return false;">{{ '%02d:%02d:%02d'|format((s.t_start//3600)|int, (s.t_start%3600//60)|int, (s.t_start%60)|int) }}</a>
-  <b>{{ s.speaker_name or ('Голос ' ~ (s.speaker_id or '?')) }}</b>: {{ s.text }}
+  <b>{{ s.display_name }}</b>: {{ s.text }}
   {% if s.needs_review %}{{ badge('needs_review') }}{% endif %}</p>
   {% endfor %}
 </div>

@@ -677,10 +677,10 @@ def _write_steno(job_id: int, p: dict) -> Path:
         ).order_by(Segment.t_start)).all()
         job = s.get(Job, job_id)
     lines = [f"# Протокол (транскрипт): {job.topic}", ""]
-    for seg in segs:
-        name = seg.speaker_name or f"Голос {seg.speaker_id}"
+    from ..core.coalesce import coalesce_segments, speaker_display
+    for seg in coalesce_segments(segs):
         tag = " (trebuetsya utochnenie)" if seg.needs_review else ""
-        lines.append(f"{_fmt(seg.t_start)} {name}{tag}: {seg.text}")
+        lines.append(f"{_fmt(seg.t_start)} {speaker_display(seg)}{tag}: {seg.text}")
     p["steno"].write_text("\n".join(lines), encoding="utf-8")
     with get_session() as s:
         s.add(SessionEvent(job_id=job_id, event="steno_done",
@@ -815,8 +815,8 @@ def _route_after_structure(job_id: int) -> None:
 
 
 def _transcript_lines(segs: list) -> str:
+    from ..core.coalesce import coalesce_segments, speaker_display
     out = []
-    for seg in segs:
-        name = seg.speaker_name or f"Голос {seg.speaker_id}"
-        out.append(f"{_fmt(seg.t_start)} {name}: {seg.text}")
+    for seg in coalesce_segments(segs):
+        out.append(f"{_fmt(seg.t_start)} {speaker_display(seg)}: {seg.text}")
     return "\n".join(out)

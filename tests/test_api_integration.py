@@ -983,3 +983,47 @@ def test_protocol_detail_page_bad_source_ts_not_a_link(client):
 
 def test_protocol_download_missing_still_404(client):
     assert client.get("/api/protocols/999999?format=md").status_code == 404
+
+
+# ---- koalescencia: bez pustyh reperok i povtorov odnogo golosa -----------
+
+def _make_messy_protocol(client, meeting_id):
+    """Protocol s artefaktami: pustye segmenty + podryad idushchie 'Golos 2'."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Protocol, Segment
+    jid = client.post("/api/jobs", json={"meeting_id": meeting_id,
+                                         "topic": "Letuchka"}).json()["id"]
+    _to_status(client, jid, ["launching", "recording", "processing", "done"])
+    with get_session() as s:
+        s.add(Segment(job_id=jid, speaker_id="SPEAKER_01",
+                      t_start=0.0, t_end=10.0, text="slovo"))
+        s.add(Segment(job_id=jid, speaker_id="SPEAKER_01", t_start=10.0, t_end=20.0,
+                      text=""))  # ASR ne rasponal — pustaya reperika
+        s.add(Segment(job_id=jid, speaker_id="SPEAKER_01", t_start=20.0, t_end=30.0,
+                      text="eshcho slovo"))
+        s.add(Segment(job_id=jid, speaker_id="SPEAKER_02", t_start=30.0, t_end=40.0,
+                      text="replika drugogo"))
+        proto = Protocol(job_id=jid, json_data={"topic": "Letuchka"})
+        s.add(proto)
+        s.flush()
+        pid = proto.id
+        md_path = Path(tempfile.mkdtemp()) / "protocol.md"
+        proto.md_path = str(md_path)
+        s.commit()
+    return jid, pid
+
+
+def test_protocol_md_drops_empty_and_merges_same_speaker(client):
+    _jid, pid = _make_messy_protocol(client, "860860860")
+    text = client.get(f"/api/protocols/{pid}?format=md").text
+    assert text.count("Голос SPEAKER_01") == 1  # bylo 2 nenulye + 1 pustaya
+    assert "slovo eshcho slovo" in text         # skleena odna reperika
+    assert "replika drugogo" in text
+
+
+def test_protocol_page_drops_empty_and_merges_same_speaker(client):
+    _jid, pid = _make_messy_protocol(client, "870870870")
+    r = client.get(f"/protocols/{pid}")
+    assert r.status_code == 200
+    assert r.text.count("Голос SPEAKER_01") == 1
+    assert "slovo eshcho slovo" in r.text

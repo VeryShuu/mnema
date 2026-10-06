@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .coalesce import coalesce_segments, speaker_display
+
 
 def _fmt(sec: float) -> str:
     sec = int(sec or 0)
@@ -13,6 +15,7 @@ def _fmt(sec: float) -> str:
 
 
 def render_markdown(job, data: dict, segments: list) -> str:
+    segments = coalesce_segments(segments)
     lines: list[str] = []
     topic = (data.get("topic") or job.topic)
     lines.append(f"# Протокол: {topic}")
@@ -52,7 +55,7 @@ def render_markdown(job, data: dict, segments: list) -> str:
     lines.append("## Стенограмма")
     lines.append("")
     for seg in segments:
-        name = seg.speaker_name or f"Голос {seg.speaker_id}"
+        name = speaker_display(seg)
         flag = " [треб.уточнения]" if seg.needs_review else ""
         lines.append(f"`{_fmt(seg.t_start)}` **{name}**{flag}: {seg.text}")
     lines.append("")
@@ -61,6 +64,7 @@ def render_markdown(job, data: dict, segments: list) -> str:
 
 def write_docx(job, data: dict, segments: list, path: Path) -> None:
     from docx import Document
+    segments = coalesce_segments(segments)
     template = Path(__file__).resolve().parents[2] / "templates" / "protocol.docx"
     doc = Document(str(template)) if template.exists() else Document()
     topic = data.get("topic") or job.topic
@@ -88,8 +92,7 @@ def write_docx(job, data: dict, segments: list, path: Path) -> None:
             row[3].text = ai.get("source_ts") or ""
     doc.add_heading("Стенограмма", level=1)
     for seg in segments:
-        name = seg.speaker_name or f"Голос {seg.speaker_id}"
-        doc.add_paragraph(f"{_fmt(seg.t_start)} {name}: {seg.text}")
+        doc.add_paragraph(f"{_fmt(seg.t_start)} {speaker_display(seg)}: {seg.text}")
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(path))
 
