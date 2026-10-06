@@ -53,7 +53,7 @@ def _check_free_space(need: int | None) -> None:
         return
     free = _free_bytes(Path(os.environ.get("DATA_DIR", "/data")))
     if free is not None and free < need:
-        raise ValueError("malo svobodnogo mesta na diske dlya zagruzki")
+        raise ValueError("На диске мало свободного места для загрузки")
 
 
 def sanitize_filename(filename: str | None) -> str:
@@ -77,16 +77,16 @@ def create_upload(*, filename: str, bytes_total: int | None = None,
 
     Vozvraschaet (job, upload). Oshibki — ValueError (400) / OverflowError (413)."""
     if job_id is None and not (topic or "").strip():
-        raise ValueError("ukazhite temu vstrechi")
+        raise ValueError("Укажите тему встречи")
     ext = _media_ext(filename)
     if ext is None:
-        raise ValueError("fayl ne podderzhivaetsya; ozhidaetsya audio/video: "
+        raise ValueError("Файл не поддерживается; ожидается аудио/видео: "
                          + " ".join(sorted(MEDIA_EXTENSIONS)))
     if bytes_total is not None and bytes_total <= 0:
-        raise ValueError("pustoy fayl")
+        raise ValueError("Пустой файл")
     cap = max_upload_bytes()
     if bytes_total is not None and bytes_total > cap:
-        raise OverflowError(f"fayl bolshe limita {cap // 1024 ** 3} GB (UPLOAD_MAX_GB)")
+        raise OverflowError(f"Файл больше лимита {cap // 1024 ** 3} ГБ (UPLOAD_MAX_GB)")
     fname = sanitize_filename(filename)
     with get_session() as s:
         if job_id is not None:
@@ -94,14 +94,14 @@ def create_upload(*, filename: str, bytes_total: int | None = None,
             if job is None:
                 raise KeyError(job_id)
             if job.source != "upload":
-                raise ValueError("zagruzka dopustima tol'ko dlya vstrech tipa arhiv")
+                raise ValueError("Загрузка допустима только для встреч типа архив")
             if job.status not in ("uploading", "failed"):
-                raise ValueError(f"zagruzka niedostupna pri statuse {job.status}")
+                raise ValueError(f"Загрузка недоступна при статусе {job.status}")
             active = s.scalars(select(Upload).where(
                 Upload.job_id == job.id,
                 Upload.status.in_(("pending", "uploading")))).first()
             if active is not None:
-                raise ValueError("dlya etoy vstrechi uzhe idyot zagruzka")
+                raise ValueError("Для этой встречи уже идёт загрузка")
         else:
             if meeting_date is not None and meeting_date.tzinfo is None:
                 from .tz import local_to_utc
@@ -115,7 +115,7 @@ def create_upload(*, filename: str, bytes_total: int | None = None,
             s.add(job)
             s.flush()
             s.add(SessionEvent(job_id=job.id, event="created",
-                               detail=f"arhiv-zagruzka, fajl={fname}"))
+                               detail=f"архив-загрузка, файл={fname}"))
         uid = uuid.uuid4().hex
         tmp_path = _uploads_dir() / f"{uid}{ext}"
         tmp_path.touch()
@@ -135,23 +135,23 @@ def append_chunk(upload_id: int, data: bytes, offset: int | None = None) -> Uplo
     sovpadat' s poluchennym; lyuboe raskhozhdenie = oshibka, chtoby ne isportit'
     fayl propuskom ili dublirovaniem baytov."""
     if not data:
-        raise ValueError("pustoy chunk")
+        raise ValueError("Пустые данные фрагмента")
     with get_session() as s:
         up = s.get(Upload, upload_id)
         if up is None:
             raise KeyError(upload_id)
         if up.status not in ("pending", "uploading"):
-            raise ValueError(f"zagruzka v statuse {up.status} niedopustima")
+            raise ValueError(f"Загрузка в статусе {up.status} недопустима")
         cur = up.bytes_received
         eff = cur if offset is None else offset
         if eff != cur:
-            raise ValueError(f"nesovpadenie offset: zapyt {eff}, polucheno {cur}")
+            raise ValueError(f"Несовпадение offset: запрошен {eff}, получено {cur}")
         cap = max_upload_bytes()
         new_size = cur + len(data)
         if new_size > cap:
-            raise OverflowError(f"prevyshen limit {cap // 1024 ** 3} GB (UPLOAD_MAX_GB)")
+            raise OverflowError(f"Превышен лимит {cap // 1024 ** 3} ГБ (UPLOAD_MAX_GB)")
         if up.bytes_total is not None and new_size > up.bytes_total:
-            raise ValueError("dannyh bolshe, chem razmer fayla")
+            raise ValueError("Данных больше, чем размер файла")
         path = Path(up.path)
         with open(path, "r+b" if path.exists() else "wb") as f:
             f.seek(cur)
@@ -188,27 +188,27 @@ def finalize(upload_id: int) -> Job:
         path = Path(up.path)
         expected = up.bytes_total
     if state not in ("pending", "uploading"):
-        raise ValueError(f"zagruzka v statuse {state} uzhe zavershena")
+        raise ValueError(f"Загрузка в статусе {state} уже завершена")
     if not path.exists() or path.stat().st_size == 0:
         with get_session() as s:
             up = s.get(Upload, upload_id)
             up.status = "failed"
             up.error = "файл загрузки отсутствует"
             s.commit()
-        raise ValueError("fayl zagruzki otsutstvuet")
+        raise ValueError("Файл загрузки отсутствует")
     if expected is not None and path.stat().st_size < expected:
-        raise ValueError("fayl zagruzhen ne polnost'yu")
+        raise ValueError("Файл загружен не полностью")
     probe = probe_media(path)  # dolgo; bez sessii BDD
     with get_session() as s:
         up = s.get(Upload, upload_id)
         # povtornaya proverka: paralnaya otkhmena/finalizatsiya mogla izmenit' sostoyanie
         if up.status not in ("pending", "uploading"):
-            raise ValueError(f"zagruzka v statuse {up.status} uzhe zavershena")
+            raise ValueError(f"Загрузка в статусе {up.status} уже завершена")
         if not probe["ok"]:
             up.status = "failed"
             up.error = probe["error"]
             s.commit()
-            raise ValueError(probe["error"] or "ne udalos' provesti validatsiyu")
+            raise ValueError(probe["error"] or "не удалось провести валидацию")
         duration = probe["duration_s"] or 0.0
         ext = path.suffix.lower()
         # perenos v kanonicheskiy katalog joba

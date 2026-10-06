@@ -79,22 +79,23 @@ def probe_media(path: Path) -> dict:
     Vozvraschaet {"ok": bool, "duration_s": float, "error": str|None};
     ok=False esli fayl neprochitaem ili audio-stream otsutstvuet."""
     if shutil.which("ffprobe") is None:
-        return {"ok": False, "duration_s": 0.0, "error": "ffprobe neta v sisteme"}
+        return {"ok": False, "duration_s": 0.0, "error": "ffprobe отсутствует в системе"}
     try:
         r = run(["ffprobe", "-v", "quiet", "-print_format", "json",
                  "-show_format", "-show_streams", str(path)])
     except FileNotFoundError:
-        return {"ok": False, "duration_s": 0.0, "error": "ffprobe ne zapustilsya"}
+        return {"ok": False, "duration_s": 0.0, "error": "ffprobe не запустился"}
     if r.returncode != 0:
-        return {"ok": False, "duration_s": 0.0, "error": "fayl povrezhden ili format ne podderzhivaetsya"}
+        return {"ok": False, "duration_s": 0.0,
+                "error": "файл повреждён или формат не поддерживается"}
     try:
         data = json.loads(r.stdout)
     except (ValueError, TypeError):
-        return {"ok": False, "duration_s": 0.0, "error": "ffprobe vernul necoryektnyy vyvod"}
+        return {"ok": False, "duration_s": 0.0, "error": "ffprobe вернул некорректный вывод"}
     streams = data.get("streams") or []
     audio = [s for s in streams if s.get("codec_type") == "audio"]
     if not audio:
-        return {"ok": False, "duration_s": 0.0, "error": "v fayle nets audiodorozhki"}
+        return {"ok": False, "duration_s": 0.0, "error": "в файле нет аудиодорожки"}
     dur = 0.0
     try:
         dur = float(data.get("format", {}).get("duration", 0) or 0)
@@ -109,7 +110,7 @@ def probe_media(path: Path) -> dict:
             except (ValueError, TypeError):
                 continue
     if dur <= 0:
-        return {"ok": False, "duration_s": 0.0, "error": "ne udalos' opredit' dlitelnost'"}
+        return {"ok": False, "duration_s": 0.0, "error": "не удалось определить длительность"}
     return {"ok": True, "duration_s": dur, "error": None}
 
 

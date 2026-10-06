@@ -367,7 +367,7 @@ def api_protocol(pid: int, format: str = "md"):
             return p.json_data or {}
         path = p.md_path if format == "md" else p.docx_path
         if not path or not Path(path).exists():
-            raise HTTPException(404, "fayl protokola otsutstvuet")
+            raise HTTPException(404, "Файл протокола отсутствует")
         media = ("text/markdown" if format == "md" else
                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         return FileResponse(path, media_type=media, filename=Path(path).name)
@@ -436,7 +436,7 @@ def _serve_audio(job_id: int, fmt: str, request: Request | None):
         a = s.scalars(select(AudioFile).where(
             AudioFile.job_id == job_id, AudioFile.kind == fmt)).first()
     if a is None or not Path(a.path).exists():
-        raise HTTPException(404, f"audio {fmt} otsutstvuet")
+        raise HTTPException(404, f"аудио {fmt} отсутствует")
     path = Path(a.path)
     mime = {"mp3": "audio/mpeg", "wav": "audio/wav", "webm": "audio/webm"}[fmt]
     return _serve_path(path, mime, request)
@@ -557,7 +557,7 @@ def api_exclude_review_segment(rid: int, seg_id: int):
         seg.speaker_source = "unresolved"
         seg.needs_review = True
         s.add(SessionEvent(job_id=r.job_id, event="segment_detached",
-                           detail=f"seg {seg.id} -> {new_label}"))
+                           detail=f"фрагмент {seg.id} -> {new_label}"))
         left = s.scalars(select(Segment).where(
             Segment.job_id == r.job_id,
             Segment.speaker_id == r.cluster_label,
@@ -599,7 +599,7 @@ def api_exclude_segment_from_analysis(rid: int, seg_id: int):
         seg.needs_review = False
         seg.speaker_source = "excluded"
         s.add(SessionEvent(job_id=r.job_id, event="segment_excluded",
-                           detail=f"seg {seg.id} (klaster {r.cluster_label})"))
+                           detail=f"фрагмент {seg.id} (кластер {r.cluster_label})"))
         remaining = s.scalars(select(Segment).where(
             Segment.job_id == r.job_id,
             Segment.speaker_id == r.cluster_label,
@@ -753,7 +753,7 @@ def api_profile_sample_file(vid: int, idx: int, request: Request = None):
     """Proslushivat' / skalchat' odin etalon (Range podderzhivaetsya)."""
     paths = _profile_sample_paths(vid)
     if idx < 0 or idx >= len(paths) or not Path(paths[idx]).is_file():
-        raise HTTPException(404, "etalon otsutstvuet")
+        raise HTTPException(404, "Эталон отсутствует")
     path = Path(paths[idx])
     return _serve_path(path, SAMPLE_MIME.get(path.suffix.lower(),
                                              "application/octet-stream"), request)
@@ -769,7 +769,7 @@ def api_delete_profile_sample(vid: int, idx: int):
             raise HTTPException(404)
         paths = list(v.sample_paths or [])
         if idx < 0 or idx >= len(paths):
-            raise HTTPException(404, "etalon otsutstvuet")
+            raise HTTPException(404, "Эталон отсутствует")
         removed = paths.pop(idx)
         v.sample_paths = paths
         s.commit()
@@ -985,7 +985,7 @@ def api_job_source(jid: int, request: Request = None):
             Upload.job_id == jid, Upload.status == "complete")
             .order_by(Upload.id.desc())).first()
     if up is None or not Path(up.path).exists():
-        raise HTTPException(404, "ishodnyy fayl otsutstvuet")
+        raise HTTPException(404, "Исходный файл отсутствует")
     path = Path(up.path)
     mime = ORIG_MIME.get(path.suffix.lower(), "application/octet-stream")
     return _serve_path(path, mime, request)

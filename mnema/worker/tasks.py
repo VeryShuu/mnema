@@ -76,7 +76,7 @@ def run_prep(job_id: int) -> list[dict]:
                           t_start=seg["t_start"], t_end=seg["t_end"], text="",
                           speaker_source="unresolved"))
         s.add(SessionEvent(job_id=job_id, event="vad_done",
-                           detail=f"{len(raw_segs)} segm"))
+                           detail=f"сегментов: {len(raw_segs)}"))
         s.commit()
     from ..core import export
     export.export_recording(job_id)  # zerkalo samba: vnutri try/except, ne lonit' konveyer
@@ -145,7 +145,7 @@ def run_speaker_id(job_id: int) -> None:
         from ..core.diarize import diarize_with_turns
         with get_session() as s:
             s.add(SessionEvent(job_id=job_id, event="diar_start",
-                               detail=f"{len(segs)} segm"))
+                               detail=f"сегментов: {len(segs)}"))
             s.commit()
         try:
             labels, turns, ratios = diarize_with_turns(wav, vad)
@@ -170,7 +170,7 @@ def run_speaker_id(job_id: int) -> None:
             if job is not None:
                 job.diar_turns = turns
             s.add(SessionEvent(job_id=job_id, event="diar_done",
-                               detail=f"{len(set(labels))} klaster"))
+                               detail=f"кластеров: {len(set(labels))}"))
             s.commit()
         _run_speaker(job_id)
     except Exception as e:  # noqa: BLE001
@@ -412,7 +412,7 @@ def run_voice_enroll(job_id: int, cluster_label: str) -> None:
         s.commit()
     with get_session() as s:
         s.add(SessionEvent(job_id=job_id, event="voice_enroll",
-                           detail=f"klaster {cluster_label} -> profil {profile_id}"))
+                           detail=f"кластер {cluster_label} -> профиль {profile_id}"))
         s.commit()
 
 
@@ -781,7 +781,7 @@ def _build_protocol(job_id: int) -> None:
     transcript = _transcript_lines(segs)
     with get_session() as s:
         s.add(SessionEvent(job_id=job_id, event="llm_start",
-                           detail=f"{len(segs)} segm"))
+                           detail=f"сегментов: {len(segs)}"))
         s.commit()
     data = structure_transcript(transcript, topic=job.topic, roster=roster)
     archive_dir = Path(os.environ.get("ARCHIVE_DIR", "/data/archive"))

@@ -20,7 +20,7 @@ def create_job(*, meeting_link: str | None = None, meeting_id: str | None = None
                created_by: str = "api") -> Job:
     src = meeting_link or (meeting_id or "")
     if not src:
-        raise ValueError("nuzhen meeting_link ili meeting_id")
+        raise ValueError("Нужен meeting_link или meeting_id")
     mid, extracted_pwd = extract_meeting_id(src)
     pwd = pwd or extracted_pwd
     join_link = normalize_join_link(meeting_link) if meeting_link else None
@@ -31,7 +31,7 @@ def create_job(*, meeting_link: str | None = None, meeting_id: str | None = None
         from .tz import local_to_utc
         end_at = local_to_utc(end_at)
     if end_at is not None and start_at is not None and end_at <= start_at:
-        raise ValueError("end_at dolzhen byt' pozhe start_at")
+        raise ValueError("Время окончания должно быть позже начала")
     immediate = start_at is None
     if immediate:
         start_at = dt.datetime.now(dt.timezone.utc)
@@ -109,7 +109,7 @@ def update_job(job_id: int, *, meeting_link: str = "", pwd: str = "",
     """
     topic = (topic or "").strip()[:512]
     if not topic:
-        raise ValueError("Nazvanie ne mozhet byt' pustym")
+        raise ValueError("Название не может быть пустым")
     meeting_link = (meeting_link or "").strip()
     pwd = (pwd or "").strip()
     if start_at is not None and start_at.tzinfo is None:
@@ -119,14 +119,14 @@ def update_job(job_id: int, *, meeting_link: str = "", pwd: str = "",
         from .tz import local_to_utc
         end_at = local_to_utc(end_at)
     if end_at is not None and start_at is not None and end_at <= start_at:
-        raise ValueError("Vremya okonchaniya dolzhno byt' pozhe nachala")
+        raise ValueError("Время окончания должно быть позже начала")
     with get_session() as s:
         job = s.get(Job, job_id)
         if job is None:
             raise KeyError(job_id)
         if job.status != "scheduled":
             raise ValueError(
-                "Menyat' parametry mozhno tol'ko do nachala vstrechi")
+                "Менять параметры можно только до начала встречи")
         job.topic = topic
         extracted_pwd = None
         if meeting_link:

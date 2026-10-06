@@ -39,7 +39,7 @@ def transition(job_id: int, new_status: str, *, error: str | None = None,
             raise KeyError(job_id)
         cur = job.status
         if new_status not in ALLOWED_TRANSITIONS.get(cur, set()):
-            raise ValueError(f"nepustimaya perekhod statusa: {cur} -> {new_status}")
+            raise ValueError(f"Недопустимый переход статуса: {cur} -> {new_status}")
         job.status = new_status
         if error:
             job.error = error

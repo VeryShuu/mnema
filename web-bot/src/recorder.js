@@ -200,9 +200,9 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
       if (gotAny) state.lastChunksTs = Date.now();
       state.liveTracks = tracks;
       if (tracks > 0 && (flushTimer.counter = (flushTimer.counter || 0) + 1) % 6 === 0)
-        onEvent(EVENT.TRACK_ADDED, `live_tracks=${tracks}`);
+        onEvent(EVENT.TRACK_ADDED, `активных дорожек: ${tracks}`);
       if (gotAny && (flushTimer.saved = (flushTimer.saved || 0) + 1) % 12 === 0)
-        onEvent(EVENT.CHUNKS_SAVED, `saved=${state.chunksSaved} bait`);
+        onEvent(EVENT.CHUNKS_SAVED, `сохранено байт: ${state.chunksSaved}`);
     } catch (e) {
       onEvent(EVENT.ERROR, `flush: ${e.message}`);
     }
@@ -243,7 +243,7 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
     try {
       end = await waitForEnd(page, cfg, state, onEvent);
     } catch (e) {
-      onEvent(EVENT.ERROR, `nablyudenie prervalos': ${e.message}`);
+      onEvent(EVENT.ERROR, `наблюдение прервалось: ${e.message}`);
       // stranitsa/browser zakhrylis' v hoze zapisi — sohranyaem nakoopolnuyu zapis'
       end = { reason: "page_closed" };
     }
@@ -270,7 +270,7 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
     if (end.reason === "reload_exhausted") {
       const screenshot_path = await captureFailureShot(page, jobId, cfg);
       return { ok: false, fail_reason: "page_crash",
-               error: "stranitsa utochen posle vseh reloadov", webm: webmPath,
+               error: "страница умерла после всех перезагрузок", webm: webmPath,
                screenshot_path };
     }
     const segs = [...frameFiles.values()];
@@ -305,7 +305,7 @@ async function joinMeeting(page, cfg, state, onEvent, jobId) {
   let joinUrl = process.env.MNEMA_JOIN_URL; // dlya testov: lokalnaya fixtura
   if (!joinUrl) {
     const meta = await fetchJobMeta(jobId);
-    if (!meta) return { ok: false, reason: "timeout", error: "net meta job" };
+    if (!meta) return { ok: false, reason: "timeout", error: "нет меты встречи" };
     if (meta.end_at) {
       // naive-ISO iz SQLite bez offseta vsegda UTC: Date.parse bez Z prochyotal
       // by kak lokal'noe vremya
@@ -315,7 +315,7 @@ async function joinMeeting(page, cfg, state, onEvent, jobId) {
     }
     joinUrl = joinUrlFromMeta(cfg, meta);
   }
-  onEvent(EVENT.NAVIGATING, "to join url");
+  onEvent(EVENT.NAVIGATING, "переход по ссылке входа");
 
   let navigated = false;
   while (Date.now() < deadlineMs && !state.stopRequested) {
@@ -334,57 +334,57 @@ async function joinMeeting(page, cfg, state, onEvent, jobId) {
     if (verdict === "bot_wall") {
       onEvent(EVENT.BOT_WALL, "Automated bots aren't allowed");
       return { ok: false, reason: "zoom_requires_rtms",
-               error: "anty-bot-stena (RTMS-only) na storone hosta" };
+               error: "анти-бот-стена (только через приложение Zoom) на стороне ведущего" };
     }
     if (verdict === "login_required") {
-      onEvent(EVENT.LOGIN_REQUIRED, "redirect Sign in");
+      onEvent(EVENT.LOGIN_REQUIRED, "редирект на Sign in");
       return { ok: false, reason: "auth_session_missing",
-               error: "zoom-sessiya v profile nie zhivaya" };
+               error: "сессия Zoom в профиле не живая" };
     }
     if (verdict === "waiting_room") {
-      onEvent(EVENT.WAITING_ROOM, "waiting for host");
+      onEvent(EVENT.WAITING_ROOM, "ожидание ведущего");
       // host vypuskaet Mnema vuchnuyu; zhdём do deadline
       if (await waitForLeaveButton(page, deadlineMs, onEvent)) {
-        onEvent(EVENT.JOINED, "iz waiting room");
+        onEvent(EVENT.JOINED, "из комнаты ожидания");
         return { ok: true };
       }
       return { ok: false, reason: "waiting_room_stuck",
-               error: "host ne vypustil iz waiting room" };
+               error: "ведущий не выпустил из комнаты ожидания" };
     }
     if (verdict === "meeting_ended") {
-      return { ok: false, reason: "not_started", error: "vstrecha uze zasvershena" };
+      return { ok: false, reason: "not_started", error: "встреча уже завершилась" };
     }
     if (verdict === "prejoin") {
-      onEvent(EVENT.PREJOIN, "imya + Join");
+      onEvent(EVENT.PREJOIN, "имя + Join");
       await fillNameAndJoin(page, cfg, onEvent);
       // reCAPTCHA: reshaet tol'ko chelovek (§12). Zhdём vruchnuyu prokhod
       // cherez noVNC (MAX CAPTCHA_WAIT_MIN), bez avtomatiki.
       if (await waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent, state.vnc)) {
-        onEvent(EVENT.JOINED, "s pred-join");
+        onEvent(EVENT.JOINED, "с пред-join экрана");
         return { ok: true };
       }
       continue; // eshche raz proitiremovat i popytats'
     }
     if (verdict === "joined") {
-      onEvent(EVENT.JOINED, "uže v zone");
+      onEvent(EVENT.JOINED, "уже в зоне");
       return { ok: true };
     }
     // pending: vozmozhno my uje v zale, no tuslyar skryt — budit UI i
     // perklassificiryuem; esli 1.5 min bez izmeneniy — odin reload dlya strahovki
     if (await classifyJoined(page, onEvent)) {
-      onEvent(EVENT.JOINED, "v zone posle razbuzhdeniya tuslyara");
+      onEvent(EVENT.JOINED, "в зоне после пробуждения тулбара");
       return { ok: true };
     }
     if (Date.now() - state.lastNavTs > 90000) {
-      onEvent(EVENT.RELOAD, "stalyy pending - reload");
+      onEvent(EVENT.RELOAD, "зависший pending — перезагрузка");
       navigated = false;
       state.lastNavTs = Date.now();
     }
   }
   const domHint = await dumpPageSummary(page);
   return { ok: false, reason: state.stopRequested ? "cancelled" : "not_started",
-           error: (state.stopRequested ? "ostanovleno vruchnuyu"
-                    : "deadline vhoda istёk") + (domHint ? ` | DOM: ${domHint}` : "") };
+            error: (state.stopRequested ? "остановлено вручную"
+                     : "дедлайн входа истёк") + (domHint ? ` | DOM: ${domHint}` : "") };
 }
 
 function joinUrlFromMeta(cfg, meta) {
@@ -505,7 +505,7 @@ async function wakeUi(page, onEvent = () => {}) {
     await page.mouse.move(cx, cy + 40, { steps: 8 });
     await page.mouse.move(cx, vp.height - 60, { steps: 12 }); // k niznei paneli
     await page.waitForTimeout(700);
-    onEvent("wake_ui", "razbudil tuslyar dvizheniem myshi");
+    onEvent("wake_ui", "разбудил тулбар движением мыши");
     return true;
   } catch (e) {
     onEvent(EVENT.ERROR, `wake_ui: ${e.message}`);
@@ -567,7 +567,7 @@ async function ensureAudioRoute(page, onEvent) {
   try {
     if (await clickAnyFrame(page,
       /join( with)?( computer)? audio|войти с компьютер|add audio|добавить аудио/i, 4000)) {
-      onEvent("audio_route", "podklyuchil audio marshrut po banneru");
+      onEvent("audio_route", "подключил аудиомаршрут по баннеру");
       await page.waitForTimeout(2000);
       return true;
     }
@@ -594,7 +594,7 @@ async function fillNameAndJoin(page, cfg, onEvent) {
       onEvent(EVENT.PREJOIN, "clicked 'Join'");
       await page.waitForTimeout(3000);
     } else {
-      onEvent(EVENT.ERROR, "knopka Join ne nasha/perekrysta — zhduem VNC");
+      onEvent(EVENT.ERROR, "кнопка Join не найдена/перкрыта — ждём VNC");
     }
     // vybor audiomarshruta (esli wyskakhyvaet okno)
     if (await clickAnyFrame(page, /join( with)?( computer)? audio|войти с компьютер/i, 8000)) {
@@ -687,27 +687,27 @@ async function waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent, vnc = null)
         if (vnc) {
           const portHint = String(publicVncPort(cfg, vnc.slot));
           onEvent("captcha",
-            `reCAPTCHA na Join — nuzhen vruchnuyu prokhod cherez noVNC :${portHint}`);
+            `reCAPTCHA на Join — нужен ручной проход через noVNC :${portHint}`);
           if (!captchaAlerted) {
             captchaAlerted = true;
-            alertOperator("reCAPTCHA pri vhode v vstrechu",
-              `Otvorite noVNC :${portHint} (Connect) i proidite kapchu v okne Zoom. ` +
-              `Avtomatizaciya kapchi zapreshchena (§12).`);
+            alertOperator("reCAPTCHA при входе в встречу",
+              `Откройте noVNC :${portHint} (Connect) и пройдите капчу в окне Zoom. ` +
+              `Автоматизация капчи запрещена (§12).`);
           }
         } else {
           // Slotov net: vstrecha pishetsya headless, okna s kapchoy NIгде — na
           // setup-ekran (:8080) ee NET. Vslepu otpravlyat' operatora туда —
           // zhestoko srezat' osmyslennost' okna CAPTCHA_WAIT_MIN.
           onEvent("captcha",
-            "reCAPTCHA na Join, no individual'nyy ekran VNC net (slotov nie hvatile" +
-            " ili otkaz steka) — zapis' idet headless, kapchu proyti nechem");
+            "reCAPTCHA на Join, но индивидуальный экран VNC нет (слотов не хватило" +
+            " или отказ стека) — запись идёт headless, капчу пройти нечем");
           if (!captchaAlerted) {
             captchaAlerted = true;
-            alertOperator("reCAPTCHA bez VNC-ekrana",
-              "Vstrecha stolknulas' s reCAPTCHA, no svobodnyh VNC-slotov net " +
-              "(ili ne podnyalsya displey): zapis' idet headless i prodolzhitsya " +
-              "bez uspeha do istecheniya CAPTCHA_WAIT_MIN. Osvobodite slot / perezapustite " +
-              "web-bot i zagrihte vstrechu zanovo. Avtomatizaciya kapchi zapreshchena (§12).");
+            alertOperator("reCAPTCHA без VNC-экрана",
+              "Встреча столкнулась с reCAPTCHA, но свободных VNC-слотов нет " +
+              "(или не поднялся дисплей): запись идёт headless и продолжится " +
+              "без успеха до истечения CAPTCHA_WAIT_MIN. Освободите слот / перезапустите " +
+              "web-bot и загрузите встречу заново. Автоматизация капчи запрещена (§12).");
           }
         }
       }
@@ -812,7 +812,7 @@ async function muteMicrophone(page, onEvent) {
       const st = await micState(fr);
       if (st.found) { seenAny = true; } else continue;
       if (st.muted) {
-        onEvent("mute", `mikrofon uže vyklyuchen (${st.label})`);
+        onEvent("mute", `микрофон уже выключен (${st.label})`);
         return true;
       }
       const clicked = await clickMarkedElement(fr, "data-mnema-mic");
@@ -820,11 +820,11 @@ async function muteMicrophone(page, onEvent) {
       await page.waitForTimeout(1500);
       const after = await micState(fr);
       if (after.found && after.muted) {
-        onEvent("mute", "mikrofon vyklyuchen posle privetstviya");
+        onEvent("mute", "микрофон выключен после приветствия");
         return true;
       }
-      onEvent("mute", `klik po mikrofonu ne podtverdilsya (${after.label})` +
-        `${clicked ? "" : " — element ne kliknutsya"} — povtor`);
+      onEvent("mute", `клик по микрофону не подтвердился (${after.label})` +
+        `${clicked ? "" : " — элемент не кликается"} — повтор`);
       break; // probuyem vDrugoy raz, ne klykaem povtorno v etoy pass
     }
     if (!tried && seenAny) {
@@ -833,24 +833,24 @@ async function muteMicrophone(page, onEvent) {
         const st = await micState(fr, false);
         if (!st.found) continue;
         if (st.muted) {
-          onEvent("mute", `mikrofon vyklyuchen (skrytyy tuslyar, ${st.label})`);
+          onEvent("mute", `микрофон выключен (скрытый тулбар, ${st.label})`);
           return true;
         }
         const clicked = await clickMarkedElement(fr, "data-mnema-mic");
         await page.waitForTimeout(1500);
         const after = await micState(fr, false);
         if (after.found && after.muted) {
-          onEvent("mute", "mikrofon vyklyuchen po skrytomu knopke");
+          onEvent("mute", "микрофон выключен по скрытой кнопке");
           return true;
         }
-        onEvent("mute", `slepey klik ne podtverdit (mic=${st.label}, ` +
-          `klik=${clicked ? "da" : "net"})`);
+        onEvent("mute", `слепой клик не подтвердился (mic=${st.label}, ` +
+          `klik=${clicked ? "да" : "нет"})`);
         break;
       }
     }
     await page.waitForTimeout(2000);
   }
-  onEvent(EVENT.ERROR, "ne udalos' vyklyuchit' mikrofon");
+  onEvent(EVENT.ERROR, "не удалось выключить микрофон");
   return false;
 }
 
@@ -914,22 +914,22 @@ async function leaveMeetingGracefully(page, state, onEvent) {
     // klik cherez dispatch: Zoom nie reagiruut na obychnyy click)
     await wakeUi(page);
     leaveClicked = await dispatchClickByLabel(page, LEAVE_SRCS, 12, 8000);
-    onEvent("leaving", leaveClicked ? "nahata knopka Leave/End (shag 1/2)"
-                                    : "knopka Leave/End nie naydena");
+    onEvent("leaving", leaveClicked ? "нажата кнопка Leave/End (шаг 1/2)"
+                                    : "кнопка Leave/End не найдена");
     if (leaveClicked) {
       // shag 2: vyskakhyvayet dialog s vtoroy knopkoy «Leave meeting»
       // (dlya hosta — «End meeting for all»)
       await page.waitForTimeout(1500);
       const confirmed = await dispatchClickByLabel(page, LEAVE_DIALOG_SRCS, 40, 12000);
-      onEvent("leaving", confirmed ? "podtverzhden vykhod v dialoge (shag 2/2)"
-                                   : "dialog ne nayden); vtoraya popytka shaga 1");
+      onEvent("leaving", confirmed ? "подтверждён выход в диалоге (шаг 2/2)"
+                                   : "диалог не найден — вторая попытка шага 1");
       if (!confirmed) {
         leaveClicked = await dispatchClickByLabel(page, LEAVE_SRCS, 12, 4000);
         if (leaveClicked) {
           await page.waitForTimeout(1500);
           const c2 = await dispatchClickByLabel(page, LEAVE_DIALOG_SRCS, 40, 8000);
-          onEvent("leaving", c2 ? "podtverzhden vykhod so vtoroy popytki"
-                                : "dialog nie podtvyerden — zakroyem okno");
+          onEvent("leaving", c2 ? "подтверждён выход со второй попытки"
+                                : "диалог не подтверждён — закрываем окно");
         }
       }
     }
@@ -954,13 +954,13 @@ async function waitForEnd(page, cfg, state, onEvent) {
     await page.waitForTimeout(10000);
     // prinyuditelny limit
     if (Date.now() - state.joinedAt > hardMs) {
-      onEvent(EVENT.ENDED, "max duration");
+      onEvent(EVENT.ENDED, "максимальная длительность");
       return { reason: "max_duration" };
     }
     if (state.stopRequested) break;
     const v = await classifyPage(page);
     if (v === "meeting_ended") {
-      onEvent(EVENT.ENDED, "page: meeting ended");
+      onEvent(EVENT.ENDED, "страница: встреча завершена");
       return { reason: "meeting_ended" };
     }
     if (v === "pending") {
@@ -971,7 +971,7 @@ async function waitForEnd(page, cfg, state, onEvent) {
         if (state.reloads > cfg.pageReloadRetries) {
           return { reason: "reload_exhausted" };
         }
-        onEvent(EVENT.RELOAD, `reload #${state.reloads}`);
+        onEvent(EVENT.RELOAD, `перезагрузка #${state.reloads}`);
         await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
         continue;
       }
@@ -994,17 +994,17 @@ async function waitForEnd(page, cfg, state, onEvent) {
     state.lastSoundTs = d.lastSoundTs;
     if (d.leave) {
       onEvent(EVENT.ENDED,
-        `tişina ${d.silenceMin.toFixed(1)} min podryad (> ${cfg.silenceEndTimeoutMin}) — avovyhod`);
+        `тишина ${d.silenceMin.toFixed(1)} мин подряд (> ${cfg.silenceEndTimeoutMin}) — автовыход`);
       await leaveMeetingGracefully(page, state, onEvent);
       return { reason: "silent_leave" };
     }
     // tišina: esli chanki ne idut dol'še SILENCE_END_TIMEOUT — proverit str.
     const silenceMin = (Date.now() - state.lastChunksTs) / 60000;
     if (silenceMin > cfg.silenceEndTimeoutMin) {
-      onEvent(EVENT.SILENCE, `bez chankov ${silenceMin.toFixed(1)} min`);
+      onEvent(EVENT.SILENCE, `без чанков ${silenceMin.toFixed(1)} мин`);
       const v2 = await classifyPage(page);
       if (v2 !== "joined") {
-        onEvent(EVENT.ENDED, "tišina + nie v zone");
+        onEvent(EVENT.ENDED, "тишина + не в зоне");
         return { reason: "silence_then_not_joined" };
       }
       state.lastChunksTs = Date.now(); // esli v zone — prodolzhaem zhidat'
@@ -1014,7 +1014,7 @@ async function waitForEnd(page, cfg, state, onEvent) {
   // dam vremya na poslednie chanki, posle chego finalize soberaet zapis'.
   if (state.stopReason === "manual_leave") {
     await leaveMeetingGracefully(page, state, onEvent);
-    onEvent(EVENT.ENDED, "ruchnoe zavershenie: vyhod iz sozwona");
+    onEvent(EVENT.ENDED, "ручное завершение: выход из созвона");
     return { reason: "manual_leave" };
   }
   return { reason: "stopped" };
@@ -1125,7 +1125,7 @@ async function cleanupContext(ctx, jobId, cfg, onEvent) {
 async function playAnnouncement(page, cfg, onEvent) {
   const wavPath = path.resolve(cfg.announceWav);
   if (!fs.existsSync(wavPath)) {
-    onEvent(EVENT.ERROR, "announce.wav nie nayden — propusk");
+    onEvent(EVENT.ERROR, "announce.wav не найден — пропуск");
     return;
   }
   const b64 = fs.readFileSync(wavPath).toString("base64");
@@ -1150,10 +1150,10 @@ async function playAnnouncement(page, cfg, onEvent) {
       fired = true;
       if (res.played) {
         onEvent("announce", res.viaMic
-          ? "obyavlenie sygrano cherez virtual'nyy mikrofon"
-          : "obyavlenie sygrano, no mikrofon nie nayden — slishno tol'ko v zapisi");
+          ? "объявление сыграно через виртуальный микрофон"
+          : "объявление сыграно, но микрофон не найден — слышно только в записи");
       } else if (res.already) {
-        onEvent("announce", "obyavlenie uzhe bylo sygrano ranee");
+        onEvent("announce", "объявление уже было сыграно ранее");
       }
       break;
     }
@@ -1167,14 +1167,14 @@ async function playAnnouncement(page, cfg, onEvent) {
             ? window.__mnemaPlayAnnouncement(data) : null), [b64]).catch(() => null);
         if (res) {
           fired = true;
-          onEvent("announce", "virtual'nyy mikrofon ne nayden — obyavlenie tol'ko v zapisi");
+          onEvent("announce", "виртуальный микрофон не найден — объявление только в записи");
           break;
         }
       }
     }
     await page.waitForTimeout(2000);
   }
-  if (!fired) onEvent(EVENT.ERROR, "announce: ni v odnom freyme nie sygrano");
+  if (!fired) onEvent(EVENT.ERROR, "announce: ни в одном фрейме не сыграно");
 }
 
 // ============================================================ INIT SCRIPT

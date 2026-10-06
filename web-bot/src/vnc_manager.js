@@ -202,15 +202,15 @@ async function ensureDisplayStack(sess) {
     sess.xvfbPid = spawnDaemon("Xvfb",
       [`:${sess.displayNum}`, "-screen", "0", _cfg.vncScreen]);
     if (!(await waitXSocket(sess.displayNum, 15000))) {
-      throw new Error(`Xvfb :${sess.displayNum} ne padyomsya`);
+      throw new Error(`Xvfb :${sess.displayNum} не поднимается`);
     }
     const args = x11vncArgs(sess);
     sess.x11vncPid = spawnDaemon("x11vnc", args);
-    if (!(await waitPortOpen(sess.rfbPort, 15000))) throw new Error("x11vnc ne padyomsya");
+    if (!(await waitPortOpen(sess.rfbPort, 15000))) throw new Error("x11vnc не поднимается");
   }
   if (!(await portListening(sess.wsPort))) {
     sess.wsPid = spawnDaemon("websockify", websockifyArgs(sess));
-    if (!(await waitPortOpen(sess.wsPort, 10000))) throw new Error("websockify ne padyomsya");
+    if (!(await waitPortOpen(sess.wsPort, 10000))) throw new Error("websockify не поднимается");
   }
 }
 

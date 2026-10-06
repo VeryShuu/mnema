@@ -21,7 +21,7 @@ def add_preset(*, title: str, meeting_link: str,
     if not title:
         raise ValueError("нужно название пресета")
     if not link_valid(link):
-        raise ValueError("ne korrektnaya ssylka Zoom")
+        raise ValueError("Некорректная ссылка Zoom")
     _, extracted_pwd = extract_meeting_id(link)
     pwd = pwd or extracted_pwd
     with get_session() as s:

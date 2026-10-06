@@ -34,7 +34,7 @@ def extract_meeting_id(link_or_id: str) -> tuple[str, str | None]:
     else:
         mp = _RE_PMN.search(full)
         if not mp:
-            raise ValueError("ne raspoznan format ssylki Zoom")
+            raise ValueError("Не распознан формат ссылки Zoom")
         mid = "my/" + mp.group(1)
     pwd = parse_qs(u.query).get("pwd") or parse_qs(u.query).get("passcode")
     return mid, (pwd[0] if pwd else None)
