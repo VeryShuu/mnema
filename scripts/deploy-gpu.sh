@@ -63,7 +63,9 @@ fi
 # v sushchestvuyushchikh (esli zabies' shag — Pydantic/SQLAlchemy padayut na
 # "no such column" pri permom zhe chtenii Job/VoiceProfile)
 echo "    alembic upgrade head..."
-\$COMPOSE run --rm --no-deps api python -m alembic upgrade head
+# </dev/null: bez nego `compose run` s"edaet ostavshiysya heredoc iz stdin
+# (ssh bash -s) — shagi posle nego losevayutsya kak "up: command not found"
+\$COMPOSE run --rm --no-deps api python -m alembic upgrade head </dev/null
 
 # --force-recreate: bez nego `up -d` mohet ostavit' sluzhby na STAROM obraze,
 # kogda izmeneny tol'ko kod/sloi, a konfiguratsiya compose ne menyalas'
