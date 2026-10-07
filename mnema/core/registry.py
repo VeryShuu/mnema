@@ -227,6 +227,12 @@ REGISTRY: tuple[Block, ...] = (
             readers="docker-compose", when="hostovyy CIFS-maunt dlya /export",
             if_empty="maunt neaktivny (skript scripts/smb-mount.sh)"),
     )),
+    Block("stenogramma: koalescencia", (
+        Key("COALESCE_MAX_GAP_S", DEFAULTED, "20",
+            readers="api/worker", when="sliyanie sosednih reperok odnogo govoryashchego",
+            if_empty="20 s",
+            comment="pri vyvode (pustye reperiki vykidyvayutsya vsegda)"),
+    )),
 )
 
 
