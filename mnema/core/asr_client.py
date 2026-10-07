@@ -44,6 +44,98 @@ def _gigastt_transcribe(wav: Path, vad_segments: list[dict]) -> list[dict]:
     return _map_verbose_to_segments(payload, vad_segments)
 
 
+def _norm_word(w: str) -> str:
+    """Bukvenno-cifrovoy skeleton slova dlya sravneniya (bez punktua i regitra)."""
+    return "".join(ch for ch in w.lower() if ch.isalnum() or ch == "'")
+
+
+def _trail_punct(t: str) -> str:
+    """Khvostovaya punktuaciya tokena (poslednie ne-bukvenno-cifrovye simvoly)."""
+    out: list[str] = []
+    for ch in reversed(t):
+        if ch.isalnum() or ch == "'":
+            break
+        out.append(ch)
+    return "".join(reversed(out))
+
+
+_ALIGN_WINDOW = 12
+
+
+def _retrofit_punctuation(payload: dict) -> dict:
+    """gigastt v verbose_json derzhit segments[].text syrym (bez punktuacii i
+    registra) - perzeom, ITN i punktuaciya privyatsya tol'ko k top-level 'text'
+    (docs/api.md gigastt).
+
+    Lineynoe dvukh-tochechnoe vyravnivanie syryh slov s tokenami top-level
+    text po skeletam (registr/punktuaciya ne vazhny): sovpadshiy token
+    perenositsya v segment (registr i znaki), nesovpadshie (ITN zamenil slovo
+    cifroy) ostayutsya syrymi, ikh punktuaciya pri rezhime dospevaet k
+    predydushemu slovu. Okno posiska ograniceno - difflib SequenceMatcher na
+    povtoruyushimsya legal'nom tekste 2-3 chasov (odnim POST pri
+    ASR_MAX_UPLOAD_MB>=1 GB) kvadratichnyy i vesit worker. Esli sovmalenie
+    khuzhe ~30% - segmenty ne trogayu."""
+    top = (payload.get("text") or "").strip()
+    segs = payload.get("segments") or []
+    if not top or not segs:
+        return payload
+    top_tokens = top.split()
+    raw_words: list[str] = []
+    counts: list[int] = []
+    for s in segs:
+        w = (s.get("text") or "").split()
+        counts.append(len(w))
+        raw_words.extend(w)
+    if not raw_words or not top_tokens:
+        return payload
+    skel_a = [_norm_word(w) for w in raw_words]
+    skel_b = [_norm_word(w) for w in top_tokens]
+    nt = len(top_tokens)
+    mapped = list(raw_words)
+    matched = 0
+    i = 0
+    tail_buf = ""
+    for idx, s in enumerate(skel_a):
+        if i >= nt:
+            break
+        if not s:
+            continue
+        j = -1
+        for c in range(i, min(nt, i + _ALIGN_WINDOW)):
+            if skel_b[c] == s:
+                j = c
+                break
+        if j >= 0:
+            tail = tail_buf
+            buf_from_num = bool(tail_buf)
+            if j > i and not buf_from_num:
+                tail = _trail_punct(top_tokens[j - 1])
+            if tail and idx > 0:
+                mapped[idx - 1] = mapped[idx - 1] + tail
+            tail_buf = ""
+            mapped[idx] = top_tokens[j]
+            matched += 1
+            i = j + 1
+        else:
+            while i < nt and skel_b[i].isdigit():
+                tail = _trail_punct(top_tokens[i])
+                if tail:
+                    tail_buf = tail
+                i += 1
+    if matched < max(1, int(0.3 * len(raw_words))):
+        return payload
+    out = dict(payload)
+    new_segs: list[dict] = []
+    pos = 0
+    for s, n in zip(segs, counts):
+        ns = dict(s)
+        ns["text"] = " ".join(mapped[pos:pos + n])
+        pos += n
+        new_segs.append(ns)
+    out["segments"] = new_segs
+    return out
+
+
 def _gigastt_post(base: str, headers: dict, model: str, body: bytes) -> dict:
     import httpx
     files = {"file": ("chunk.wav", io.BytesIO(body), "audio/wav")}
@@ -75,7 +167,8 @@ def _gigastt_chunks(wav: Path) -> dict:
         chunk_frames = max(1, max_bytes // (nch * sw))
         if chunk_frames >= nframes:
             w.rewind()
-            return _gigastt_post(base, headers, model, _wav_bytes(w.readframes(nframes), nch, sw, rate))
+            return _retrofit_punctuation(
+                _gigastt_post(base, headers, model, _wav_bytes(w.readframes(nframes), nch, sw, rate)))
 
         raw: list[dict] = []
         lang = None
@@ -85,7 +178,8 @@ def _gigastt_chunks(wav: Path) -> dict:
             take = min(chunk_frames, nframes - pos)
             w.setpos(pos)
             frames = w.readframes(take)
-            payload = _gigastt_post(base, headers, model, _wav_bytes(frames, nch, sw, rate))
+            payload = _retrofit_punctuation(
+                _gigastt_post(base, headers, model, _wav_bytes(frames, nch, sw, rate)))
             offset = pos / rate
             for s in payload.get("segments") or []:
                 s = dict(s)

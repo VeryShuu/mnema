@@ -96,3 +96,100 @@ def test_empty_wav_raises(tmp_path):
     _make_wav(wav, 0)
     with pytest.raises(RuntimeError):
         _gigastt_chunks(wav)
+
+
+def test_retrofit_moves_punctuation_into_segments():
+    """gigastt verbose_text: segments[].text syrye, punktuacia/registr v top-level text."""
+    from mnema.core.asr_client import _retrofit_punctuation
+    payload = {
+        "text": "Привет, как дела? Потом продолжим.",
+        "segments": [
+            {"start": 0.0, "end": 2.0, "text": " привет как"},
+            {"start": 2.5, "end": 4.0, "text": " дела"},
+            {"start": 5.0, "end": 7.0, "text": " потом продолжим"},
+        ],
+    }
+    out = _retrofit_punctuation(payload)
+    assert [s["text"].strip() for s in out["segments"]] == [
+        "Привет, как", "дела?", "Потом продолжим."]
+
+
+def test_retrofit_no_top_text_keeps_raw():
+    from mnema.core.asr_client import _retrofit_punctuation
+    payload = {"segments": [{"start": 0.0, "end": 1.0, "text": " teskt"}]}
+    out = _retrofit_punctuation(payload)
+    assert out["segments"][0]["text"] == " teskt"
+
+
+def test_retrofit_poor_match_keeps_raw():
+    """Esli top-level text sovsem ne pro eto (sboy vravnivaniya) — ne portim segmenty."""
+    from mnema.core.asr_client import _retrofit_punctuation
+    payload = {
+        "text": "sovershenno drugoy tekst sovsem",
+        "segments": [{"start": 0.0, "end": 1.0, "text": " a b c d e f g h"}],
+    }
+    out = _retrofit_punctuation(payload)
+    assert out["segments"][0]["text"] == " a b c d e f g h"
+
+
+def test_retrofit_partial_itn_word_insertion():
+    """ITN menyaet slova (ciframi): nesovpavshie syrye slova ostayutsya,
+    punktuaciya perenositsya tam, gde slovo sovpadalo."""
+    from mnema.core.asr_client import _retrofit_punctuation
+    payload = {
+        "text": "24, хорошо.",
+        "segments": [
+            {"start": 0.0, "end": 2.0, "text": " двадцать четыре"},
+            {"start": 2.5, "end": 4.0, "text": " хорошо"},
+        ],
+    }
+    out = _retrofit_punctuation(payload)
+    assert out["segments"][0]["text"].strip() == "двадцать четыре,"
+    assert out["segments"][1]["text"].strip() == "хорошо."
+
+
+def test_retrofit_empty_segment_keeps_empty_text():
+    from mnema.core.asr_client import _retrofit_punctuation
+    payload = {
+        "text": "Odin dva.",
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "odin"},
+            {"start": 1.0, "end": 1.0, "text": ""},
+            {"start": 1.0, "end": 2.0, "text": "dva"},
+        ],
+    }
+    out = _retrofit_punctuation(payload)
+    assert out["segments"][1]["text"] == ""
+
+
+def test_gigastt_transcribe_applies_retrofit(tmp_path, monkeypatch):
+    """Regressiya: stenogramma poluchaet punktuaciu iz top-level text gigastt."""
+    from mnema.core import asr_client
+
+    def fake_post(base, headers, model, body):
+        return {"text": "Zaprotokoliruem vstrechu.",
+                "segments": [{"start": 0.0, "end": 2.0, "text": " zaprotokoliruem vstrechu"}],
+                "language": "ru"}
+
+    monkeypatch.setattr(asr_client, "_gigastt_post", fake_post)
+    wav = tmp_path / "x.wav"
+    _make_wav(wav, 5)
+    out = asr_client._gigastt_transcribe(wav, [{"t_start": 0.0, "t_end": 5.0}])
+    assert out[0]["text"] == "Zaprotokoliruem vstrechu."
+
+
+def test_chunked_path_retrofits_each_chunk(tmp_path, monkeypatch):
+    """Punktuaciya ne teryaetsya pri chunkovanii bolshogo fajla."""
+    from mnema.core import asr_client
+
+    def fake_post(base, headers, model, body):
+        return {"text": "Predlozhenie.",
+                "segments": [{"start": 0.0, "end": 2.0, "text": " predlozhenie"}],
+                "language": "ru"}
+
+    monkeypatch.setattr(asr_client, "_gigastt_post", fake_post)
+    monkeypatch.setenv("ASR_MAX_UPLOAD_MB", "1")
+    wav = tmp_path / "c.wav"
+    _make_wav(wav, 60)
+    out = asr_client._gigastt_chunks(wav)
+    assert all(s["text"].strip() == "Predlozhenie." for s in out["segments"])
