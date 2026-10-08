@@ -155,11 +155,30 @@ def delete_job(job_id: int) -> bool:
     """Polnoe udalenie vstrechi: BDD-zapisi + fayly na diske + secret.
 
     Vozvra True YESLI vstecha sushchestvovala i udalena, False esli net.
-    """
+    Potomki razdeleniya (parent_job_id) udalyayutsya vmeste s roditelem,
+    inache FK-potomki ostrayutsya i dal'neysheye udalenie nevozmozhno."""
+    targets = [job_id]
+    with get_session() as s:
+        if s.get(Job, job_id) is None:
+            return False
+        kids = s.scalars(select(Job.id).where(Job.parent_job_id == job_id)).all()
+    targets = list(kids) + [job_id]  # детей чистим раньше родителя (FK)
+    for tid in targets:
+        _purge_job(tid)
+    try:
+        from .scheduler import get_scheduler
+        for tid in targets:
+            get_scheduler().remove_job(f"launch:{tid}")
+    except Exception:  # noqa: BLE001 — no zadaschika / net taska
+        pass
+    return True
+
+
+def _purge_job(job_id: int) -> None:
     with get_session() as s:
         job = s.get(Job, job_id)
         if job is None:
-            return False
+            return
         paths: list[str] = []
         for up in job.uploads:
             if up.path:
@@ -191,9 +210,3 @@ def delete_job(job_id: int) -> bool:
         s.commit()
     for p in paths:
         Path(p).unlink(missing_ok=True)
-    try:
-        from .scheduler import get_scheduler
-        get_scheduler().remove_job(f"launch:{job_id}")
-    except Exception:  # noqa: BLE001 — no zadaschika / net taska
-        pass
-    return True

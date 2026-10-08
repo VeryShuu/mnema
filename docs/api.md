@@ -75,6 +75,26 @@ REST API сервиса `api` (FastAPI). Реализация: `mnema/api/main.p
 Карточка встречи: поля job + `events[]` (`{ts, event, detail}`) + `audio[]`
 (`{kind, duration_s, bytes}`).
 
+При разделении записи на несколько встреч дополнительно:
+`parent_job_id` (`null` у исходной записи), `child_job_ids` (список id частей),
+`split` — `split_json` встречи:
+
+```json
+{
+  "boundaries": [{"t": 2730.0, "confidence": 0.86,
+                  "topic_before": "Планёрка", "topic_after": "Разбор инцидента"}],
+  "model": "llama3-saiga:32b", "skipped": null, "ts": "2026-10-08T10:00:00Z"
+}
+```
+
+При пропуске этапа `"boundaries"` нет, `"skipped"` — причина
+(`disabled`, `too_short`, `too_few_segments`, `llm_not_configured`,
+`no_boundaries_found`, …). У потомка `split` = `{"parent": <id>, "boundary_t": <сек>}`.
+
+События этапа: `split_start`, `split_done` (границы и id детей в detail),
+`split_skipped` (причина), `split_audio_error` (ошибка ffmpeg — разделение
+в БД при этом остаётся в силе).
+
 ### `DELETE /api/jobs/{jid}`
 
 Отмена встречи → `{"id", "status"}`.

@@ -422,6 +422,40 @@ def test_web_job_create_end_at_without_start_allowed(client):
     assert r.headers["location"].startswith("/jobs/")
 
 
+def test_api_job_split_fields_and_detail_block(client):
+    """payload /api/jobs/{jid}: parent_job_id, child_job_ids, split; страница
+    встречи показывает родителя и детей после разделения."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Job
+    r = client.post("/api/jobs", json={"meeting_id": "555000111", "topic": "Двойник"})
+    jid = r.json()["id"]
+    with get_session() as s:
+        parent = s.get(Job, jid)
+        parent.split_json = {"boundaries": [{"t": 2760.0, "confidence": 0.9,
+                                             "topic_before": "Двойник",
+                                             "topic_after": "Хвост"}],
+                             "model": "m", "skipped": None, "ts": "2026-10-08"}
+        child = Job(source="split", parent_job_id=jid, topic="Хвост",
+                    status="processing", created_by="split",
+                    split_json={"parent": jid, "boundary_t": 2760.0,
+                                "ts": "2026-10-08"})
+        s.add(child)
+        s.commit()
+        cid = child.id
+    g = client.get(f"/api/jobs/{jid}").json()
+    assert g["parent_job_id"] is None
+    assert g["child_job_ids"] == [cid]
+    assert g["split"]["boundaries"][0]["t"] == 2760.0
+    gc = client.get(f"/api/jobs/{cid}").json()
+    assert gc["parent_job_id"] == jid
+    page = client.get(f"/jobs/{jid}")
+    assert page.status_code == 200
+    assert "Запись разделена" in page.text and f"/jobs/{cid}" in page.text
+    page_c = client.get(f"/jobs/{cid}")
+    assert "Запись разделена" in page_c.text
+    assert f"Часть разделённой встречи #{jid}" in page_c.text
+
+
 def test_web_job_detail_shows_planned_end(client):
     r = client.post("/jobs/create", data={
         "meeting_link": "https://us05web.zoom.us/j/777777775",

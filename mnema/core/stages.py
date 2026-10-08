@@ -22,6 +22,7 @@ STAGE_DEFS: list[tuple[str, str, str]] = [
     ("voiceprint", "Узнавание спикеров", "Сопоставление кластеров с реестром голосов"),
     ("steno", "Сборка стенограммы", "Формирование steno.md из сегментов"),
     ("review", "Уточнение спикеров", "Проверка нераспознанных голосов человеком"),
+    ("split", "Разделение встреч", "Поиск границ между совещаниями в одной записи"),
     ("llm", "Анализ LLM", "Структурирование протокола через LLM"),
     ("done", "Протокол готов", "Итоговый протокол сформирован"),
 ]
@@ -49,6 +50,7 @@ def build_stages(job_id: int) -> list[dict]:
 
     status = job.status if job else "scheduled"
     is_upload = job is not None and job.source == "upload"
+    is_split_child = job is not None and job.source == "split"
     failed = status == "failed"
     failed_stage = _failed_stage(job.fail_reason if job else None, first)
     proto_structured = proto is not None and not (
@@ -79,6 +81,8 @@ def build_stages(job_id: int) -> list[dict]:
         states["upload"] = "skipped"
     if is_upload:
         states["recording"] = "skipped"
+    elif is_split_child:
+        states["recording"] = "skipped"  # запись «унаследована» от родителя
     elif failed_stage == "recording":
         states["recording"] = "failed"
     elif has("media", "joined", "recording_started") or status in (
@@ -145,6 +149,28 @@ def build_stages(job_id: int) -> list[dict]:
     else:
         states["review"] = "pending"
 
+    split_decided = job is not None and job.split_json is not None
+    if has("split_done"):
+        states["split"] = "done"
+    elif has("split_skipped"):
+        states["split"] = "skipped"
+    elif is_split_child:
+        states["split"] = "skipped"  # потомок — результат разделения, сам не делится
+    elif split_decided:
+        states["split"] = "done" if not (job.split_json or {}).get("skipped") \
+            else "skipped"
+    elif failed and failed_stage == "split":
+        states["split"] = "failed"
+    elif status == "processing" and (has("steno_done") or steno_exists) \
+            and not has("split_start"):
+        states["split"] = "running"
+    elif has("split_start") and status == "processing":
+        states["split"] = "running"
+    elif has("llm_done", "done") or status == "done":
+        states["split"] = "skipped"  # «старый job»: этап введён позже обработки
+    else:
+        states["split"] = "pending"
+
     # LLM idet POSLE opredeleniya golosov: pri otkrytom review on eshche nie
     # zapuskalsya (pending), krome starykh jobov s uzhe gotovym protokolom.
     if proto_structured or has("llm_done") or (
@@ -180,7 +206,7 @@ def build_stages(job_id: int) -> list[dict]:
                 ts = ev["ts"]
         elif st == "failed":
             ev = _pick(first, ("asr_error", "speaker_error", "structure_error",
-                               "llm_error"))
+                               "llm_error", "split_error"))
             if ev:
                 ts, detail = ev["ts"], (ev["detail"] or None)
         stages.append({"key": key, "title": title, "description": desc,
@@ -209,6 +235,7 @@ def _done_events(key: str, vad_done: bool, asr_done: bool, diar_done: bool,
         "steno": ("steno_done",),
         "llm": ("llm_done",),
         "review": ("reviews_done", "review_resolved"),
+        "split": ("split_done",),
         "done": ("status->done",),
     }.get(key, ())
 
@@ -227,7 +254,8 @@ def _failed_stage(fail_reason: str | None, ev: dict) -> str | None:
               "llm_unavailable": "llm", "llm_error": "llm",
               "speaker_error": "voiceprint", "vad_error": "prep",
               "audio_error": "prep", "upload_failed": "upload",
-              "launch_failed": "recording", "join_failed": "recording"}
+              "launch_failed": "recording", "join_failed": "recording",
+              "split_error": "split"}
     if fail_reason in direct:
         return direct[fail_reason]
     txt = fail_reason.lower()

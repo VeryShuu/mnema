@@ -25,7 +25,8 @@ def _job_paths(job_id: int) -> dict[str, Path]:
     d = _data_dir() / "jobs" / str(job_id)
     d.mkdir(parents=True, exist_ok=True)
     return {"dir": d, "webm": d / "raw.webm", "wav": d / "meeting.wav",
-            "mp3": d / "meeting.mp3", "steno": d / "steno.md"}
+            "mp3": d / "meeting.mp3", "steno": d / "steno.md",
+            "full_wav": d / "meeting-full.wav", "full_mp3": d / "meeting-full.mp3"}
 
 
 # ---------------------------------------------------------------- ASR (FT-11..15)
@@ -187,7 +188,7 @@ def _overlap_ratio_min() -> float:
 
 
 def run_join(job_id: int) -> None:
-    """Sliyaniye vetok posle oboikh: steno.md, zatem LLM — tol'ko kogda vse
+    """Sliyaniye vetok posle oboikh: steno.md, zatem split+LLM — tol'ko kogda vse
     govoryashchiye opredeleny. Pri neraspznannyh golosakh stop v awaiting_review
     (analiz LLM idet POSLE utochneniya lyudey, a ne do nego)."""
     try:
@@ -195,7 +196,7 @@ def run_join(job_id: int) -> None:
         _write_steno(job_id, p)
         if _route_awaiting_review_if_unresolved(job_id):
             return
-        _run_structure(job_id)
+        _run_split_and_structure(job_id)
     except Exception as e:  # noqa: BLE001
         _fail_branch(job_id, e, "processing_error")
         raise
@@ -356,13 +357,47 @@ def _register_audio_files(job_id: int, p: dict, dur: float) -> None:
 
 
 def run_structure(job_id: int) -> None:
-    """Vozvrat posle utochneniya spikero: steno.md s itogovymi imenami + LLM."""
+    """Vozvrat posle utochneniya spikero: steno.md s itogovymi imenami + LLM.
+    Tot zhe put' dlya resume/review-timeout/rerun: popytka razdeleniya vnutri."""
     try:
         _write_steno(job_id, _job_paths(job_id))
-        _run_structure(job_id)
+        _run_split_and_structure(job_id)
     except Exception as e:  # noqa: BLE001
         _fail_branch(job_id, e, "processing_error")
         raise
+
+
+def _run_split_and_structure(job_id: int) -> None:
+    """Этап split (попытка разделения записи на несколько встреч) перед LLM.
+
+    Ошибка детекции (LLMError и иная) не роняет job: событие split_skipped,
+    дальше — обычный _run_structure по полной записи. Потомки получают свои
+    run_structure; падение потомка не трогает родителя."""
+    from ..core import split as split_core
+    try:
+        child_ids = split_core.split_job(job_id)
+    except Exception as e:  # noqa: BLE001 — split не причина топить job
+        _log_event(job_id, "split_skipped", f"ошибка детекции: {str(e)[:300]}")
+        child_ids = []
+    if child_ids:
+        # родительский steno устарел (содержит хвост второй встречи) —
+        # перезаписываем до _run_structure (он переиспользует файл)
+        _write_steno(job_id, _job_paths(job_id))
+        from ..core.queue import enqueue_job
+        for cid in child_ids:
+            if enqueue_job("structure", "mnema.worker.tasks.run_structure",
+                           cid) is None:
+                try:
+                    run_structure(cid)  # direct-режим: inline
+                except Exception:  # noqa: BLE001 — падение потомка не трогает родителя
+                    pass
+    _run_structure(job_id)
+
+
+def _log_event(job_id: int, event: str, detail: str) -> None:
+    with get_session() as s:
+        s.add(SessionEvent(job_id=job_id, event=event, detail=detail[:1000]))
+        s.commit()
 
 
 def run_voice_enroll(job_id: int, cluster_label: str) -> None:

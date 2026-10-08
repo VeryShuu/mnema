@@ -40,6 +40,11 @@ services:
       - TZ=Europe/Moscow
       - APP_TZ=Europe/Moscow
       - EXPORT_DIR=${EXPORT_DIR:-}
+      # razdelenie vstrech (etap split): kill-switch 0, porogi, okno detekcii
+      - SPLIT_MEETINGS=${SPLIT_MEETINGS:-1}
+      - SPLIT_MIN_MINUTES=${SPLIT_MIN_MINUTES:-20}
+      - SPLIT_MIN_CONFIDENCE=${SPLIT_MIN_CONFIDENCE:-0.7}
+      - SPLIT_WINDOW_CHARS=${SPLIT_WINDOW_CHARS:-40000}
     volumes:
       - data:/data
       - hf-cache:/root/.cache/huggingface

@@ -146,3 +146,143 @@ def _map_reduce(transcript: str, topic: str, max_chars: int, roster: str = "") -
                                      "chastichnyh rezultatov. Dedup ciranykh. Bez vydumok:\n\n"
                                      + reduce_input)}])
     return validate_protocol(_extract_json(reply))
+
+
+SPLIT_SYSTEM_PROMPT = (
+    "Ty analysiruesh stenogramu ONE audiozapisi s neskol'kimi vstrechami podrjad. "
+    "Naydi GRANICY mezhdu raznymi sovieshchaniyami: cmera, sogovorniki, "
+    "poviestka ili privetstvie osnovy. Vozvrashi ISTORIMO validny JSON bez "
+    "poyasneniy: {\"boundaries\": [{\"start_ts\": \"CHCH:MM:SS\", "
+    "\"confidence\": 0..1, \"topic_after\": \"tema vstrechi posle granicy\"}]}. "
+    "Esli v zapisi ODNA vstrecha — Verni {\"boundaries\": []}. "
+    "start_ts — vremya pervoy repliki NOVOY vstrechi iz stenogrammy. "
+    "Ne vydumyivay granicy: esli uspehen nie uveren — ne vklyuchay yeye."
+)
+
+
+def parse_ts(value: object) -> float:
+    """CHCH:MM:SS (MM/SS dopuskeny dvuznachnymi, s — desyatichnaya) -> sekundy.
+
+    LLM often writes 'M:SS' or 'HH:MM:SS,m'. Raises LLMError on unparsable."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value < 0:
+            raise LLMError(f"otricatel'noye vremya: {value}")
+        return float(value)
+    if not isinstance(value, str) or not value.strip():
+        raise LLMError(f"vremya nie stroka: {value!r}")
+    text = value.strip().replace(",", ".")
+    parts = [p for p in text.split(":")]
+    if not 1 <= len(parts) <= 3 or any(not p.strip() for p in parts):
+        raise LLMError(f"nie format vremeni: {value!r}")
+    try:
+        nums = [float(p) for p in parts]
+    except ValueError as e:
+        raise LLMError(f"nie format vremeni: {value!r}") from e
+    if any(n < 0 for n in nums):
+        raise LLMError(f"otricatel'noye vremya: {value!r}")
+    for n in nums[1:]:
+        if n >= 6000:
+            raise LLMError(f"nie format vremeni: {value!r}")
+    secs = 0.0
+    for n in nums:
+        secs = secs * 60 + n
+    if secs > 30 * 3600:
+        raise LLMError(f"vremya vnye zdravogo diapazona: {value!r}")
+    return secs
+
+
+def _confidence(value: object) -> float:
+    try:
+        c = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    return c if 0.0 <= c <= 1.0 else 0.0
+
+
+def _compress_line(line: str, limit: int = 120) -> str:
+    if len(line) <= limit:
+        return line
+    return line[:limit].rstrip() + "…"
+
+
+def boundaries_windows(transcript: str, window_chars: int | None = None
+                       ) -> list[tuple[int, int]]:
+    """Okna [start_offset, end_offset) s perekrytiyem 10% dlya skol'zyashchego poiska."""
+    n = len(transcript)
+    if window_chars is None:
+        window_chars = int(os.environ.get("SPLIT_WINDOW_CHARS", "40000") or 40000)
+    if n <= window_chars:
+        return [(0, n)]
+    overlap = max(1, int(window_chars * 0.1))
+    step = max(1, window_chars - overlap)
+    out: list[tuple[int, int]] = []
+    i = 0
+    while i < n:
+        out.append((i, min(i + window_chars, n)))
+        if i + window_chars >= n:
+            break
+        i += step
+    return out
+
+
+def detect_meeting_boundaries(transcript: str, topic: str = "",
+                              duration_s: float = 0.0) -> list[dict]:
+    """Odna zapis' -> spisanok granicy mezhdu vstrechami (LLM po stenogramme).
+
+    Vozvrashaet [] esli granicy nie naydeny. Kazhdaya granica:
+    {t: sek, confidence: 0..1, topic_after: str}. Pri stenograme she
+    SPLIT_WINDOW_CHARS — skol'zyashchiye okna s perekrytiyem, kandidaty
+    meryatsya po blizosti (<60 c — berotsya s bol'shey confidence)."""
+    max_chars = int(os.environ.get("SPLIT_WINDOW_CHARS", "40000") or 40000)
+    lines = [_compress_line(ln) for ln in transcript.splitlines() if ln.strip()]
+    body = "\n".join(lines) or (transcript or "")
+    candidates: list[dict] = []
+    windows = boundaries_windows(body, max_chars)
+    ok_windows = 0
+    last_err: LLMError | None = None
+    for lo, hi in windows:
+        chunk = body[lo:hi]
+        user = (f"TEMA PREDPOLOZhitel'no: {topic or '(neizvestna)'}\n"
+                f"DLITEL'NOST' ZAPISI: {duration_s:.0f} s\n\n"
+                f"STENOGRAMMA (fragment):\n{chunk}")
+        try:
+            reply = _chat([{"role": "system", "content": SPLIT_SYSTEM_PROMPT},
+                           {"role": "user", "content": user}])
+            data = _extract_json(reply)
+            ok_windows += 1
+        except LLMError as e:
+            last_err = e
+            continue
+        for b in data.get("boundaries") or []:
+            if not isinstance(b, dict):
+                continue
+            try:
+                t = parse_ts(b.get("start_ts"))
+            except LLMError:
+                continue
+            candidates.append({"t": t,
+                               "confidence": _confidence(b.get("confidence")),
+                               "topic_after": str(b.get("topic_after") or "").strip()})
+    if windows and ok_windows == 0 and last_err is not None:
+        # vse okna padeni — ete nie "granicy ne naydeny", a sbay detekcii
+        raise last_err
+    merged = _merge_boundary_candidates(candidates)
+    if duration_s > 0:
+        merged = [b for b in merged
+                  if 0.0 < b["t"] < duration_s and duration_s - b["t"] > 30.0]
+    return merged
+
+
+def _merge_boundary_candidates(cands: list[dict], min_gap_s: float = 60.0
+                               ) -> list[dict]:
+    """Kandidaty iz perekryvayushchikhsya okon: blizkie (<min_gap_s) sliyayutsya,
+    peryodayetsya bolshej confidence. Rezultat — monotonno vozrastayushchiy."""
+    out: list[dict] = []
+    for c in sorted(cands, key=lambda c: c["t"]):
+        if out and c["t"] - out[-1]["t"] < min_gap_s:
+            if c["confidence"] > out[-1]["confidence"]:
+                out[-1] = c
+            continue
+        out.append(dict(c))
+    return out
+

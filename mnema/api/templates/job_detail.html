@@ -49,6 +49,8 @@
       {% if upload.bytes_total %} ({{ upload.bytes_total|human_size }}){% endif %}
       {% if upload.status == 'complete' %} · <a href="/api/jobs/{{ job.id }}/source">скачать оригинал</a>{% endif %}
     </td></tr>{% endif %}
+    {% elif job.source == 'split' %}
+    <tr><th>Тип</th><td><a href="/jobs/{{ job.parent_job_id }}">Часть разделённой встречи #{{ job.parent_job_id }}</a></td></tr>
     {% else %}
     <tr><th>Встреча Zoom</th><td>{{ job.zoom_meeting_id }}</td></tr>
     {% endif %}
@@ -107,6 +109,26 @@
   {% else %}<p class="muted">Аудио пока нет</p>{% endfor %}
 </div>
 {% if protocol %}<p><a href="/protocols/{{ protocol.id }}">Открыть протокол →</a></p>{% endif %}
+{% if parent_job or child_jobs %}
+<div class="card">
+  <h3>Запись разделена</h3>
+  {% if parent_job %}
+  <p>Это часть <a href="/jobs/{{ parent_job.id }}">#{{ parent_job.id }} — {{ parent_job.topic or 'Встреча без темы' }}</a>
+    {% if split_boundary is not none %}, начало с {{ '%02d:%02d:%02d'|format((split_boundary // 3600)|int, (split_boundary % 3600 // 60)|int, (split_boundary % 60)|int) }} родительской записи{% endif %}
+  </p>
+  {% endif %}
+  {% if child_jobs %}
+  <ul>
+    {% for c in child_jobs %}<li><a href="/jobs/{{ c.id }}">#{{ c.id }} — {{ c.topic or 'Часть без темы' }}</a></li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% if split_boundaries %}
+  <p class="muted">Границы:
+    {% for b in split_boundaries %}{{ '%02d:%02d:%02d'|format((b.t // 3600)|int, (b.t % 3600 // 60)|int, (b.t % 60)|int) }} ({{ '%.2f'|format(b.confidence) }}){% if not loop.last %}; {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+</div>
+{% endif %}
 {% if reviews %}<p><a href="/reviews?job_id={{ job.id }}">Есть нерешённые уточнения ({{ reviews|length }}) →</a></p>{% endif %}
 <div class="card">
   <h3>Ход обработки</h3>

@@ -133,6 +133,22 @@ def media_to_mp3(src: Path, mp3: Path, bitrate: str = "64k") -> bool:
     return ok
 
 
+def media_slice(src: Path, t0: float, t1: float, dst: Path) -> None:
+    """Narezat' fragment lyubogo audio (wav/mp3) s perecodirovaniem v format dst.
+
+    v ot lichie ot extract_wav_slice: hodit i dlya mp3 (tochnye shkaly, -ss
+    pered -i dlya skorosti, perekodirovanie garantiryuet chisty start)."""
+    dur = max(0.1, t1 - t0)
+    out_args: list[str] = []
+    if dst.suffix.lower() == ".wav":
+        out_args = ["-ar", "16000", "-ac", "1", "-sample_fmt", "s16"]
+    r = run(["ffmpeg", "-y", "-ss", f"{t0:.3f}", "-t", f"{dur:.3f}",
+             "-i", str(src), *out_args, str(dst)])
+    if r.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+        dst.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg media_slice: {r.stderr[-500:]}")
+
+
 def wav_duration_s(wav: Path) -> float:
     try:
         with wave.open(str(wav), "rb") as w:

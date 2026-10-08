@@ -165,11 +165,15 @@ def api_job(jid: int):
         events = s.scalars(select(SessionEvent).where(
             SessionEvent.job_id == jid).order_by(SessionEvent.ts)).all()
         audio = s.scalars(select(AudioFile).where(AudioFile.job_id == jid)).all()
+        child_ids = s.scalars(select(Job.id).where(
+            Job.parent_job_id == jid).order_by(Job.id)).all()
         return {
             "id": job.id, "zoom_meeting_id": job.zoom_meeting_id, "topic": job.topic,
             "status": job.status, "error": job.error, "fail_reason": job.fail_reason,
             "start_at": job.start_at, "started_ts": job.started_ts,
             "ended_ts": job.ended_ts, "note": job.note,
+            "parent_job_id": job.parent_job_id, "child_job_ids": list(child_ids),
+            "split": job.split_json,
             "events": [{"ts": e.ts, "event": e.event, "detail": e.detail} for e in events],
             "audio": [{"kind": a.kind, "duration_s": a.duration_s, "bytes": a.bytes} for a in audio],
         }
@@ -1278,6 +1282,12 @@ def web_job_detail(request: Request, jid: int):
         up = s.scalars(select(Upload).where(
             Upload.job_id == jid).order_by(Upload.id.desc()).limit(1)).first()
     pwd_present = job.pwd_ref is not None
+    with get_session() as s:
+        parent = s.get(Job, job.parent_job_id) if job.parent_job_id else None
+        children = s.scalars(select(Job).where(
+            Job.parent_job_id == jid).order_by(Job.id)).all()
+    sj = job.split_json or {}
+    boundaries = sj.get("boundaries") or []
     vsess = vnc_svc.get_for_job(jid)
     if vsess:
         vsess["url"] = _vnc_payload(request, vsess)
@@ -1285,7 +1295,10 @@ def web_job_detail(request: Request, jid: int):
     return templates.TemplateResponse(request, "job_detail.html", {
         "request": request, "job": job, "events": events, "audio": audio,
         "protocol": proto, "reviews": reviews, "pwd_present": pwd_present,
-        "upload": up, "stages": build_stages(jid), "vnc_session": vsess})
+        "upload": up, "stages": build_stages(jid), "vnc_session": vsess,
+        "parent_job": parent, "child_jobs": children,
+        "split_boundaries": boundaries,
+        "split_boundary": sj.get("boundary_t")})
 
 
 @app.get("/jobs/{jid}/log", response_class=HTMLResponse)

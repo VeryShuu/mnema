@@ -162,3 +162,74 @@ def test_asr_failure_marks_asr_failed(env):
     assert st["asr"] == "failed"
     assert st["prep"] == "done"
     assert st["speaker"] == "pending"
+
+
+# ---------------------------------------------------------------- этап split
+def _prep_done(jid):
+    for e in ("vad_done", "asr_done", "diar_done", "voiceprint_done",
+              "steno_done"):
+        _ev(jid, e)
+
+
+def test_split_stage_present_between_review_and_llm(env):
+    from mnema.core.stages import build_stages
+    jid = _mk_job(status="processing", source="zoom")
+    keys = [st["key"] for st in build_stages(jid)]
+    assert keys.index("review") < keys.index("split") < keys.index("llm")
+
+
+def test_split_running_when_steno_done_processing(env):
+    from mnema.core.stages import build_stages
+    jid = _mk_job(status="processing", source="upload")
+    _prep_done(jid)
+    assert _states(build_stages(jid))["split"] == "running"
+
+
+def test_split_done_by_event(env):
+    from mnema.core.stages import build_stages
+    jid = _mk_job(status="processing", source="upload")
+    _prep_done(jid)
+    _ev(jid, "split_done", "границы: 00:45:00")
+    st = build_stages(jid)
+    sp = next(s for s in st if s["key"] == "split")
+    assert sp["state"] == "done" and sp["ts"] is not None
+
+
+def test_split_skipped_by_event(env):
+    from mnema.core.stages import build_stages
+    jid = _mk_job(status="processing", source="upload")
+    _prep_done(jid)
+    _ev(jid, "split_skipped", "too_short")
+    assert _states(build_stages(jid))["split"] == "skipped"
+
+
+def test_split_skipped_for_old_done_job(env):
+    """Старый job (до введения этапа): нет split-событий и split_json, есть done."""
+    from mnema.core.stages import build_stages
+    from mnema.core.db import get_session
+    from mnema.core.models import Protocol
+    jid = _mk_job(status="done", source="zoom")
+    for e in ("vad_done", "asr_done", "diar_done", "voiceprint_done",
+              "steno_done", "llm_done"):
+        _ev(jid, e)
+    with get_session() as s:
+        s.add(Protocol(job_id=jid, json_data={"summary": "x"}, md_path="/tmp/p.md"))
+        s.commit()
+    assert _states(build_stages(jid))["split"] == "skipped"
+
+
+def test_split_child_hides_upload_and_recording(env):
+    from mnema.core.stages import build_stages
+    from mnema.core.db import get_session
+    from mnema.core.models import Job
+    parent = _mk_job(status="processing", source="zoom")
+    with get_session() as s:
+        child = Job(topic="Часть", status="processing", source="split",
+                    parent_job_id=parent)
+        s.add(child)
+        s.commit()
+        cid = child.id
+    st = _states(build_stages(cid))
+    assert st["upload"] == "skipped"
+    assert st["recording"] == "skipped"
+    assert st["split"] == "skipped"  # потомок сам не делится

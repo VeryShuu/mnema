@@ -13,7 +13,7 @@ JOB_STATUSES = ("scheduled", "launching", "recording", "processing",
                 "awaiting_llm", "awaiting_review", "done", "failed",
                 "cancelled", "uploading")
 SPEAKER_SOURCES = ("voiceprint", "unresolved", "multi_voice")
-JOB_SOURCES = ("zoom", "upload")
+JOB_SOURCES = ("zoom", "upload", "split")
 UPLOAD_STATUSES = ("pending", "uploading", "complete", "failed")
 
 
@@ -26,7 +26,7 @@ class Job(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     zoom_meeting_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
-    source: Mapped[str] = mapped_column(String(16), default="zoom")  # zoom | upload
+    source: Mapped[str] = mapped_column(String(16), default="zoom")  # zoom | upload | split
     join_link: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     pwd_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
     topic: Mapped[str] = mapped_column(String(512), default="")
@@ -48,6 +48,11 @@ class Job(Base):
     diar_turns: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # выгрузка в самба-зеркало: {stem, dir, audio, protocol_md, protocol_docx, attempts}
     export_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # разделение одной записи на несколько встреч: потомок ссылается на родителя
+    parent_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"),
+                                                      nullable=True, index=True)
+    # {boundaries: [{t, confidence, topic_before, topic_after}], model, skipped, ts}
+    split_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     events: Mapped[list["SessionEvent"]] = relationship(back_populates="job")
     audio_files: Mapped[list["AudioFile"]] = relationship(back_populates="job")
