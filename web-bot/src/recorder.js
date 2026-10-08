@@ -950,6 +950,11 @@ async function waitForEnd(page, cfg, state, onEvent) {
   const hardMs = cfg.maxDurationMin * 60 * 1000;
   const graceMs = cfg.silenceGraceMin * 60 * 1000;
   const silenceLimitMs = cfg.silenceEndTimeoutMin * 60 * 1000;
+  // diagnostika (job 14): analyser mog molchat' ves' sozvon — leveled-okna s
+  // izmereniyem i peredryvka bez nego vyvodyatsya v sobytie,chtoby incident
+  // bil viden po logu dzhoby, a nie tol'ko po razboru "tişiny"
+  let nullStreak = 0;
+  let lastLevelDb = null;
   while (!state.stopRequested) {
     await page.waitForTimeout(10000);
     // prinyuditelny limit
@@ -985,6 +990,21 @@ async function waitForEnd(page, cfg, state, onEvent) {
       const l = await fr.evaluate(() =>
         window.__mnemaLevel ? window.__mnemaLevel() : null).catch(() => null);
       if (l !== null && l !== undefined && (levelDb === null || l > levelDb)) levelDb = l;
+    }
+    if (levelDb === null) {
+      nullStreak++;
+      // 15 podryad okon bez edinnogo izmereniya (= 150 s) — analyser/ctx skoree
+      // vsego umen; signalyum v log dzhoby (odno sobytie na epizod)
+      if (nullStreak === 15) {
+        onEvent(EVENT.SILENCE,
+          `нет измерений уровня звука ${nullStreak * 10} с подряд — детектор слеп, автовыход по тишине заблокирован`);
+      }
+    } else {
+      if (nullStreak >= 15) {
+        onEvent(EVENT.SILENCE, `измерение уровня восстановлено (пик ${levelDb.toFixed(1)} дБ)`);
+      }
+      nullStreak = 0;
+      lastLevelDb = levelDb;
     }
     const d = decideSilence({
       nowMs: Date.now(), joinedAtMs: state.joinedAt, lastSoundTsMs: state.lastSoundTs,

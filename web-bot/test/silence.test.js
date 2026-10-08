@@ -74,13 +74,44 @@ test("tişina nabegayet vo vremya greyysa, porog po greyysu -> leave syrazu", ()
   assert.equal(d.leave, true);
 });
 
-test("nedostupnyy uroven' (null) zvuchnym nie schitaetsya, no i ne sbrasyvaet", () => {
+test("nedostupnyy uroven' (null) zamoraživaet taymer: leave false (job 14)", () => {
   const joined = 1_000_000;
   const now = joined + GRACE + SILENCE;
   const d = decideSilence(base({ nowMs: now, joinedAtMs: joined, lastSoundTsMs: joined + GRACE, levelDb: null }));
   assert.equal(d.sound, false);
-  assert.equal(d.lastSoundTs, joined + GRACE);
-  assert.equal(d.leave, true); // tişina chislitsya ot poslednego podtverzhennogo zvuka
+  assert.equal(d.lastSoundTs, now); // taymer zamorozhen, a nie prodolzhen
+  assert.equal(d.leave, false); // vendostupnoye izmereniye nie golosuyet za tişinu
+});
+
+test("regressiya job 14: null-tiki ne navyazyvayut tishinu, srazu posle vosstanovleniya — ne leave", () => {
+  const joined = 1_000_000;
+  let ts = joined;
+  let lastSoundTs = joined;
+  // ves'chas analyser nie zhil: null-tiki every 10 s
+  for (let i = 0; i < 60 * 6; i++) {
+    ts += 10_000;
+    const d = decideSilence(base({ nowMs: ts, joinedAtMs: joined, lastSoundTsMs: lastSoundTs, levelDb: null }));
+    lastSoundTs = d.lastSoundTs;
+    assert.equal(d.leave, false);
+  }
+  // izmereniye vosstanovilos' i pervyy ze tik — tihiy: tişina ot odnogo tika, ne 60 min
+  ts += 10_000;
+  const d = decideSilence(base({ nowMs: ts, joinedAtMs: joined, lastSoundTsMs: lastSoundTs, levelDb: -80 }));
+  assert.equal(d.leave, false);
+  assert.ok(d.silenceMin < 1);
+});
+
+test("podryad izmeryonnye tihie tiki posле vosstanovleniya navyazyvayut tishinu — leave", () => {
+  const joined = 1_000_000;
+  let ts = joined + GRACE;
+  let lastSoundTs = ts;
+  for (let i = 0; i < 30; i++) { // 30 tikov po 10 s = 5 min tishiny
+    ts += 10_000;
+    const d = decideSilence(base({ nowMs: ts, joinedAtMs: joined, lastSoundTsMs: lastSoundTs, levelDb: -80 }));
+    lastSoundTs = d.lastSoundTs;
+    if (i < 29) assert.equal(d.leave, false);
+    else assert.equal(d.leave, true);
+  }
 });
 
 test("granichnyy sluchay: rovvno silenceMs — leave", () => {
