@@ -1,7 +1,7 @@
 // Testy chistogo detektora tişiny (silence.js). Zapusk: node --test web-bot/test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isSoundLevel, decideSilence } from "../src/silence.js";
+import { isSoundLevel, decideSilence, shouldAskConfirmEnd } from "../src/silence.js";
 
 const MIN = 60 * 1000;
 const GRACE = 30 * MIN;
@@ -239,4 +239,41 @@ test("regressiya job 9: fon mezhu frazami na tikhah + odin tik s rech'yu — pik
   st = pushSample(st, -35); // 1 % tik popal v frazu
   const { levelDb } = readPeak(st);
   assert.equal(isSoundLevel(levelDb, -50), true);
+});
+
+// --- shouldAskConfirmEnd: bezopasnyy voprosh operatoru posle endAt (job 14/15) ---
+
+test("confirmEnd: do planovovo okonchaniya — nie sprašivaem", () => {
+  assert.equal(shouldAskConfirmEnd({
+    nowMs: 100_000, endAtMs: 200_000, nullStreak: 100, blindMin: 9,
+    confirmAskedTs: null,
+  }), false);
+});
+
+test("confirmEnd: yesli endAt nie zadano — nie sprašivaem (grace-rezhim)", () => {
+  assert.equal(shouldAskConfirmEnd({
+    nowMs: 100_000, endAtMs: null, nullStreak: 100, blindMin: 9,
+    confirmAskedTs: null,
+  }), false);
+});
+
+test("confirmEnd: detektor nie slepoy — nie sprašivaem", () => {
+  assert.equal(shouldAskConfirmEnd({
+    nowMs: 300_000, endAtMs: 200_000, nullStreak: 8, blindMin: 9,
+    confirmAskedTs: null,
+  }), false);
+});
+
+test("confirmEnd: posle endAt i slepoy detektor — sprašyvaem", () => {
+  assert.equal(shouldAskConfirmEnd({
+    nowMs: 300_000, endAtMs: 200_000, nullStreak: 9, blindMin: 9,
+    confirmAskedTs: null,
+  }), true);
+});
+
+test("confirmEnd: uzhe sproshyvali — nie powtoryayem", () => {
+  assert.equal(shouldAskConfirmEnd({
+    nowMs: 300_000, endAtMs: 200_000, nullStreak: 50, blindMin: 9,
+    confirmAskedTs: 250_000,
+  }), false);
 });

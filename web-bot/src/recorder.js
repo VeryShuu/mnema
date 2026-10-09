@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildJoinUrl } from "./config.js";
-import { decideSilence } from "./silence.js";
+import { decideSilence, shouldAskConfirmEnd } from "./silence.js";
 import {
   END_CONTROL_SRC, LEAVE_SRCS, LEAVE_DIALOG_SRCS,
   MIC_CANDIDATE_SRC, MIC_MUTED_SRC, MIC_ACTIVE_SRC, MIC_MUTED_ICON_SRC,
@@ -135,6 +135,7 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
     stopRequested: false, stopReason: null, reloads: 0, joinedAt: null,
     lastChunksTs: Date.now(), lastSoundTs: Date.now(),
     lastNavTs: Date.now(), chunksSaved: 0, vnc, endAtMs: null,
+    jobId, confirmAskedTs: null,
   };
   holder.requestStop = (reason) => {
     state.stopRequested = true;
@@ -407,6 +408,29 @@ async function fetchJobMeta(jobId) {
     return await r.json(); // {meeting_id, pwd|null}
   } catch {
     return null;
+  }
+}
+
+// Bezopasnyy vyhod: posle planovovo okonchaniya zvuk nie izmeryaetsya —
+// sprosivayem operatora (API otlavit письмо: «Завершить» + VNC + skrinshot).
+// Oshibka nie lomit zapis' — v nastupayushchem cikle probuem eshche raz.
+async function askConfirmEnd(page, cfg, state, onEvent, reason) {
+  const API = process.env.API_URL || "http://api:8000";
+  state.confirmAskedTs = Date.now();
+  const shot = await captureFailureShot(page, state.jobId, cfg);
+  onEvent("confirm_end_requested", `${reason} — вопрос оператору (письмо)`);
+  try {
+    const r = await fetch(`${API}/api/jobs/${state.jobId}/confirm-end`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason, screenshot_path: shot || null }),
+    });
+    if (!r.ok) {
+      state.confirmAskedTs = null; // ne došlo — povtorim v sleduyushchem cikla
+      console.error(`confirm-end ${state.jobId} -> ${r.status}`);
+    }
+  } catch (e) {
+    state.confirmAskedTs = null;
+    console.error(`confirm-end ${state.jobId}:`, e.message);
   }
 }
 
@@ -947,6 +971,8 @@ async function leaveMeetingGracefully(page, state, onEvent) {
 
 // -------------------------------------------------------------- konets zapiši
 async function waitForEnd(page, cfg, state, onEvent) {
+  // OKON BEZ IZMURENIY posle endAt, pri kotoryh sprašivaem operatora (10 s tik)
+  const CONFIRM_END_BLIND_WINDOWS = 9;
   const hardMs = cfg.maxDurationMin * 60 * 1000;
   const graceMs = cfg.silenceGraceMin * 60 * 1000;
   const silenceLimitMs = cfg.silenceEndTimeoutMin * 60 * 1000;
@@ -1012,6 +1038,14 @@ async function waitForEnd(page, cfg, state, onEvent) {
       endAtMs: state.endAtMs,
     });
     state.lastSoundTs = d.lastSoundTs;
+    // planovoye okonchaniye proshlo, no zvuk nie izmeryaetsya (slepoy detektor) —
+    // nie vyhodim samii, a sprosivayem operatora (pismo: «Zavershit'» + VNC + shot)
+    if (shouldAskConfirmEnd({ nowMs: Date.now(), endAtMs: state.endAtMs,
+                              nullStreak, blindMin: CONFIRM_END_BLIND_WINDOWS,
+                              confirmAskedTs: state.confirmAskedTs })) {
+      await askConfirmEnd(page, cfg, state, onEvent,
+        `уровень звука недоступен ${nullStreak * 10} с после планового окончания — непонятно, идёт ли совещание`);
+    }
     if (d.leave) {
       onEvent(EVENT.ENDED,
         `тишина ${d.silenceMin.toFixed(1)} мин подряд (> ${cfg.silenceEndTimeoutMin}) — автовыход`);

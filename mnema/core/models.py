@@ -189,6 +189,26 @@ class ReviewRequest(Base):
     answered_ts: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ConfirmEndRequest(Base):
+    """Запрос ручного подтверждения завершения записи (безопасный выход).
+
+    web-bot не уверен, есть ли звук после планового окончания встречи —
+    вместо автовыхода создаёт запрос: письмо с кнопками «Завершить» (GET
+    /confirm-end/<token>) и «Посмотреть экран» (noVNC) + скриншот. Запись
+    продолжается, пока оператор не ответит или запрос не истекает."""
+    __tablename__ = "confirm_end_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    screenshot_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending",
+                                        index=True)  # pending|confirmed|cancelled|expired
+    created_ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    responded_ts: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class SessionHealth(Base):
     __tablename__ = "session_health"
 

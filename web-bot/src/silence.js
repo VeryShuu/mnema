@@ -40,6 +40,19 @@ export function isSoundLevel(levelDb, thresholdDb) {
   return levelDb > thresholdDb;
 }
 
+// Bezopasnyy ruchnoy vyhod (posle testa job 14/15): esli planovoye okonchaniye
+// (endAtMs) uzhe proshlo, no detektor SLEPOY (ni odnogo dostupnogo izmereniya
+// za poslednie nullStreak okon), vyhod po sobstvennomu rescheniyu zapreshchen —
+// sprosivayem operatora (pismo s knopkami). true — esli sprosiť eshche nie
+// sproshyvali. Vyhod posle testa tol'ko po komande operatora (stop-link).
+export function shouldAskConfirmEnd({ nowMs, endAtMs, nullStreak, blindMin,
+                                      confirmAskedTs }) {
+  if (endAtMs === null || endAtMs === undefined) return false;
+  if (nowMs < endAtMs) return false;
+  if (nullStreak < blindMin) return false;
+  return confirmAskedTs === null || confirmAskedTs === undefined;
+}
+
 // Vozvraschaet { sound, lastSoundTs, silenceMin, graceDone, leave }.
 // leave = proshyel greyys ot momenta vklyucheniya zapisi I zvuk otсутstvuyet
 // nepreryvno >= silenceMs. Tişина mozhet nabegat' vo vremya greyysa — togda

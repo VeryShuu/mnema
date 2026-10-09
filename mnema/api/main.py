@@ -289,6 +289,114 @@ def api_job_leave(jid: int):
     return {"ok": True, "status": status, "stop_queued": stop_queued}
 
 
+# ------------------------------------------------- подтверждение завершения записи
+class ConfirmEndIn(BaseModel):
+    reason: str | None = None
+    screenshot_path: str | None = None
+
+
+@app.post("/api/jobs/{jid}/confirm-end")
+def api_job_confirm_end(jid: int, body: ConfirmEndIn, request: Request):
+    """web-bot не уверен, идёт ли звук после планового окончания встречи:
+    вместо автовыхода — письмо оператору с кнопками «Завершить» (одноразовый
+    токен) и «Посмотреть экран» (noVNC) + скриншот. Запись продолжается."""
+    import secrets
+    from ..core.models import ConfirmEndRequest
+    with get_session() as s:
+        job = s.get(Job, jid)
+        if job is None:
+            raise HTTPException(404)
+        if job.status != "recording":
+            raise HTTPException(409, f"не запись: {job.status}")
+        prev = s.scalars(select(ConfirmEndRequest).where(
+            ConfirmEndRequest.job_id == jid,
+            ConfirmEndRequest.status == "pending")).first()
+        if prev is not None:
+            return {"ok": True, "request_id": prev.id, "already_pending": True}
+        req = ConfirmEndRequest(
+            job_id=jid, token=secrets.token_urlsafe(24),
+            reason=(body.reason or "")[:255] or None,
+            screenshot_path=safe_screenshot_path(body.screenshot_path))
+        s.add(req)
+        s.add(SessionEvent(job_id=jid, event="confirm_end_requested",
+                           detail=body.reason or "нужно подтверждение завершения"))
+        s.commit()
+        s.refresh(req)
+        topic, token, rid = job.topic, req.token, req.id
+        shot = req.screenshot_path
+    ns = NotifyService()
+    vnc = vnc_svc.get_for_job(jid)
+    vnc_url = _vnc_payload(request, vnc)
+    # v pis'me ssylka dolzhna byt' vneshney (operator otkryvaet ne iz docker-seti):
+    # host bereimsya iz MNEMA_PUBLIC_URL, yesli on zadanyi
+    public_host = NotifyService().base_url.split("//", 1)[-1].split(":", 1)[0]
+    if vnc_url and public_host and public_host not in ("localhost", "api"):
+        port = vnc_url.rsplit(":", 1)[-1].split("/", 1)[0]
+        vnc_url = f"http://{public_host}:{port}/vnc.html"
+    ns.enqueue("confirm_end",
+               f"[Mnema] Завершить запись? {topic or 'встреча без темы'}",
+               f"Встреча: {topic or '(без темы)'}\n"
+               f"Плановое время окончания прошло, звука не слышно: "
+               f"{body.reason or 'детектор не подтверждает тишину'}.\n"
+               f"Запись продолжается. Завершить: "
+               f"{ns.base_url}/confirm-end/{token}\n"
+               + (f"Экран совещания: {vnc_url}\n" if vnc_url else "")
+               + f"Задача: {ns.base_url}/jobs/{jid}",
+               dedup_key=f"confirm_end:{jid}:{rid}",
+               data={"job_id": jid, "topic": topic,
+                     "reason": body.reason or "",
+                     "confirm_url": f"{ns.base_url}/confirm-end/{token}",
+                     "vnc_url": vnc_url or "",
+                     "job_url": f"{ns.base_url}/jobs/{jid}"},
+               screenshot_path=shot)
+    ns.dispatch_pending(limit=5)
+    return {"ok": True, "request_id": rid}
+
+
+@app.get("/confirm-end/{token}", response_class=HTMLResponse)
+def confirm_end_page(token: str):
+    """Кнопка «Завершить» из письма: ставит stop web-botу (как ручное
+    завершение в WEB), запись уходит в processing. Одноразово."""
+    from ..core.jobs_launch import request_stop
+    from ..core.models import ConfirmEndRequest
+
+    def _page(title: str, text: str) -> HTMLResponse:
+        return HTMLResponse(
+            f"<!DOCTYPE html><html lang=\"ru\"><head><meta charset=\"utf-8\">"
+            f"<title>{title}</title></head>"
+            "<body style=\"font-family:Arial,sans-serif;max-width:560px;margin:64px auto;"
+            "color:#2c3e50;line-height:1.5\">"
+            f"<h2>{title}</h2><p>{text}</p></body></html>")
+
+    with get_session() as s:
+        req = s.scalars(select(ConfirmEndRequest).where(
+            ConfirmEndRequest.token == token)).first()
+        if req is None:
+            raise HTTPException(404, "Ссылка не найдена")
+        job = s.get(Job, req.job_id)
+        topic = job.topic if job else ""
+        if req.status != "pending":
+            return _page("Уже обработано",
+                         f"Запрос по встрече «{topic}» уже обработан ранее.")
+        was_jid, was_recording = req.job_id, job is not None and job.status == "recording"
+        req.status = "confirmed"
+        req.responded_ts = dt.datetime.now(dt.timezone.utc)
+        s.add(SessionEvent(job_id=req.job_id, event="confirm_end_confirmed",
+                           detail="завершение подтверждено по ссылке из письма"))
+        s.commit()
+    stop_queued = request_stop(was_jid, reason="manual_leave") if was_recording else False
+    if stop_queued:
+        return _page("Завершение подтверждено",
+                     "Бот выходит из созвона, запись уходит в обработку.")
+    if was_recording:
+        return _page("Запрос подтверждён",
+                     "Внимание: команда остановки не поставилась в очередь "
+                     "(redis недоступен) — завершите запись кнопкой «Завершить» "
+                     "в интерфейсе Mnema.")
+    return _page("Запрос подтверждён",
+                 "Запись уже не активна — завершать нечего.")
+
+
 # ------------------------------------------------------------------- VNC (FT-24/§12)
 def _vnc_url(request: Request, port: int) -> str:
     host = (request.url.hostname if request else None) or "localhost"

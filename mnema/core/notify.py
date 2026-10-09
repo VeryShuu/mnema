@@ -59,7 +59,7 @@ def parse_notify_events(spec: str | None = None) -> dict[str, str]:
     """FT-36: 'job_failed=email,protocol_ready=email' -> dict kind->channel."""
     raw = (spec if spec is not None else env("NOTIFY_EVENTS",
            "job_failed=email,session_relogin_due=email,protocol_ready=email,"
-           "awaiting_llm=email"))
+           "awaiting_llm=email,confirm_end=email"))
     out: dict[str, str] = {}
     for part in raw.split(","):
         part = part.strip()
@@ -171,7 +171,8 @@ class NotifyService:
 
     def enqueue(self, kind: str, subject: str, body: str,
                 dedup_key: str | None = None,
-                data: dict | None = None) -> Notification | None:
+                data: dict | None = None,
+                screenshot_path: str | None = None) -> Notification | None:
         if not should_notify(kind):
             return None
         with get_session() as s:
@@ -183,6 +184,7 @@ class NotifyService:
                              body=body,
                              data_json=(json.dumps(data, ensure_ascii=False)
                                         if data else None),
+                             screenshot_path=safe_screenshot_path(screenshot_path),
                              to_addr=env("NOTIFY_EMAIL_TO"), status="pending")
             s.add(n)
             s.commit()
@@ -196,8 +198,8 @@ class NotifyService:
         return _smtp_send
 
     def build_message(self, n: Notification) -> EmailMessage:
-        """multipart/alternative (ru plain + html). job_failed + существующий
-        скриншот -> related(alternative, image/png cid:failure_screenshot)."""
+        """multipart/alternative (ru plain + html). job_failed/confirm_end +
+        существующий скриншот -> related(alternative, image/png cid:failure_screenshot)."""
         subject, html, text = render_email(n)
         msg = EmailMessage()
         msg["Subject"] = subject
@@ -206,7 +208,7 @@ class NotifyService:
         if n.cc_addr:
             msg["Cc"] = n.cc_addr
         shot_bytes = None
-        if n.kind == "job_failed" and n.screenshot_path:
+        if n.kind in ("job_failed", "confirm_end") and n.screenshot_path:
             if os.path.isfile(n.screenshot_path):
                 try:
                     shot_bytes = Path(n.screenshot_path).read_bytes()

@@ -138,6 +138,29 @@ LLM отложено: LLM не настроен или недоступен.</p>
 {% endcall %}
 """
 
+_CONFIRM_END_HTML = """
+{% from "_macros.html" import page, fields, button %}
+{% call page('#e67e22', 'Завершить запись встречи?') %}
+<p style="margin:0 0 14px;">{{ message | nl2br }}</p>
+{% if rows %}{{ fields(rows) }}{% endif %}
+<div style="margin-top:14px;">
+{{ button('Завершить запись', confirm_url, '#c0392b') }}
+{{ button('Посмотреть экран совещания', vnc_url, '#2e6fd8') }}
+</div>
+<div style="margin-top:18px;background-color:#fdf6ee;border:1px solid #eed9bd;border-radius:6px;padding:12px 14px;color:#2c3e50;">
+<span style="color:#b3661a;font-weight:bold;">Важно:</span>
+запись продолжается, пока вы не нажмёте «Завершить». Если звук в совещании есть —
+просто закройте письмо.
+</div>
+{% if screenshot_ok %}
+<div style="margin-top:20px;">
+<div style="color:#8a95a5;font-size:12px;margin-bottom:6px;">Скриншот экрана в момент вопроса:</div>
+<img src="cid:failure_screenshot" alt="Скриншот экрана в момент вопроса" width="544" style="max-width:100%;border:1px solid #d8dee7;border-radius:6px;display:block;">
+</div>
+{% endif %}
+{% endcall %}
+"""
+
 _ALERT_HTML = """
 {% from "_macros.html" import page, fields, button %}
 {% call page('#5d7290', 'Внимание') %}
@@ -183,6 +206,7 @@ _env = Environment(
         "job_failed.html": _JOB_FAILED_HTML,
         "protocol_ready.html": _PROTOCOL_READY_HTML,
         "awaiting_llm.html": _AWAITING_LLM_HTML,
+        "confirm_end.html": _CONFIRM_END_HTML,
         "alert.html": _ALERT_HTML,
         "digest.html": _DIGEST_HTML,
         "fallback.html": _FALLBACK_HTML,
@@ -207,9 +231,10 @@ def parse_notification_data(n) -> dict | None:
 
 
 def screenshot_exists(n) -> bool:
-    """job_failed + screenshot_path указывает на существующий файл."""
+    """job_failed/confirm_end + screenshot_path указывает на существующий файл."""
     p = getattr(n, "screenshot_path", None)
-    return bool(p) and getattr(n, "kind", "") == "job_failed" and os.path.isfile(p)
+    return bool(p) and getattr(n, "kind", "") in ("job_failed", "confirm_end") \
+        and os.path.isfile(p)
 
 
 def fmt_attempt_ts(value) -> str:
@@ -298,6 +323,30 @@ def render_email(n) -> tuple[str, str, str]:
                         "Донастройте LLM и запустите повторную обработку: "
                         f"{data.get('job_url') or '—'}")
             return subject, html, text
+        if kind == "confirm_end":
+            message = (data.get("message")
+                       or "Плановое время окончания встречи прошло, а уровень звука "
+                          "измерить не удалось — непонятно, идёт ли совещание. "
+                          "Запись продолжается.")
+            rows = [("Встреча", _topic(data))]
+            if data.get("reason"):
+                rows.append(("Почему спрашиваем", data.get("reason")))
+            html = _env.get_template("confirm_end.html").render(
+                message=message, rows=rows,
+                confirm_url=data.get("confirm_url") or "",
+                vnc_url=data.get("vnc_url") or "",
+                screenshot_ok=screenshot_exists(n))
+            text_bits = [f"Встреча: {_topic(data)}", message]
+            if data.get("reason"):
+                text_bits.append(f"Причина: {data['reason']}")
+            if data.get("confirm_url"):
+                text_bits.append(f"Завершить запись: {data['confirm_url']}")
+            if data.get("vnc_url"):
+                text_bits.append(f"Экран совещания: {data['vnc_url']}")
+            text_bits.append("Запись продолжается, пока вы не подтвердите завершение.")
+            if screenshot_exists(n):
+                text_bits.append("Скриншот экрана — во вложении.")
+            return subject, html, "\n".join(text_bits) + "\n"
         if kind in ("alert", "job_export_failed"):
             message = data.get("message") or body
             rows = []
