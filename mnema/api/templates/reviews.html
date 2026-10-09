@@ -3,7 +3,11 @@
 <div class="page-head"><h2>Очередь уточнений</h2></div>
 {% for r in pending %}
 <div class="card" style="border-left:4px solid var(--warn)">
-  <h3>Встреча №{{ r.job_id }} ({{ jobs[r.job_id].topic if r.job_id in jobs else '' }}) — голосовой кластер «{{ r.cluster_label }}»</h3>
+  <h3 style="display:flex;justify-content:space-between;align-items:center;gap:.5rem">
+    <span>Встреча №{{ r.job_id }} ({{ jobs[r.job_id].topic if r.job_id in jobs else '' }}) — голосовой кластер «{{ r.cluster_label }}»</span>
+    <button type="button" style="flex:none" onclick="toggleCluster({{ r.id }})" id="toggle_{{ r.id }}">Свернуть</button>
+  </h3>
+  <div id="cluster_body_{{ r.id }}">
   {% if r.candidate %}
     <p>Похоже на <b>{{ r.candidate }}</b> ({{ '%.0f'|format((r.similarity or 0)*100) }}%). Это он?</p>
     <form onsubmit="answer({{ r.id }}, {{ r.candidate_id }}, null);return false;">
@@ -26,16 +30,39 @@
   {% endif %}
   <p><b>Эталонные фрагменты:</b></p>
   {% for seg in refsegs.get(r.id, []) %}
-    <p><audio controls preload="none" src="/api/jobs/{{ r.job_id }}/audio?format=wav#t={{ seg.t_start }},{{ seg.t_end }}"></audio>
+    <p><audio class="refseg" controls preload="none" data-start="{{ seg.t_start }}" src="/api/jobs/{{ r.job_id }}/audio?format=wav#t={{ seg.t_start }},{{ seg.t_end }}"></audio>
     <span class="muted">{{ '%.0f'|format(seg.t_start) }}–{{ '%.0f'|format(seg.t_end) }} с: {{ seg.text[:80] }}</span></p>
     <p style="margin-top:.2rem"><button type="button" title="Убрать этот фрагмент из кластера"
             onclick="removeSegment({{ r.id }}, {{ seg.id }})">Удалить из кластера</button>
     <button type="button" style="margin-left:.3rem" title="Фрагмент с двумя голосами/посторонними звуками — не анализировать"
             onclick="excludeSegment({{ r.id }}, {{ seg.id }})">Исключить из анализа</button></p>
   {% endfor %}
+  </div>
 </div>
 {% else %}<p class="muted">Нет ожидающих уточнений.</p>{% endfor %}
 <script>
+function setCollapsed(rid, collapsed){
+  const body = document.getElementById('cluster_body_'+rid);
+  const btn = document.getElementById('toggle_'+rid);
+  body.style.display = collapsed ? 'none' : '';
+  btn.textContent = collapsed ? 'Развернуть' : 'Свернуть';
+  try {
+    const s = new Set(JSON.parse(localStorage.getItem('collapsedReviews') || '[]'));
+    collapsed ? s.add(String(rid)) : s.delete(String(rid));
+    localStorage.setItem('collapsedReviews', JSON.stringify([...s]));
+  } catch (e) {}
+}
+function toggleCluster(rid){
+  const body = document.getElementById('cluster_body_'+rid);
+  setCollapsed(rid, body.style.display !== 'none');
+}
+document.addEventListener('DOMContentLoaded', () => {
+  let collapsed = [];
+  try { collapsed = JSON.parse(localStorage.getItem('collapsedReviews') || '[]'); } catch (e) {}
+  collapsed.forEach((rid) => {
+    if (document.getElementById('cluster_body_'+rid)) setCollapsed(parseInt(rid), true);
+  });
+});
 async function answer(rid, employeeId, employeeName, createNew){
   const body = {employee_id: employeeId, employee_name: employeeName, create_new: !!createNew};
   await fetch('/api/reviews/'+rid, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -54,6 +81,9 @@ async function removeSegment(rid, segId){
   if(!r.ok){ alert('Не удалось убрать фрагмент: ' + r.status); return; }
   location.reload();
 }
+document.querySelectorAll('audio.refseg').forEach((a) => {
+  a.addEventListener('ended', () => { a.currentTime = parseFloat(a.dataset.start) || 0; });
+});
 async function excludeSegment(rid, segId){
   if(!confirm('Исключить этот фрагмент из анализа полностью? Он не попадёт в стенограмму и протокол.')) return;
   const r = await fetch('/api/reviews/'+rid+'/segments/'+segId+'/exclude', {method:'POST'});
