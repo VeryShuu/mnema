@@ -1300,7 +1300,13 @@ const INIT_SCRIPT = `
       analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
       anaBuf = new Float32Array(analyser.fftSize);
-      dest.connect(analyser);
+      // analyser v razvedke PERE dest, a nie listom za nim: dest.connect(analyser)
+      // v Chromium brosaet "output index (0) exceeds number of outputs (0)"
+      // (u MediaStreamDestination net potyagivayemogo vyhoda) — catch gasil
+      // oshibku i analyser byl null vsyu zapis', __mnemaLevel vsegda null
+      // (koren' slepoty detektora, job 14/15). Provereno v Chromium konteynera:
+      // analyser->dest i pishetsya, i izmeryaetsya.
+      analyser.connect(dest);
     } catch (e) { analyser = null; }
     if (window.__mnemaGlobalArm) startWin(); // payplayn sozdan posle arma (migraciya trekov)
   }
@@ -1341,7 +1347,9 @@ const INIT_SCRIPT = `
     ensurePipeline();
     try {
       const src = ctx.createMediaStreamSource(new MediaStream([track]));
-      src.connect(dest);
+      // cherez analyser (on pered dest), chtoby miksh prohodil cherez nego i
+      // uroven merilsya real'nym zvukom; net analyzera — pryamo v dest
+      src.connect(analyser || dest);
       window.__mnemaTracks++;
     } catch (e) { /* uze podat' ili nedastupno */ }
   }
