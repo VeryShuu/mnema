@@ -8,6 +8,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildJoinUrl } from "./config.js";
 import { decideSilence, shouldAskConfirmEnd } from "./silence.js";
+import { segKey, shortMixWarningS, ebmlHeaderOffsets } from "./seg_key.js";
 import {
   END_CONTROL_SRC, LEAVE_SRCS, LEAVE_DIALOG_SRCS,
   MIC_CANDIDATE_SRC, MIC_MUTED_SRC, MIC_ACTIVE_SRC, MIC_MUTED_ICON_SRC,
@@ -135,7 +136,7 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
     stopRequested: false, stopReason: null, reloads: 0, joinedAt: null,
     lastChunksTs: Date.now(), lastSoundTs: Date.now(),
     lastNavTs: Date.now(), chunksSaved: 0, vnc, endAtMs: null,
-    jobId, confirmAskedTs: null,
+    jobId, confirmAskedTs: null, browserTotal: {},
   };
   holder.requestStop = (reason) => {
     state.stopRequested = true;
@@ -151,10 +152,15 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
   //     nachale). Na finalize okna sravnivayutsya adelay+amix — bez atrimov po
   //     lozhnym epoham, kotorye syedali nachalo fraz.
   let recording = false;
-  const frameFiles = new Map(); // `${fr}|w<W>` -> {n, p, fd, bytes, epochMs}
+  const frameFiles = new Map(); // `${fr}|${docId}|w<W>` -> {n, p, fd, bytes, epochMs}
   let frameSeq = 0;
-  const ensureSegFor = (fr, w) => {
-    const key = `${fr.url()}#${fr.name()}|w${w}`;
+  // docId (nonce JS-документа страницы) обязателен в ключе: Zoom перезагружает
+  // свой фрейм внутри страницы (job 16: на ~13-й минуте); новый контекст по
+  // re-arm снова открывал окно 1, но Node по прежнему ключу url|w1 дописывал
+  // второй webm-поток в тот же fd — склейка двух EBML-потоков, декдер терял
+  // чтение на шве (~13 мин из 2ч18м, job 16). Смена docId = новый сегмент-файл.
+  const ensureSegFor = (fr, w, docId) => {
+    const key = segKey(fr.url(), fr.name(), docId, w);
     let rec = frameFiles.get(key);
     if (!rec) {
       const n = frameSeq++;
@@ -184,10 +190,13 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
       }));
       for (const { fr, st } of statuses) {
         if (!st || !st.d || !st.d.wins) continue;
+        // skol'ko vbrosila stsa (nakopitel'no s zagruzki dokumenta) — dla
+        // sverki s zapisannymi bajtami v finalize (poteri mezhdu drainami)
+        if (st.d.total) state.browserTotal[`${fr.url()}|${st.d.docId || ""}`] = st.d.total;
         for (const [wStr, chunks] of Object.entries(st.d.wins)) {
           const w = parseInt(wStr, 10);
           if (!w || !chunks || !chunks.length) continue; // okno 0 (pre-arm) - v korzinku; w>=1: otdalnoe fail
-          const rec = ensureSegFor(fr, w);
+          const rec = ensureSegFor(fr, w, st.d.docId);
           if (rec.epochMs === undefined)
             rec.epochMs = (st.d.epochs && st.d.epochs[w]) || Date.now();
           const buf = Buffer.from(chunks.join(''), "base64");
@@ -258,7 +267,7 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
         for (const [wStr, chunks] of Object.entries(d.wins)) {
           const w = parseInt(wStr, 10);
           if (!w || !chunks || !chunks.length) continue;
-          const rec = ensureSegFor(fr, w);
+          const rec = ensureSegFor(fr, w, d.docId);
           if (rec.epochMs === undefined)
             rec.epochMs = (d.epochs && d.epochs[w]) || Date.now();
           const buf = Buffer.from(chunks.join(''), "base64");
@@ -276,7 +285,7 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
     }
     const segs = [...frameFiles.values()];
     for (const rec of segs) { try { fs.closeSync(rec.fd); } catch { /* */ } }
-    return finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end);
+    return finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, onEvent);
   } finally {
     clearInterval(flushTimer);
     for (const rec of frameFiles.values()) { try { fs.closeSync(rec.fd); } catch { /* already */ } }
@@ -1082,22 +1091,53 @@ async function waitForEnd(page, cfg, state, onEvent) {
 // privetstviya): khvosty do nego (sam privetstviye/hold) otrezayutsya atrimom,
 // boleye polozhennye segmenty sdvigayutsya adelay. Odin segament bez shvona —
 // prosto kopiruem.
-function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end) {
+function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, onEvent) {
   let durationS = null;
   const real = segs.filter((s) => s.bytes > 0 && fs.existsSync(s.p)
     && fs.statSync(s.p).size > 0)
     .sort((a, b) => (a.epochMs || 0) - (b.epochMs || 0));
-  const base = (real[0] && real[0].epochMs) || Date.now();
+  // 1) Strahovka odnogo iznosa: esli v segment zapisan >1 EBML-zagolovka, vnutri
+  // nego skleeny neskolko MediaRecorder-potokov (shva) — dekor teryayet chtenie
+  // za pervym. Rezhem po offsetam; chasti idut v miksh otdel'no (epoch sleduyushchey
+  // chasti otsenivaemsya po bajtam: ~8 KB/s pri 64 kbps).
+  const inputs = [];
+  for (const s of real) {
+    let parts = [s];
+    try {
+      const offs = ebmlHeaderOffsets(fs.readFileSync(s.p));
+      if (offs.length > 1) {
+        onEvent(EVENT.ERROR, `segment ${path.basename(s.p)}: skleeny ${offs.length} potokov — rezu po shvam`);
+        parts = [];
+        for (let k = 0; k < offs.length; k++) {
+          const from = offs[k];
+          const to = k + 1 < offs.length ? offs[k + 1] : fs.statSync(s.p).size;
+          if (to - from < 1024) continue; // sluchaynoe sovpadenie magic v opus-dannyh
+          const pp = `${s.p}.p${k}.webm`;
+          const wfd = fs.openSync(pp, "w");
+          const chunk = Buffer.allocUnsafe(to - from);
+          const rfd = fs.openSync(s.p, "r");
+          fs.readSync(rfd, chunk, 0, to - from, from);
+          fs.writeSync(wfd, chunk);
+          fs.closeSync(rfd); fs.closeSync(wfd);
+          const epochMs = (s.epochMs || 0)
+            + Math.round((k === 0 ? 0 : offs[k] - offs[0]) / 8); // bajt -> ms pri 64kbps
+          parts.push({ p: pp, bytes: to - from, epochMs, partOf: s.p });
+        }
+      }
+    } catch { /* ne procitalis' — kak est' odnim fragmentom */ }
+    inputs.push(...parts);
+  }
+  const base = (inputs[0] && inputs[0].epochMs) || Date.now();
   try {
-    if (real.length === 1) {
-      fs.copyFileSync(real[0].p, webmPath);
-    } else if (real.length >= 1) {
-      mixSegments(real, base, webmPath);
+    if (inputs.length === 1) {
+      fs.copyFileSync(inputs[0].p, webmPath);
+    } else if (inputs.length >= 1) {
+      mixSegments(inputs, base, webmPath);
     }
   } catch (e) {
     /* bolshe vsego potokov — beriem naibolee polnyy bez shkly */
     if (!fs.existsSync(webmPath) || fs.statSync(webmPath).size === 0) {
-      const biggest = [...real].sort((a, b) => b.bytes - a.bytes)[0];
+      const biggest = [...inputs].sort((a, b) => b.bytes - a.bytes)[0];
       if (biggest) { try { fs.copyFileSync(biggest.p, webmPath); } catch { /* */ } }
     }
   }
@@ -1117,6 +1157,36 @@ function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end) {
   try {
     durationS = probeDuration(webmPath);
   } catch { durationS = null; }
+  // sanity: микс заметно короче wall-clock записи — потерянный хвост (job
+  // 16) — loudим в events operatora I SOHRANYAEM syryye segmenty: bez nih
+  // vstrecha nevosstanovimaya.
+  let suspect = false;
+  if (state.joinedAt) {
+    const warnS = shortMixWarningS(durationS, (Date.now() - state.joinedAt) / 1000);
+    if (warnS !== null) {
+      suspect = true;
+      onEvent(EVENT.ERROR, `длительность записи ${Math.round(durationS)} c заметно короче встречи `
+        + `(${Math.round((Date.now() - state.joinedAt) / 1000)} c) — часть аудио потеряна при склейке`);
+    }
+  }
+  // 2) Sverka: browser (nakopitel'nyy __mnemaTotal po vsem dokumentam) vs zapisannoye
+  // na disk. Bol'shaya nesootvetstvie = propadeny mezhdu drainami — tozhe sohranyaem.
+  const writtenByDoc = new Map();
+  for (const s of segs) {
+    if (!s.key) continue;
+    const docPart = s.key.split("|")[1] || "";
+    writtenByDoc.set(docPart, (writtenByDoc.get(docPart) || 0) + s.bytes);
+  }
+  let browserBytes = 0, writtenBytes = 0;
+  for (const [k, tot] of Object.entries(state.browserTotal || {})) {
+    const docPart = k.split("|")[1] || "";
+    browserBytes += tot;
+    writtenBytes += writtenByDoc.get(docPart) || 0;
+  }
+  if (browserBytes > 1_000_000 && writtenBytes < browserBytes * 0.9) {
+    suspect = true;
+    onEvent(EVENT.ERROR, `записано ${writtenBytes} байт из ${browserBytes}, выброшенных браузером — часть аудио потеряна`);
+  }
   // wav i mp3 (mp3 srazu — FT-41a)
   let wavOk = false, mp3Ok = false;
   try {
@@ -1130,7 +1200,17 @@ function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end) {
     mp3Ok = fs.existsSync(mp3Path);
   } catch (e) { /* mp3 encoder niedostupen — razresheno vydat webm */ }
   const sizes = {};
-  for (const p of segs) { try { fs.rmSync(p.p, { force: true }); } catch { /* */ } }
+  if (suspect) {
+    // ne lonim syryye fajly: pri podozrenii na poteru eto edinstvennaya
+    // vozmozhnost' vosstanovit' vstrechu vruchnuyu (raw.*_w*.webm v kataologe job)
+    onEvent(EVENT.ERROR, "сырые сегменты сохранены в каталоге задачи для ручного восстановления");
+  } else {
+    for (const p of segs) { try { fs.rmSync(p.p, { force: true }); } catch { /* */ } }
+  }
+  for (const p of inputs) {
+    if (!p.partOf) continue; // vydvizhki razrezki — vsegda korotkie: udalyaem
+    try { fs.rmSync(p.p, { force: true }); } catch { /* */ }
+  }
   for (const [k, p] of [["webm", webmPath], ["wav", wavPath], ["mp3", mp3Path]])
     if (fs.existsSync(p)) sizes[k] = fs.statSync(p).size;
   return {
@@ -1240,6 +1320,11 @@ const INIT_SCRIPT = `
   window.__mnemaChunks = [];
   window.__mnemaTotal = 0;
   window.__mnemaTracks = 0;
+  // nonce документа: Zoom перезагружает фрейм внутри страницы — новый контекст
+  // получает новый docId, Node открывает под него отдельный сегмент-файл
+  // (иначе второй webm-поток дописывается в тот же fd и склейка нечитаема).
+  window.__mnemaDocId = (crypto && crypto.randomUUID) ? crypto.randomUUID()
+    : String(Date.now()) + "-" + String(Math.random()).slice(2);
   const OrigPC = window.RTCPeerConnection;
   let ctx = null, dest = null, rec = null;
   // Analizer na vyhode miksha vsekh udalennyh dorozhek: urov' zvuka sozwona
@@ -1408,7 +1493,8 @@ const INIT_SCRIPT = `
       (out[c.w] = out[c.w] || []).push(c.b64);
     }
     window.__mnemaChunks = [];
-    return { wins: out, epochs: winEpochs, total: window.__mnemaTotal, startMs: winEpochs[win] };
+    return { wins: out, epochs: winEpochs, total: window.__mnemaTotal, startMs: winEpochs[win],
+             docId: window.__mnemaDocId };
   };
   window.__mnemaStatus = function () {
     return { tracks: window.__mnemaTracks, bytes: window.__mnemaTotal,
