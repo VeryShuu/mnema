@@ -8,7 +8,8 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildJoinUrl } from "./config.js";
 import { decideSilence, shouldAskConfirmEnd } from "./silence.js";
-import { segKey, shortMixWarningS, ebmlHeaderOffsets } from "./seg_key.js";
+import { segKey, shortMixWarningS, ebmlHeaderOffsets, filterUsableSegs, mixWorseThanInput, pickBestDecoded, MIN_SEGMENT_BYTES } from "./seg_key.js";
+import { decodedAudioSeconds, reencodeWebm } from "./webm_fix.js";
 import {
   END_CONTROL_SRC, LEAVE_SRCS, LEAVE_DIALOG_SRCS,
   MIC_CANDIDATE_SRC, MIC_MUTED_SRC, MIC_ACTIVE_SRC, MIC_MUTED_ICON_SRC,
@@ -1105,9 +1106,12 @@ async function waitForEnd(page, cfg, state, onEvent) {
 // prosto kopiruem.
 function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, onEvent) {
   let durationS = null;
-  const real = segs.filter((s) => s.bytes > 0 && fs.existsSync(s.p)
-    && fs.statSync(s.p).size > 0)
+  const tooSmall = (segs || []).filter((s) => s.bytes > 0 && s.bytes < MIN_SEGMENT_BYTES);
+  const real = filterUsableSegs((segs || []).filter((s) => s.bytes > 0 && fs.existsSync(s.p)
+    && fs.statSync(s.p).size > 0))
     .sort((a, b) => (a.epochMs || 0) - (b.epochMs || 0));
+  if (tooSmall.length)
+    onEvent(EVENT.ERROR, `отброшено сегментов <1 KiB: ${tooSmall.length} — amix падает на нечитаемом входе целиком (job 17)`);
   // 1) Strahovka odnogo iznosa: esli v segment zapisan >1 EBML-zagolovka, vnutri
   // nego skleeny neskolko MediaRecorder-potokov (shva) — dekor teryayet chtenie
   // za pervym. Rezhem po offsetam; chasti idut v miksh otdel'no (epoch sleduyushchey
@@ -1140,11 +1144,42 @@ function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, onEvent) 
     inputs.push(...parts);
   }
   const base = (inputs[0] && inputs[0].epochMs) || Date.now();
+  const tmpMix = webmPath + ".mix.webm";
+  try { fs.rmSync(tmpMix, { force: true }); } catch { /* */ }
   try {
     if (inputs.length === 1) {
-      fs.copyFileSync(inputs[0].p, webmPath);
-    } else if (inputs.length >= 1) {
-      mixSegments(inputs, base, webmPath);
+      fs.copyFileSync(inputs[0].p, tmpMix);
+    } else {
+      try {
+        mixSegments(inputs, base, tmpMix);
+      } catch (e2) {
+        onEvent(EVENT.ERROR, `микс упал (${String(e2.message).slice(0, 120)}) — проверяю фрагменты`);
+      }
+    }
+    // Validaciya rezul'tata POLNYM DEKODOM: amix mozhet upast' na povrezhdennoy
+    // vkhode uzhe na shkve, ostaviv nepustoy obryv, a probe takogo i vovse ne
+    // pokazyvaet — dal'niy «remont» mkvmerge s"edal dannye (job 17: 3980 s ->
+    // 72 s). Esli mikš korotche luchshego dekodiruyemogo fragmenta, sozdayem
+    // vyvod peresborkoy-totogo-fragmenta reenkodom (chitaet cherez povrezhdeniya).
+    let useFallback = false, bestSeg = null;
+    const mixDec = fs.existsSync(tmpMix) ? decodedAudioSeconds(tmpMix) : 0;
+    if (inputs.length > 1) {
+      let bestDec = 0;
+      for (const s of inputs) {
+        const d = decodedAudioSeconds(s.p);
+        if (d > bestDec) { bestDec = d; bestSeg = s; }
+      }
+      useFallback = bestSeg !== null && mixWorseThanInput(mixDec, bestDec);
+      if (useFallback)
+        onEvent(EVENT.ERROR, `микс прочитался на ${Math.round(mixDec)} c из ${Math.round(bestDec)} c `
+          + `— восстанавливаю реэнкодом фрагмента ${path.basename(bestSeg.p)}`);
+    }
+    if (useFallback && reencodeWebm(bestSeg.p, webmPath)) { /* gotovo */ }
+    else if (!useFallback && mixDec > 0) fs.renameSync(tmpMix, webmPath);
+    else if (fs.existsSync(tmpMix) && fs.statSync(tmpMix).size > 0) fs.renameSync(tmpMix, webmPath);
+    else {
+      const biggest = [...inputs].sort((a, b) => b.bytes - a.bytes)[0];
+      if (biggest) { try { fs.copyFileSync(biggest.p, webmPath); } catch { /* */ } }
     }
   } catch (e) {
     /* bolshe vsego potokov — beriem naibolee polnyy bez shkly */
@@ -1152,19 +1187,30 @@ function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, onEvent) 
       const biggest = [...inputs].sort((a, b) => b.bytes - a.bytes)[0];
       if (biggest) { try { fs.copyFileSync(biggest.p, webmPath); } catch { /* */ } }
     }
+  } finally {
+    try { fs.rmSync(tmpMix, { force: true }); } catch { /* */ }
   }
 
-  // pocinka povrezhdёnogo webm (FT-6), yesli nuzno
+  // pocinka povrezhdёnogo webm (FT-6), yesli konteyner ne chitaetsya. Berem
+  // variant s nejdl'shim POLNYM DEKODOM (ffmpeg-reencode s ignore_err, mkvmerge):
+  // mkvmerge na obryvanom bez cues mozhet s"est' 97% payload (job 17).
+  // Sravnivaem varianty PO POLNOMU DEKODU (ffmpeg-reencode s ignore_err,
+  // mkvmerge, sam Syracuse) i berem nejdl'shiy: mkvmerge na obryvanom bez cues
+  // mozhet s"est' 97% payload (job 17: 3980 s -> 72 s).
   if (!probeDuration(webmPath)) {
+    const cands = [{ p: webmPath, decodedS: decodedAudioSeconds(webmPath) }];
+    const ff = webmPath + ".fffix.webm";
+    if (reencodeWebm(webmPath, ff)) cands.push({ p: ff, decodedS: decodedAudioSeconds(ff), fixed: true });
     try {
       const fixed = webmPath + ".fixed.webm";
       execFileSync("mkvmerge", ["-o", fixed, webmPath], { stdio: "pipe" });
-      if (fs.existsSync(fixed) && fs.statSync(fixed).size > 0) {
-        fs.renameSync(fixed, webmPath);
-      }
-    } catch (e) {
-      /* mkvmerge nie vsetda spasayet; prodiolzhajem so syryom */
-    }
+      if (fs.existsSync(fixed) && fs.statSync(fixed).size > 0)
+        cands.push({ p: fixed, decodedS: decodedAudioSeconds(fixed), fixed: true });
+    } catch (e) { /* mkvmerge nie vsetda spasayet */ }
+    const winner = pickBestDecoded(cands);
+    for (const c of cands)
+      if (winner && c.p !== winner.p && c.p !== webmPath) { try { fs.rmSync(c.p, { force: true }); } catch { /* */ } }
+    if (winner && winner.p !== webmPath) { try { fs.renameSync(winner.p, webmPath); } catch { /* */ } }
   }
   try {
     durationS = probeDuration(webmPath);
@@ -1235,8 +1281,10 @@ function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, onEvent) 
 // atrim do armEpoch + adelay posle nego + amix v odin webm (normalize=0 —
 // bez padaniya levelya). Vse segmenty na odnoy globalnoy shkalе vremeni.
 function mixSegments(real, base, outPath) {
+  // ignore_err: povrezhdennyye kadry v seredine potoka nie dolzhny umerbishch'
+  // ves' amix — eto input-opciya, pered kazhdym -i (dlya vseh vvodov).
   const args = ["-y"];
-  for (const s of real) args.push("-i", s.p);
+  for (const s of real) args.push("-err_detect", "ignore_err", "-i", s.p);
   const parts = [];
   const labels = [];
   real.forEach((s, i) => {

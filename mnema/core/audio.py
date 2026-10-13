@@ -13,24 +13,85 @@ def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 
+def decoded_duration_s(path: Path, timeout: float = 900.0) -> float:
+    """Dlitel'nost' PO POLNOMU DEKODU (ignore_err), ne po container-metadannym.
+
+    U obryvannogo MediaRecorder-webm net cues/Duration: ffprobe daet 0, no
+    ffmpeg schitaet vsey payload. 0.0 yesli fayl sovschem nie chiotsya."""
+    if shutil.which("ffmpeg") is None:
+        return 0.0
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-nostdin", "-nostats", "-v", "error", "-err_detect",
+             "ignore_err", "-progress", "pipe:1", "-i", str(path),
+             "-f", "null", "-"],
+            capture_output=True, text=True, timeout=timeout)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return 0.0
+    import re
+    best = 0.0
+    for line in re.split(r"[\r\n]+", r.stdout or ""):
+        m = re.match(r"out_time_ms=(\d+)", line.strip())
+        if m:
+            best = max(best, int(m.group(1)) / 1e6)
+    return best
+
+
 def mkvmerge_available() -> bool:
     return shutil.which("mkvmerge") is not None
 
 
+def repaired_pick(cands: list[tuple], slack: float = 60.0):
+    """Iz variantov (put', polnyy_dekod_s, fixed=False/True) — luchshiy. Fiksiro-
+    vannyy variant poluchaet bonus slack na shkly perekodirovaniya, no proigryayet
+    pri deficitu boleye slack: mkvmerge, syedshiy 97% payload (3980 -> 72 s),
+    otvetdeny. decodedS<=0 ne uchityvaetsya. Vozvrat (p, decodedS) ili None."""
+    living = [(p, d, f) for p, d, f in cands if d > 0]
+    if not living:
+        return None
+    best = max(living, key=lambda c: c[1] + (slack if c[2] else 0.0))
+    return best[0], best[1]
+
+
 def repair_webm(webm: Path) -> bool:
-    """Pochinit' povrezhdennyy pri padenii webm (FT-6): mkvmerge -> .fixed.webm."""
-    if not mkvmerge_available():
-        return False
-    out = webm.with_suffix(".fixed.webm")
-    r = run(["mkvmerge", "-o", str(out), str(webm)])
-    if r.returncode != 0 and not out.exists():
-        return False
-    # mkvmerge vsegda piшет warnings v stderr; schitaem uspehom esli fayl est'
-    if out.exists() and out.stat().st_size > 0:
-        shutil.move(str(out), str(webm))
+    """Pochinit' povrezhdennyy pri padenii webm (FT-6).
+
+    Rezhim mkvmerge opasen na obryvanom bez cues: on pishet «ispravlennyy»
+    index, syedya payload (job 17: 34 MB -> 973 KB, 72 s iz 3980 s). Poetomu
+    varianty sravnivayutsya PO POLNOMU DEKODU, i peresobiraetsya tol'ko tot,
+    kotoryy chiotsya dalshe Syracuse."""
+    src = webm.with_suffix(webm.suffix + ".src")
+    shutil.copyfile(str(webm), str(src))
+    try:
+        cands: list[tuple] = [(src, decoded_duration_s(src), False)]
+        tmp_ff = webm.with_suffix(".fffix.webm")
+        run(["ffmpeg", "-y", "-v", "error", "-err_detect", "ignore_err",
+             "-i", str(src), "-map", "0:a:0", "-c:a", "libopus", "-b:a",
+             "64k", "-ar", "48000", "-ac", "1", str(tmp_ff)])
+        if tmp_ff.exists() and tmp_ff.stat().st_size > 0:
+            cands.append((tmp_ff, decoded_duration_s(tmp_ff), True))
+        else:
+            tmp_ff.unlink(missing_ok=True)
+        tmp_mkv = webm.with_suffix(".fixed.webm")
+        if mkvmerge_available():
+            run(["mkvmerge", "-o", str(tmp_mkv), str(src)])
+            if tmp_mkv.exists() and tmp_mkv.stat().st_size > 0:
+                cands.append((tmp_mkv, decoded_duration_s(tmp_mkv), True))
+            else:
+                tmp_mkv.unlink(missing_ok=True)
+        winner = repaired_pick(cands)
+        for p, _, _ in cands:
+            if winner is None or p != winner[0]:
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        if winner is None:
+            return False
+        shutil.move(str(winner[0]), str(webm))
         return True
-    out.unlink(missing_ok=True)
-    return False
+    finally:
+        src.unlink(missing_ok=True)
 
 
 def webm_to_wav16k(webm: Path, wav: Path) -> None:
