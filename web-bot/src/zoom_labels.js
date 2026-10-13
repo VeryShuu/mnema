@@ -104,14 +104,33 @@ export function isInMeetingLabel(label) {
 
 export const IN_MEETING_SRC = IN_MEETING_LABELS.join("|");
 
+// --- vstrecha zavershena hostom (job 17) ------------------------------------
+// Zoom pokazyvayet modaliku "This meeting has been ended by host" — NE "the
+// meeting has ended". Pri etom (screenshot job 17) nizhniy tuslyar s Leave
+// ostayetsya v DOM, tak chto obychonyy poryadok leaveBtn>ended ne srabatyvaet:
+// dlya modaly vveden otdel'nyy signal endedDialog, idushchiy pered leaveBtn.
+// Chtoby ne lozhnykh srabatyvaniy po textContent vsogo freyma (chat kogo ugodno),
+// dialog-teksty v evaluate ogranicheny korotkimi uzlami-dialogami.
+export const ENDED_MEETING_SRC =
+  "meeting has\\s+(been\\s+)?ended" +
+  "|встреча (завершена|окончена)" +
+  "|совещание (завершено|окончено)";
+
+export function meetingEndedInText(text) {
+  return re(ENDED_MEETING_SRC).test(String(text || ""));
+}
+
 // Chisty verdict po agregirovannym po signalam (dlya testov).
 // Poryadok vazhen (vstrecha 45/46): structural'nyy priznak zala (leaveBtn)
 // idu PIERED bot_wall — na zhivoy zapisi tekst vstroeannyh freymov (team-chat,
 // whiteboard) sluchayno soderzhal frazy antybot-steny, a knopki zala pri etom
 // byli na meste. Na nastoyashchey stene knopok zala NET, tak chto poryadok
 // bezopasen.
+// Poryadok changed (job 17): endedDialog (modal' "has been ended by host")
+// idu PIERED leaveBtn — pri takoy moderate tuslyar s Leave eshcho v DOM.
 export function verdictFromSignals(s) {
   if (s.signRequired) return "login_required";
+  if (s.endedDialog) return "meeting_ended";
   if (s.leaveBtn) return "joined";
   if (s.botWall && !s.captcha) return "bot_wall";
   if (s.ended) return "meeting_ended";

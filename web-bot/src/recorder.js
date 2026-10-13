@@ -13,6 +13,7 @@ import {
   END_CONTROL_SRC, LEAVE_SRCS, LEAVE_DIALOG_SRCS,
   MIC_CANDIDATE_SRC, MIC_MUTED_SRC, MIC_ACTIVE_SRC, MIC_MUTED_ICON_SRC,
   JOINED_DOM_SEL, NO_AUDIO_SEL, IN_MEETING_SRC, verdictFromSignals,
+  ENDED_MEETING_SRC,
 } from "./zoom_labels.js";
 import { cleanSingletonLocks, freshProfileCopy, profilesRoot, publicVncPort } from "./vnc_manager.js";
 
@@ -459,9 +460,10 @@ export async function classifyPage(page) {
     info = {};
     const frames = page.frames();
     for (const fr of frames) {
-      const loc = await fr.evaluate(({ endRe, micJoinSel, joinedSel, noAudioSel, inMeetRe }) => {
+      const loc = await fr.evaluate(({ endRe, micJoinSel, joinedSel, noAudioSel, inMeetRe, endedRe }) => {
         const txt = document.body ? (document.body.textContent || "") : "";
         const has = (s) => txt.toLowerCase().includes(s.toLowerCase());
+        const endReObj = new RegExp(endedRe, "i");
         // textContent (nie innerText): u skrytogo tuslyara innerText = ""
         const labelOf = (el) => (
           el.getAttribute("aria-label") || el.getAttribute("title")
@@ -484,6 +486,15 @@ export async function classifyPage(page) {
           waitingRoom: has("please wait for the host to start this meeting") ||
                        has("waiting for the host"),
           ended: has("the meeting has ended") || has("this meeting has ended"),
+          // Modal "This meeting has been ended by host" (job 17): varient "has
+          // BEEN ended" obychonogo matchera nie podpadaet, a tuslyar s Leave
+          // eshcho v DOM — ishchem dialog v otdel'nykh korotkikh uzlakh,
+          // chtoby chatter v bocatih freymakh nie dadet lozhnogo signala.
+          endedDialog: [...document.querySelectorAll(".cbk_dialog, [role=dialog], [role=alertdialog], .modal")]
+            .some((el) => {
+              const t = (el.textContent || "").toLowerCase();
+              return t.length <= 400 && endReObj.test(t);
+            }),
           captcha: /recaptcha/i.test(document.location.href)
                    || document.querySelector("iframe[src*='recaptcha'], .grecaptcha-badge") !== null
                    || has("protected by recaptcha"),
@@ -491,6 +502,7 @@ export async function classifyPage(page) {
       }, {
         endRe: END_CONTROL_SRC, micJoinSel: "#join_with_audio_link, #mic-button",
         joinedSel: JOINED_DOM_SEL, noAudioSel: NO_AUDIO_SEL, inMeetRe: IN_MEETING_SRC,
+        endedRe: ENDED_MEETING_SRC,
       }).catch(() => null);
       if (!loc) continue;
       for (const k of Object.keys(loc)) info[k] = (info[k] || loc[k]);
@@ -500,7 +512,7 @@ export async function classifyPage(page) {
       signRequired: !!info.signRequired, botWall: !!info.botWall,
       ended: !!info.ended, leaveBtn: !!info.leaveBtn, captcha: !!info.captcha,
       waitingRoom: !!info.waitingRoom, joinBrowser: !!info.joinBrowser,
-      join: !!info.join, micJoin: !!info.micJoin,
+      join: !!info.join, micJoin: !!info.micJoin, endedDialog: !!info.endedDialog,
     });
   } catch (e) {
     return "pending";

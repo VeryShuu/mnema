@@ -94,6 +94,38 @@ test("verdict: leaveBtn (razom s dom-priznakom zala) pobezhdayet captcha/ocr", (
   assert.equal(verdictFromSignals({ ...base, leaveBtn: true, captcha: true }), "joined");
 });
 
+// --- dialog "ended by host" (job 17) -------------------------------------------
+import { meetingEndedInText } from "../src/zoom_labels.js";
+
+test("meetingEndedInText: variant 'has been ended by host' (job 17)", () => {
+  assert.equal(meetingEndedInText("This meeting has been ended by host"), true);
+  assert.equal(meetingEndedInText("this meeting has ended"), true);
+  assert.equal(meetingEndedInText("The meeting has ended."), true);
+  assert.equal(meetingEndedInText("MEETING HAS  BEEN  ENDED"), true);
+});
+
+test("meetingEndedInText: russkiye varianty", () => {
+  assert.equal(meetingEndedInText("Встреча завершена"), true);
+  assert.equal(meetingEndedInText("Встреча окончена"), true);
+  assert.equal(meetingEndedInText("Совещание завершено"), true);
+});
+
+test("meetingEndedInText: ne lozhnyye frazy", () => {
+  assert.equal(meetingEndedInText("When has the meeting started?"), false);
+  assert.equal(meetingEndedInText("Ending soon"), false);
+  assert.equal(meetingEndedInText(""), false);
+  assert.equal(meetingEndedInText(null), false);
+});
+
+test("verdict: endedDialog pobezhdayet leaveBtn (tuslyar eshcho v DOM)", () => {
+  assert.equal(verdictFromSignals({ ...base, endedDialog: true, leaveBtn: true }), "meeting_ended");
+  assert.equal(verdictFromSignals({ ...base, endedDialog: true }), "meeting_ended");
+});
+
+test("verdict: bez endedDialog poryadok ne menyaetsya", () => {
+  assert.equal(verdictFromSignals({ ...base, leaveBtn: true, ended: false }), "joined");
+});
+
 test("dom-selektory ne pustyye i bez probelov v selectorah", () => {
   assert.ok(JOINED_DOM_SEL.includes("#leave_button"));
   assert.ok(JOINED_DOM_SEL.includes('[data-tid="leave_button"]'));
