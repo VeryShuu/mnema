@@ -28,7 +28,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ARCHIVE_DIR", str(tmp_path / "archive"))
     monkeypatch.setenv("LLM_BASE_URL", "http://llm.test")
-    for var in ("SPLIT_MEETINGS", "SPLIT_MIN_MINUTES", "SPLIT_MIN_CONFIDENCE"):
+    for var in ("SPLIT_MEETINGS", "SPLIT_MIN_MINUTES", "SPLIT_MIN_CONFIDENCE",
+                "SPLIT_SILENCE_GAP_S"):
         monkeypatch.delenv(var, raising=False)
     import mnema.core.queue as q
     monkeypatch.setattr(q, "_queues", {}, raising=False)
@@ -233,6 +234,100 @@ def test_snap_boundary_inside_speech_moves_to_max_gap():
 def test_snap_boundary_empty_returns_t():
     from mnema.core import split as sp
     assert sp.snap_boundary([], 42.0) == 42.0
+
+
+# ---------------------------------------------------------------- silence annotations
+def test_silence_gap_s_default(env, monkeypatch):
+    from mnema.core import split as sp
+    monkeypatch.delenv("SPLIT_SILENCE_GAP_S", raising=False)
+    assert sp.silence_gap_s() == 60.0
+
+
+def test_silence_gap_s_invalid_falls_back(env, monkeypatch):
+    from mnema.core import split as sp
+    monkeypatch.setenv("SPLIT_SILENCE_GAP_S", "abc")
+    assert sp.silence_gap_s() == 60.0
+
+
+def test_transcript_has_silence_marker_for_long_gap(env):
+    from mnema.core import split as sp
+    import mnema.core.models as m
+    from mnema.core.db import get_session
+    with get_session() as s:
+        job = m.Job(topic="Две встречи", status="processing", source="upload")
+        s.add(job)
+        s.flush()
+        # реплики 0..200 и 300..500 с паузой 100 с (>= SPLIT_SILENCE_GAP_S)
+        for t0, t1 in ((0, 100), (100, 170), (170, 200),
+                       (300, 380), (400, 470), (470, 500)):
+            s.add(m.Segment(job_id=job.id, t_start=float(t0), t_end=float(t1),
+                            text="реплика", speaker_id="S0", diar_label="S0",
+                            speaker_source="voiceprint"))
+        s.commit()
+        jid = job.id
+    txt = sp._transcript_for_split(jid)
+    assert "[ТИШИНА 00:03:20 — 00:05:00 (100 c)]" in txt
+
+
+def test_transcript_no_marker_for_short_gap(env):
+    from mnema.core import split as sp
+    import mnema.core.models as m
+    from mnema.core.db import get_session
+    with get_session() as s:
+        job = m.Job(topic="Одна встреча", status="processing", source="upload")
+        s.add(job)
+        s.flush()
+        for t0, t1 in ((0, 100), (120, 200), (250, 300), (310, 400)):
+            s.add(m.Segment(job_id=job.id, t_start=float(t0), t_end=float(t1),
+                            text="реплика", speaker_id="S0", diar_label="S0",
+                            speaker_source="voiceprint"))
+        s.commit()
+        jid = job.id
+    txt = sp._transcript_for_split(jid)
+    assert "ТИШИНА" not in txt
+
+
+def test_transcript_silence_disabled_by_zero(env, monkeypatch):
+    from mnema.core import split as sp
+    import mnema.core.models as m
+    from mnema.core.db import get_session
+    monkeypatch.setenv("SPLIT_SILENCE_GAP_S", "0")
+    with get_session() as s:
+        job = m.Job(topic="Выключено", status="processing", source="upload")
+        s.add(job)
+        s.flush()
+        for t0, t1 in ((0, 100), (400, 500), (900, 1000)):
+            s.add(m.Segment(job_id=job.id, t_start=float(t0), t_end=float(t1),
+                            text="реплика", speaker_id="S0", diar_label="S0",
+                            speaker_source="voiceprint"))
+        s.commit()
+        jid = job.id
+    txt = sp._transcript_for_split(jid)
+    assert "ТИШИНА" not in txt
+
+
+def test_transcript_skips_excluded_segments_gap(env):
+    from mnema.core import split as sp
+    import mnema.core.models as m
+    from mnema.core.db import get_session
+    with get_session() as s:
+        job = m.Job(topic="Исключённый сегмент", status="processing", source="upload")
+        s.add(job)
+        s.flush()
+        # исключённый сегмент перекрывает паузу — между учтёнными репликами
+        # gap 0..100 -> 400..500 равен 300 с, но сегмент 150..450 excluded
+        s.add(m.Segment(job_id=job.id, t_start=0.0, t_end=100.0, text="реплика",
+                        speaker_id="S0", diar_label="S0",
+                        speaker_source="voiceprint"))
+        s.add(m.Segment(job_id=job.id, t_start=150.0, t_end=450.0,
+                        text="музыка", excluded=True))
+        s.add(m.Segment(job_id=job.id, t_start=400.0, t_end=500.0, text="реплика",
+                        speaker_id="S0", diar_label="S0",
+                        speaker_source="voiceprint"))
+        s.commit()
+        jid = job.id
+    txt = sp._transcript_for_split(jid)
+    assert "ТИШИНА" in txt
 
 
 # ---------------------------------------------------------------- split_job

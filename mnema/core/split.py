@@ -47,6 +47,15 @@ MIN_SEGMENTS = 10          # меньше реплик — делить нече
 MIN_TAIL_S = 120.0         # хвост короче двух минут — потомок не создаём
 
 
+def silence_gap_s() -> float:
+    """Пауза между репликами (с), с которой в стенограмму для LLM вставляются
+    метки тишины — длинная пауза сильный признак границы встреч."""
+    try:
+        return float(os.environ.get("SPLIT_SILENCE_GAP_S", "60") or 60)
+    except ValueError:
+        return 60.0
+
+
 def _transient(reason: str) -> bool:
     """Причины, которые НЕ пишем в split_json: после перенастройки rerun
     должен получить шанс разделить (kill-switch, LLM не настроен)."""
@@ -350,9 +359,22 @@ def _slice_duration(p: dict, kinds: tuple[str, ...]) -> float:
 
 
 def _transcript_for_split(job_id: int) -> str:
-    from ..worker.tasks import _transcript_lines
+    from ..worker.tasks import _fmt, _transcript_lines
+    from .coalesce import coalesce_segments, speaker_display
     with get_session() as s:
         segs = s.scalars(select(Segment).where(
             Segment.job_id == job_id, Segment.excluded.is_(False)
         ).order_by(Segment.t_start, Segment.id)).all()
+    gap = silence_gap_s()
+    if gap <= 0:
         return _transcript_lines(segs)
+    disp = coalesce_segments(segs)
+    out: list[str] = []
+    prev_end: float | None = None
+    for seg in disp:
+        if prev_end is not None and seg.t_start - prev_end >= gap:
+            out.append(f"[ТИШИНА {_fmt(prev_end)} — {_fmt(seg.t_start)} "
+                       f"({seg.t_start - prev_end:.0f} c)]")
+        out.append(f"{_fmt(seg.t_start)} {speaker_display(seg)}: {seg.text}")
+        prev_end = max(prev_end or 0.0, seg.t_end)
+    return "\n".join(out)

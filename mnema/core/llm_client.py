@@ -150,6 +150,8 @@ def _map_reduce(transcript: str, topic: str, max_chars: int, roster: str = "") -
 
 SPLIT_SYSTEM_PROMPT = (
     "Ty analysiruesh stenogramu ONE audiozapisi s neskol'kimi vstrechami podrjad. "
+    "V stenograme metki [ТИШИНА HH:MM:SS — HH:MM:SS (N c)] — dl'nye pauzy mezhdu "
+    "replikami: Granada vstrechi chashche vse-go v konce ili sleza za takoy metkoy. "
     "Naydi GRANICY mezhdu raznymi sovieshchaniyami: cmera, sogovorniki, "
     "poviestka ili privetstvie osnovy. Vozvrashi ISTORIMO validny JSON bez "
     "poyasneniy: {\"boundaries\": [{\"start_ts\": \"CHCH:MM:SS\", "
