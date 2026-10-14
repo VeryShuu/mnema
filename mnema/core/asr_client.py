@@ -6,11 +6,14 @@ Faster-whisper fallback esli ASR=not_configured/misconfigured (FT-39).
 from __future__ import annotations
 
 import io
+import logging
 import os
 import wave
 from pathlib import Path
 
 from .capabilities import capability_status
+
+log = logging.getLogger("mnema.asr")
 
 
 def engine_name() -> str:
@@ -35,7 +38,7 @@ def transcribe_segments(wav: Path, vad_segments: list[dict]) -> list[dict]:
         try:
             return _gigastt_transcribe(wav, vad_segments)
         except Exception as e:  # noqa: BLE001
-            print(f"ASR remote fail ({e}); fallback faster-whisper", flush=True)
+            log.warning("remote ASR failed (%s); falling back to faster-whisper", e)
     return _faster_whisper_transcribe(wav, vad_segments)
 
 
@@ -292,13 +295,13 @@ def _faster_whisper_transcribe(wav: Path, vad_segments: list[dict]) -> list[dict
             _whisper = WhisperModel(model_id, device=device,
                                     compute_type=_whisper_compute_type(device))
         except Exception as e:  # noqa: BLE001
-            print(f"faster-whisper niedostupen ({e}) — pustaya stenogramma", flush=True)
+            log.error("faster-whisper unavailable (%s) — empty transcript", e)
             return [{"text": "", "lang": None, "confidence": None} for _ in vad_segments]
     try:
         seg_iter, _info = _whisper.transcribe(str(wav), vad_filter=False)
         raw = [{"start": s.start, "end": s.end, "text": s.text,
                 "avg_logprob": getattr(s, "avg_logprob", None)} for s in seg_iter]
     except Exception as e:  # noqa: BLE001
-        print(f"faster-whisper transcibe fail: {e}", flush=True)
+        log.error("faster-whisper transcription failed: %s", e)
         raw = []
     return _map_verbose_to_segments({"segments": raw, "language": "ru"}, vad_segments)

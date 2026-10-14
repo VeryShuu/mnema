@@ -54,10 +54,11 @@ class _Loader:
 SEGS = [{"t_start": 0.0, "t_end": 1.0}, {"t_start": 2.0, "t_end": 3.0}]
 
 
-def test_load_failure_returns_unknown_and_logs(monkeypatch, capsys):
+def test_load_failure_returns_unknown_and_logs(monkeypatch, caplog):
     loader = _Loader(monkeypatch, fail_times=99)
-    assert dz.diarize("x.wav", SEGS) == ["SPEAKER_UNKNOWN"] * 2
-    out = capsys.readouterr().out
+    with caplog.at_level("WARNING", logger="mnema.diarize"):
+        assert dz.diarize("x.wav", SEGS) == ["SPEAKER_UNKNOWN"] * 2
+    out = caplog.text
     assert "pyannote" in out and "HF unreachable" in out
     assert dz._pipe is False
     assert loader.calls == 1
@@ -92,16 +93,17 @@ def test_success_clears_failed_state(monkeypatch):
     assert dz._pipe == "PIPE"
 
 
-def test_runtime_failure_logged_during_diarize(monkeypatch, capsys):
+def test_runtime_failure_logged_during_diarize(monkeypatch, caplog):
     _Loader(monkeypatch, fail_times=0)
 
     def boom(pipe, wav, segs):
         raise ValueError("cuda oom")
 
     monkeypatch.setattr(dz, "_pyannote_labels", boom)
-    assert dz.diarize("x.wav", SEGS) == ["SPEAKER_UNKNOWN"] * 2
-    out = capsys.readouterr().out
-    assert "cuda oom" in out and "2 segm" in out
+    with caplog.at_level("WARNING", logger="mnema.diarize"):
+        assert dz.diarize("x.wav", SEGS) == ["SPEAKER_UNKNOWN"] * 2
+    out = caplog.text
+    assert "cuda oom" in out and "2 segments" in out
     assert dz._pipe == "PIPE", "sboy vypolneniya ne dolzhen lomat' keshe"
 
 

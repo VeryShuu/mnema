@@ -8,15 +8,15 @@
             onclick="deleteMeeting({{ job.id }})">🗑</button>
     {% if job.source == 'upload' %}<span class="badge upload">Архив</span>{% endif %}
   </h2>
-  <p id="rename-row" style="display:none">
+  <p id="rename-row" class="hidden">
     <input id="rename-input" size="50" value="{{ job.topic|e }}">
     <button type="button" class="primary" onclick="saveRename({{ job.id }})">Сохранить</button>
     <button type="button" onclick="cancelRename()">Отмена</button>
     <span id="rename-status" class="muted"></span>
   </p>
   {% if job.status == 'scheduled' %}
-  <form id="edit-row" method="post" action="/jobs/{{ job.id }}/update" style="display:none;flex-direction:column;gap:.5rem;margin-top:.4rem"
-        onsubmit="var s=this.start_at.value,e=this.end_at.value;if(s&&e&&e<=s){alert('Время окончания должно быть позже времени начала');this.end_at.focus();return false}">
+  <form id="edit-row" class="edit-form" method="post" action="/jobs/{{ job.id }}/update"
+        onsubmit="var s=this.start_at.value,e=this.end_at.value;if(s&&e&&e<=s){toast('Время окончания должно быть позже времени начала','warn');this.end_at.focus();return false}">
     <label>Название
       <input name="topic" size="50" value="{{ job.topic|e }}" required></label>
     <label>Ссылка Zoom
@@ -66,10 +66,10 @@
   </table>
   </div>
   {% if job.source == 'upload' and upload is not none and upload.status != 'complete' and job.status in ('uploading','failed') %}
-  <p style="margin-top:.8rem"><a href="/jobs/upload?job_id={{ job.id }}"><button type="button" class="primary">Продолжить загрузку</button></a></p>
+  <p class="mt-xl"><a href="/jobs/upload?job_id={{ job.id }}"><button type="button" class="primary">Продолжить загрузку</button></a></p>
   {% endif %}
   {% if job.status in ('launching','recording') %}
-  <p style="margin-top:.8rem">
+  <p class="mt-xl">
     <button type="button" id="leave-btn" onclick="leaveMeeting({{ job.id }})">Завершить встречу и выйти из созвона</button>
     <span id="leave-status" class="muted"></span>
   </p>
@@ -144,18 +144,18 @@
 function startEdit() {
   const edit = document.getElementById('edit-row');
   if (edit) {
-    document.getElementById('rename-row').style.display = 'none';
-    edit.style.display = 'flex';
+    document.getElementById('rename-row').classList.add('hidden');
+    edit.classList.add('open');
     edit.topic.focus();
     return;
   }
   startRename();
 }
 function cancelEdit() {
-  document.getElementById('edit-row').style.display = 'none';
+  document.getElementById('edit-row').classList.remove('open');
 }
 function startRename() {
-  document.getElementById('rename-row').style.display = '';
+  document.getElementById('rename-row').classList.remove('hidden');
   const inp = document.getElementById('rename-input');
   inp.focus();
   inp.select();
@@ -164,7 +164,7 @@ function cancelRename() {
   document.getElementById('rename-status').textContent = '';
   document.getElementById('rename-input').value =
     document.getElementById('topic-text').textContent;
-  document.getElementById('rename-row').style.display = 'none';
+  document.getElementById('rename-row').classList.add('hidden');
 }
 function saveRename(jid) {
   const st = document.getElementById('rename-status');
@@ -180,7 +180,7 @@ function saveRename(jid) {
         return;
       }
       document.getElementById('topic-text').textContent = topic;
-      document.getElementById('rename-row').style.display = 'none';
+      document.getElementById('rename-row').classList.add('hidden');
       st.textContent = '';
     })
     .catch((e) => { st.textContent = 'Ошибка: ' + e.message; });
@@ -191,12 +191,12 @@ function deleteMeeting(jid) {
     .then(async (r) => {
       if (!r.ok && !r.redirected) {
         const e = await r.json().catch(() => ({}));
-        alert('Не удалось удалить: ' + (e.detail || r.status));
+        toast('Не удалось удалить: ' + (e.detail || r.status), 'error');
         return;
       }
       location.href = '/jobs';
     })
-    .catch((e) => alert('Ошибка: ' + e.message));
+    .catch((e) => toast('Ошибка: ' + e.message, 'error'));
 }
 </script>
 <script>

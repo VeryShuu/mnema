@@ -7,6 +7,7 @@ FT-29). Embedding — vektor; sravnenie — kosinusnoe shodstvo (FT-27).
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from sqlalchemy import select
 
 from .db import get_session
 from .models import ReviewRequest, Segment, VoiceProfile
+
+log = logging.getLogger("mnema.speaker")
 
 # ---- emgeddingi --------------------------------------------------------------
 _backend_cache: dict = {}
@@ -49,7 +52,7 @@ def compute_embedding_for_file(path: Path) -> list[float] | None:
     try:
         return _pyannote_embedding(path)
     except Exception as e:  # noqa: BLE001
-        print(f"embedding fail ({path.name}): {e}", flush=True)
+        log.warning("embedding failed (%s): %s", path.name, e)
         return None
 
 

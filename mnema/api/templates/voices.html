@@ -9,7 +9,7 @@
     <label><input type="checkbox" id="consent"> Согласен на обработку голосовых биометрических данных</label>
     <button class="primary" onclick="createProfile()">Создать профиль</button>
   </form>
-  <div id="rec" style="display:none;margin-top:.7rem">
+  <div id="rec" class="rec-panel hidden">
     <p id="recstatus" class="muted">Готов. Нажмите «Запись» и произнесите 3–4 фразы (15–30 секунд суммарно).</p>
     <button id="recbtn">Запись</button>
     <audio id="playback" controls></audio>
@@ -28,15 +28,15 @@
  <td>{{ p.sample_paths|length if p.sample_paths else 0 }}</td>
  <td>{{ 'Есть' if p.consent_ts else 'Нет' }}</td>
  <td class="muted" id="stats_{{ p.id }}">{{ stats_text(p.match_stats) }}</td>
- <td style="white-space:nowrap">
+ <td class="nowrap">
    <button type="button" onclick="toggleDetails({{ p.id }})">Кластеры и эталоны</button>
    <button type="button" title="Пересобрать эталон и заново опознать все встречи человека (выполнит worker)"
            onclick="reverify({{ p.id }})">Перепроверить</button>
    <button class="danger" onclick="delProfile({{ p.id }})">Удалить</button>
  </td>
 </tr>
-<tr><td colspan="7" style="background:transparent;border:none;padding:0">
-  <div id="det_{{ p.id }}" style="display:none" class="card"></div>
+<tr><td colspan="7" class="iframe-row">
+  <div id="det_{{ p.id }}" class="card hidden"></div>
 </td></tr>
 {% else %}
 <tr><td colspan="7" class="muted">Профилей пока нет</td></tr>
@@ -55,7 +55,7 @@ async function createProfile(){
     body: JSON.stringify({employee_name:name, position:document.getElementById('emp_position').value.trim()||null, consent:true})});
   const j = await r.json();
   document.getElementById('vid').value = j.id;
-  document.getElementById('rec').style.display='block';
+  document.getElementById('rec').classList.remove('hidden');
 }
 document.getElementById('recbtn').onclick = async function(){
   if (mediaRecorder && mediaRecorder.state==='recording'){ mediaRecorder.stop(); return; }
@@ -86,8 +86,8 @@ document.getElementById('recbtn').onclick = async function(){
 const loaded = {};
 async function toggleDetails(id){
   const det = document.getElementById('det_'+id);
-  if (det.style.display !== 'none'){ det.style.display='none'; return; }
-  det.style.display='block';
+  if (!det.classList.contains('hidden')){ det.classList.add('hidden'); return; }
+  det.classList.remove('hidden');
   if (!loaded[id]){ det.innerHTML = '<p class="muted">Загрузка…</p>'; await loadDetails(id); }
 }
 async function loadDetails(id){
@@ -111,7 +111,7 @@ async function loadDetails(id){
   for (const c of cls){
     const st = c.status === 'pending' ? 'ждёт уточнения' : 'подтверждён';
     const autob = c.answered_by === 'voiceprint' ? ' (автоматически)' : '';
-    html += `<div style="border-left:3px solid ${c.status==='pending' ? 'var(--warn)' : 'var(--ok, #2a2)'};padding-left:.6rem;margin:.6rem 0">`;
+    html += `<div class="${c.status==='pending' ? 'cluster-pending' : 'cluster-ok'}">`;
     html += `<p><b>Встреча №${c.job_id}</b> ${c.topic ? '('+esc(c.topic)+')' : ''} — кластер «${esc(c.cluster_label)}», ${st}${autob}, похожесть ${(c.similarity*100||0).toFixed(0)}%.</p>`;
     if (!c.has_audio) html += '<p class="muted">Аудио встречи уже удалено с диска — прослушать нельзя.</p>';
     else if (!c.segments.length) html += '<p class="muted">Фрагментов кластера нет (все исключены).</p>';

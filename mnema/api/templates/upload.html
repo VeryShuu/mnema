@@ -13,12 +13,12 @@
     <p><label>Файл записи (видео/аудио, до нескольких ГБ)<br>
       <input id="file" type="file" accept=".mp4,.m4v,.mkv,.mov,.avi,.wmv,.webm,.flv,.ts,.mpg,.mpeg,.3gp,.wav,.mp3,.ogg,.oga,.flac,.m4a,.aac,.opus,.amr" size="70"></label></p>
     <button id="go" type="button" class="primary">Загрузить и анализировать</button>
-    <button id="cancelBtn" type="button" style="display:none">Отменить</button>
+    <button id="cancelBtn" type="button" class="hidden">Отменить</button>
   </div>
-  <div id="prog" style="display:none">
+  <div id="prog" class="hidden">
     <p id="status" class="muted"></p>
-    <progress id="bar" max="100" value="0" style="width:100%"></progress>
-    <p id="err" style="color:var(--err)"></p>
+    <progress id="bar" max="100" value="0"></progress>
+    <p id="err" class="err-text"></p>
   </div>
 </div>
 <script>
@@ -63,8 +63,8 @@ async function sendChunk(file, offset) {
 }
 async function upload() {
   $('err').textContent = '';
-  $('prog').style.display = '';
-  $('go').disabled = true; $('cancelBtn').style.display = '';
+  $('prog').classList.remove('hidden');
+  $('go').disabled = true; $('cancelBtn').classList.remove('hidden');
   const file = $('file').files[0];
   if (!file) { $('err').textContent = 'Выберите файл'; reset(); return; }
   try {
@@ -102,7 +102,7 @@ async function cancelUpload() {
   if (uploadId) { try { await fetch('/api/uploads/'+uploadId+'/cancel',{method:'POST'}); } catch(e){} }
   window.location = '/jobs';
 }
-function reset(){ $('go').disabled=false; $('cancelBtn').style.display='none'; }
+function reset(){ $('go').disabled=false; $('cancelBtn').classList.add('hidden'); }
 $('go').onclick = upload;
 $('cancelBtn').onclick = cancelUpload;
 </script>

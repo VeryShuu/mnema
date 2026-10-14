@@ -19,6 +19,7 @@ from sqlalchemy import select
 from ..core import registry
 from ..core.capabilities import capability_status
 from ..core.db import Base, get_engine, get_session
+from ..core.log_setup import setup_logging
 from ..core.jobs_api import (cancel_job, create_job, delete_job, rename_job,
                              update_job)
 from ..core.models import (AudioFile, Job, Notification, PresetLink, Protocol,
@@ -35,6 +36,7 @@ from ..core import vnc as vnc_svc
 from ..core.tz import app_tz_label, fmt_local, local_to_utc, local_utc_offset, to_local
 
 app = FastAPI(title="Mnema", version="0.1.0")
+log = setup_logging("api")
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -98,21 +100,21 @@ def startup() -> None:
     errors = registry.preflight()
     if errors:
         for e in errors:
-            print(f"PREFLIGHT ERROR: {e}", flush=True)
+            log.error("preflight error: %s", e)
         raise SystemExit(1)
     engine = get_engine()
     Base.metadata.create_all(engine)  # dlya SQLite-starta; dalneye Alembic
     try:
         start_default_jobs()
     except Exception as e:  # noqa: BLE001
-        print(f"scheduler start failed: {e}", flush=True)
+        log.error("scheduler start failed: %s", e)
     try:
         from ..core.scheduler import reschedule_missed_jobs
         n = reschedule_missed_jobs()
         if n:
-            print(f"rescheduled missed jobs: {n}", flush=True)
+            log.info("rescheduled missed jobs: %s", n)
     except Exception as e:  # noqa: BLE001
-        print(f"reschedule missed jobs failed: {e}", flush=True)
+        log.error("reschedule missed jobs failed: %s", e)
 
 
 # ----------------------------------------------------------------- REST (FT-21)
@@ -354,19 +356,18 @@ def api_job_confirm_end(jid: int, body: ConfirmEndIn, request: Request):
 
 
 @app.get("/confirm-end/{token}", response_class=HTMLResponse)
-def confirm_end_page(token: str):
+def confirm_end_page(token: str, request: Request):
     """Кнопка «Завершить» из письма: ставит stop web-botу (как ручное
     завершение в WEB), запись уходит в processing. Одноразово."""
     from ..core.jobs_launch import request_stop
     from ..core.models import ConfirmEndRequest
 
-    def _page(title: str, text: str) -> HTMLResponse:
-        return HTMLResponse(
-            f"<!DOCTYPE html><html lang=\"ru\"><head><meta charset=\"utf-8\">"
-            f"<title>{title}</title></head>"
-            "<body style=\"font-family:Arial,sans-serif;max-width:560px;margin:64px auto;"
-            "color:#2c3e50;line-height:1.5\">"
-            f"<h2>{title}</h2><p>{text}</p></body></html>")
+    def _page(title: str, text: str, tone: str = "ok",
+              icon: str = "✓") -> HTMLResponse:
+        return templates.TemplateResponse(
+            request, "status_page.html",
+            {"request": request, "title": title, "text": text,
+             "tone": tone, "icon": icon})
 
     with get_session() as s:
         req = s.scalars(select(ConfirmEndRequest).where(
@@ -392,9 +393,9 @@ def confirm_end_page(token: str):
         return _page("Запрос подтверждён",
                      "Внимание: команда остановки не поставилась в очередь "
                      "(redis недоступен) — завершите запись кнопкой «Завершить» "
-                     "в интерфейсе Mnema.")
+                     "в интерфейсе Mnema.", tone="warn", icon="⚠")
     return _page("Запрос подтверждён",
-                 "Запись уже не активна — завершать нечего.")
+                 "Запись уже не активна — завершать нечего.", tone="warn", icon="⚠")
 
 
 # ------------------------------------------------------------------- VNC (FT-24/§12)
@@ -1499,7 +1500,7 @@ def main() -> None:
     errors = registry.preflight()
     if errors:
         for e in errors:
-            print(f"PREFLIGHT: {e}", file=__import__("sys").stderr, flush=True)
+            log.error("preflight: %s", e)
     uvicorn.run("mnema.api.main:app", host="0.0.0.0", port=8000, log_level="info")
 
 

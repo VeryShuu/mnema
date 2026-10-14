@@ -213,10 +213,10 @@ class NotifyService:
                 try:
                     shot_bytes = Path(n.screenshot_path).read_bytes()
                 except OSError as e:
-                    log.warning("Скриншот %s не читается (%s) — письмо %s "
-                                "уходит без картинки", n.screenshot_path, e, n.id)
+                    log.warning("screenshot %s is unreadable (%s) — email %s "
+                                "goes without image", n.screenshot_path, e, n.id)
             else:
-                log.warning("Скриншот %s не найден — письмо %s уходит без картинки",
+                log.warning("screenshot %s not found — email %s goes without image",
                             n.screenshot_path, n.id)
         if shot_bytes:
             msg.make_related()

@@ -26,8 +26,11 @@ import { spawn, execFileSync } from "node:child_process";
 import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
+import { createLogger } from "./log.js";
+
 
 export const VNC_QUEUE = "mnema:vnc";
+const log = createLogger("vnc");
 const VNC_HASH = "mnema:vnc_sessions";
 const SETUP_KEY = "setup";
 
@@ -95,7 +98,7 @@ async function waitXSocket(displayNum, timeoutMs) {
 
 function spawnDaemon(args0, rest, opts = {}) {
   const p = spawn(args0, rest, { detached: true, stdio: "ignore", ...opts });
-  p.on("error", (e) => console.error(`[vnc] spawn ${args0}:`, e.message));
+  p.on("error", (e) => log.error(`vnc spawn ${args0}:`, e.message));
   return p.pid;
 }
 
@@ -152,7 +155,7 @@ export function freshProfileCopy(srcDir, dstDir) {
 async function readHash() {
   if (!_redis || !_redis.isReady) return {};
   try { return await _redis.hGetAll(VNC_HASH); }
-  catch (e) { console.error("[vnc] hGetAll:", e.message); return {}; }
+  catch (e) { log.error("vnc hGetAll:", e.message); return {}; }
 }
 
 function parseEntry(raw) { try { return JSON.parse(raw); } catch { return null; } }
@@ -169,7 +172,7 @@ async function publish(sess, status, error = null) {
       public_port: publicVncPort(_cfg, sess.slot),
       status, error, ts: nowIso(), started_ts: sess.startedTs || null,
     }));
-  } catch (e) { console.error("[vnc] publish:", e.message); }
+  } catch (e) { log.error("vnc publish:", e.message); }
 }
 
 async function dropHashKey(key) {
@@ -273,7 +276,7 @@ async function ensureSetupInner() {
   }
   sess.startedTs = nowIso();
   await publish(sess, "running");
-  console.log(`[vnc] setup: ${sess.display}, profil' ${sess.profileDir}`);
+  log.info(`vnc setup: ${sess.display}, profile ${sess.profileDir}`);
   return sess;
 }
 
@@ -316,7 +319,7 @@ async function ensureJobVncInner(jobId) {
   }
   const slot = await pickFreeSlot();
   if (slot == null) {
-    console.error(`[vnc] net svobodnyh slotov dlya job ${jobId} (макс ${_cfg.vncMaxSlots})`);
+    log.error(`vnc: no free slots for job ${jobId} (max ${_cfg.vncMaxSlots})`);
     return null;
   }
   const sess = makeSess(key, "job", jobId, slot);
@@ -327,10 +330,10 @@ async function ensureJobVncInner(jobId) {
     freshProfileCopy(_cfg.zoomProfileDir, sess.profileDir);
     sess.startedTs = nowIso();
     await publish(sess, "ready");
-    console.log(`[vnc] job ${jobId}: slot ${slot}, ${sess.display}, profil' ${sess.profileDir}`);
+    log.info(`vnc job ${jobId}: slot ${slot}, ${sess.display}, profile ${sess.profileDir}`);
     return sess;
   } catch (e) {
-    console.error(`[vnc] ensureJobVnc(${jobId}):`, e.message);
+    log.error(`vnc ensureJobVnc(${jobId}):`, e.message);
     sessions.delete(key);
     teardownStack(sess);
     await dropHashKey(key);
@@ -375,7 +378,7 @@ export async function handleVncCommand(msg) {
   if (jobId == null) return;
   if (action === "open") { await ensureJobVnc(jobId); return; }
   if (action === "close") { await releaseJobVnc(jobId); return; }
-  console.warn("[vnc] neizvestnoye deystvie:", action);
+  log.warn("vnc unknown action:", action);
 }
 
 // --------------------------------------------------------------- zhivyost'
@@ -384,7 +387,7 @@ export function startHeartbeat() {
   heartbeatTimer = setInterval(() => {
     if (heartbeatBusy) return;
     heartbeatBusy = true;
-    heartbeatTick().catch((e) => console.error("[vnc] heartbeat:", e.message))
+    heartbeatTick().catch((e) => log.error("vnc heartbeat:", e.message))
       .finally(() => { heartbeatBusy = false; });
   }, 15000);
 }
@@ -422,7 +425,7 @@ async function heartbeatTickInner() {
     if (setup.restarts < 5) {
       setup.restarts += 1;
       setup.lastRestartTs = Date.now();
-      console.log(`[vnc] setup-brauzer umer; perezapusk #${setup.restarts}`);
+      log.warn(`vnc setup browser died; restart #${setup.restarts}`);
       try {
         launchSetupBrowser(setup);
         await publish(setup, "running");
@@ -448,7 +451,7 @@ async function heartbeatTickInner() {
       (sess.everAlive && Date.now() - sess.deadSince > JOB_DEAD_GRACE_MS) ||
       (bornTs && Date.now() - bornTs > JOB_MAX_LIFE_MS);
     if (stale) {
-      console.log(`[vnc] job ${sess.jobId}: slot ${sess.slot} osvobozhdayetsya`);
+      log.info(`vnc job ${sess.jobId}: slot ${sess.slot} released`);
       await releaseJobVncInner(sess.jobId);
     }
   }
@@ -461,10 +464,10 @@ export function heartbeatTick() { return withLock(heartbeatTickInner); }
 // publikatsiey portov (compose publishit 8080-8100:6080-6100 po umolchaniyu).
 export async function startupCleanup() {
   if (_cfg.vncPublicPortBase !== 8080 || _cfg.vncMaxSlots > 20) {
-    console.warn("[vnc] VNC_PUBLIC_PORT_BASE/VNC_MAX_SLOTS otlichayutsya ot defolta — " +
-      "ublikovannyy v docker-compose diapazon (8080-8100:6080-6100, env " +
-      "VNC_PUBLISHED_RANGE) dolzhen im sootvetstvovat', inache ssylki budut " +
-      "vesti na nie publikuemyye porty");
+    log.warn("vnc VNC_PUBLIC_PORT_BASE/VNC_MAX_SLOTS differ from default — " +
+      "the port range published in docker-compose (8080-8100:6080-6100, env " +
+      "VNC_PUBLISHED_RANGE) must match them, otherwise links point to " +
+      "unpublished ports");
   }
   if (_cfg.vncPassword) {
     // x11vnc proshit parol' v shifrovannom vide iz faila; ne pishem v ps/cmdline
@@ -474,7 +477,7 @@ export async function startupCleanup() {
         { stdio: "pipe" });
       fs.chmodSync(vncPasswordFile, 0o600);
     } catch (e) {
-      console.error("[vnc] ne udalos' sohranit' parol':", e.message);
+      log.error("vnc failed to save password:", e.message);
       vncPasswordFile = null;
     }
   }

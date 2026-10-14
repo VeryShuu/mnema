@@ -8,7 +8,7 @@
 <script>
 (function(){try{var t=localStorage.getItem('mnema-theme');if(t){document.documentElement.dataset.theme=t;}}catch(e){}})();
 </script>
-<script src="https://unpkg.com/htmx.org@1.9.12"></script>
+<script src="/static/htmx-1.9.12.min.js"></script>
 <style>
 :root[data-theme="dark"]{
   --bg:#0b0d10; --bg-elev:#14171c; --bg-card:#151920; --bg-hover:#1b2028;
@@ -185,9 +185,50 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator{opacity:0;cursor
 .dtp-opt{display:block;width:100%;text-align:center;background:transparent;border:none;color:var(--text);font:inherit;font-size:.85rem;padding:.24rem 0;border-radius:.4rem}
 .dtp-opt:hover{background:var(--bg-hover)}
 .dtp-opt.sel{background:var(--accent-soft);color:var(--accent);font-weight:650}
+
+.status-page{display:flex;justify-content:center;padding-top:3rem}
+.status-card{max-width:560px;width:100%;text-align:center;margin-bottom:0}
+.status-card h2{margin-bottom:.4rem}
+.status-card .status-icon{font-size:2.2rem;line-height:1;margin-bottom:.6rem}
+.status-card.ok{border-top:3px solid var(--ok)}
+.status-card.ok .status-icon{color:var(--ok)}
+.status-card.warn{border-top:3px solid var(--warn)}
+.status-card.warn .status-icon{color:var(--warn)}
+.muted-plain{font-weight:400}
+.mt-card{margin-top:1rem}
+.callout-err{border-left:4px solid var(--err);color:var(--err)}
+.callout-warn{border-left:4px solid var(--warn)}
+.mt-sm{margin-top:.2rem}
+.mt-md{margin-top:.3rem}
+.mt-lg{margin-top:.7rem}
+.mt-xl{margin-top:.8rem}
+.nowrap{white-space:nowrap}
+.hidden{display:none!important}
+.form-row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
+.form-row+.form-row{margin-top:.7rem}
+.preset-row{display:flex;gap:.5rem;align-items:center;margin-bottom:.3rem;flex-wrap:wrap}
+.rec-panel{margin-top:.7rem}
+.cluster-pending{border-left:3px solid var(--warn);padding-left:.6rem;margin:.6rem 0}
+.cluster-ok{border-left:3px solid var(--ok);padding-left:.6rem;margin:.6rem 0}
+.err-text{color:var(--err)}
+.card-head{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
+.ml-sm{margin-left:.3rem}
+.edit-form{display:none;flex-direction:column;gap:.5rem;margin-top:.4rem}
+.edit-form.open{display:flex}
+.iframe-row{background:transparent;border:none;padding:0}
+.flex-none{flex:none}
+.toast-wrap{position:fixed;bottom:1.2rem;right:1.2rem;z-index:60;display:flex;flex-direction:column;gap:.5rem;max-width:22rem}
+.toast{background:var(--bg-card);border:1px solid var(--border);border-left:4px solid var(--accent);
+  border-radius:.6rem;box-shadow:var(--shadow);padding:.6rem .9rem;font-size:.9rem;
+  opacity:0;transform:translateY(.4rem);transition:opacity .2s,transform .2s}
+.toast-show{opacity:1;transform:none}
+.toast.success{border-left-color:var(--ok)}
+.toast.warn{border-left-color:var(--warn)}
+.toast.error{border-left-color:var(--err)}
 </style>
 </head>
 <body>
+<div class="toast-wrap" id="toasts" aria-live="polite"></div>
 <header class="topbar">
   <div class="brand"><img class="brand-mark" src="/static/mnema-256.png" alt="Mnema">Mnema</div>
   <nav>
@@ -203,6 +244,22 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator{opacity:0;cursor
   </button>
 </header>
 <main>{% block content %}{% endblock %}</main>
+<script>
+// Единый компонент сообщений: toast(text, kind) — success|warn|error (по умолчанию info-акцент).
+// Взаимодействия-подтверждения (удаление, перезапуск) остаются на confirm().
+window.toast=function(text,kind){
+  var wrap=document.getElementById('toasts');
+  var el=document.createElement('div');
+  el.className='toast'+(kind?' '+kind:'');
+  el.textContent=text;
+  wrap.appendChild(el);
+  requestAnimationFrame(function(){el.classList.add('toast-show');});
+  setTimeout(function(){
+    el.classList.remove('toast-show');
+    setTimeout(function(){el.remove();},250);
+  },kind==='error'?6000:4000);
+};
+</script>
 <script>
 (function(){
   var root=document.documentElement,btn=document.getElementById('themeToggle');

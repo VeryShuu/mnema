@@ -11,10 +11,13 @@ sboy) ne otklyuchal diariizatsiyu v processe workera do samogo restarta.
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 import warnings
 from pathlib import Path
+
+log = logging.getLogger("mnema.diarize")
 
 warnings.filterwarnings("ignore")
 
@@ -48,8 +51,8 @@ def diarize_with_turns(wav: Path, vad_segments: list[dict]
             return res
         return res, None, None  # testovye zaglushki, vozvrashchayushchie tol'ko metki
     except Exception as e:  # noqa: BLE001
-        print(f"pyannote: vypolnenie sdalosya s oshibkoy ({e!r}) — "
-              f"{len(vad_segments)} segm kak SPEAKER_UNKNOWN", flush=True)
+        log.warning("pyannote run failed (%r) — %s segments as SPEAKER_UNKNOWN",
+                    e, len(vad_segments))
         return ["SPEAKER_UNKNOWN"] * len(vad_segments), None, None
 
 
@@ -66,8 +69,7 @@ def _get_pyannote():
     global _pipe, _failed_ts
     if os.environ.get("DIARIZER", "").lower() in ("off", "none", "energy"):
         if _pipe is not False and _pipe != "off":
-            print("pyannote: otklyuchen cherez DIARIZER — vse segmy "
-                  "SPEAKER_UNKNOWN", flush=True)
+            log.info("pyannote disabled via DIARIZER — all segments SPEAKER_UNKNOWN")
         _pipe = "off"
         return None
     if _pipe == "off":
@@ -81,9 +83,8 @@ def _get_pyannote():
         import torch
         tok = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
         if not tok:
-            print("pyannote: HF_TOKEN ne zadan — zagruzka gated-modeli "
-                  "pyannote/speaker-diarization-3.1 mozhet pagibnut'",
-                  flush=True)
+            log.warning("pyannote: HF_TOKEN not set — loading gated model "
+                        "pyannote/speaker-diarization-3.1 may fail")
         use_gpu = (os.environ.get("ASR_DEVICE", "cpu").startswith("cuda")
                    and torch.cuda.is_available())
         pipe = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1",
@@ -105,14 +106,14 @@ def _get_pyannote():
         if use_gpu:
             device = torch.device(os.environ.get("ASR_DEVICE", "cuda:0"))
             pipe.to(device)
-            print(f"pyannote: device={device} fp16={_fp16_enabled()} "
-                  f"batch={batch}", flush=True)
+            log.info("pyannote: device=%s fp16=%s batch=%s",
+                     device, _fp16_enabled(), batch)
         _pipe = pipe
         return _pipe
     except Exception as e:  # noqa: BLE001
-        print(f"pyannote: zagruzka pipeline sdalasya ({e!r}) — "
-              f"povtor spustya {_retry_sec():.0f} s; do nego vse segmy "
-              "SPEAKER_UNKNOWN", flush=True)
+        log.warning("pyannote pipeline load failed (%r) — retrying in %.0fs; "
+                    "segments are SPEAKER_UNKNOWN until then",
+                    e, _retry_sec())
         _pipe = False
         _failed_ts = time.monotonic()
         return None
@@ -132,7 +133,7 @@ def _run_pipeline(pipe, wav: Path):
             with torch.autocast(device_type="cuda", dtype=torch.float16):
                 return pipe(str(wav))
         except Exception as e:  # noqa: BLE001
-            print(f"fp16 diari ne udalas' ({e}); vozvrat k fp32", flush=True)
+            log.warning("fp16 diarization failed (%s); falling back to fp32", e)
     return pipe(str(wav))
 
 

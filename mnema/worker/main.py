@@ -9,8 +9,11 @@ import sys
 
 from redis import Redis
 
+from ..core.log_setup import setup_logging
 from ..core.queue import redis_url
 from . import tasks
+
+log = setup_logging("worker")
 
 
 QUEUES = {
@@ -25,7 +28,7 @@ def run_worker() -> None:
         "WORKER_QUEUES", "asr,speaker,structure").split(",") if q.strip()]
     r = Redis.from_url(redis_url())
     conc = max(1, int(os.environ.get("WORKER_CONCURRENCY", "2") or 2))
-    print(f"rq worker start: queues={names} procs={conc}", flush=True)
+    log.info("rq worker start: queues=%s procs=%s", names, conc)
     import multiprocessing as mp
     kids = [mp.Process(target=_worker_loop, args=(names,), daemon=True)
             for _ in range(conc - 1)]
@@ -55,10 +58,9 @@ def _start_scheduler(r, names: list[str]) -> None:
         sched = RQScheduler(names, connection=r, interval=1)
         threading.Thread(target=sched.start, name="rq-scheduler",
                          daemon=True).start()
-        print("rq scheduler started", flush=True)
+        log.info("rq scheduler started")
     except Exception as e:  # noqa: BLE001
-        print(f"rq scheduler niedostupen ({e}) — depends_on ne budet rabotat'",
-              flush=True)
+        log.error("rq scheduler unavailable (%s) — depends_on jobs will not run", e)
 
 
 def run_worker_sync() -> None:

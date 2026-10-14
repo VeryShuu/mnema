@@ -6,6 +6,7 @@ nulya. Vne-zavisimosti (gigastt/ollama) — capability, FT-39.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -15,6 +16,8 @@ from sqlalchemy import select
 from ..core.db import get_session
 from ..core.models import (AudioFile, Job, Protocol, ReviewRequest, Segment,
                            SessionEvent, VoiceProfile)
+
+log = logging.getLogger("mnema.tasks")
 
 
 def _data_dir() -> Path:
@@ -151,7 +154,7 @@ def run_speaker_id(job_id: int) -> None:
         try:
             labels, turns, ratios = diarize_with_turns(wav, vad)
         except Exception as e:  # noqa: BLE001
-            print(f"diarize fail ({e}) — vse SPEAKER_UNKNOWN", flush=True)
+            log.warning("diarize failed (%s) — all segments SPEAKER_UNKNOWN", e)
             labels, turns, ratios = ["SPEAKER_UNKNOWN"] * len(segs), None, None
         with get_session() as s:
             rows = s.scalars(select(Segment).where(Segment.job_id == job_id)
@@ -426,7 +429,7 @@ def run_voice_enroll(job_id: int, cluster_label: str) -> None:
         from ..core.speaker_backfill import cluster_embedding_for
         emb = cluster_embedding_for(job_id, cluster_label)
     except Exception as e:  # noqa: BLE001 — enroll ne lonit utochnenie
-        print(f"voice_enroll fail (job {job_id}): {e}", flush=True)
+        log.warning("voice_enroll failed (job %s): %s", job_id, e)
         return
     if not emb:
         return
@@ -468,12 +471,11 @@ def run_profile_sample_enroll(profile_id: int, sample_path: str) -> None:
         return
     p = Path(sample_path)
     if not p.is_file():
-        print(f"profile_sample_enroll: fayl ne naiden {sample_path}", flush=True)
+        log.warning("profile_sample_enroll: file not found: %s", sample_path)
         return
     emb = compute_embedding_for_file(p)
     if not emb:
-        print(f"profile_sample_enroll: embedding ne poluchen ({sample_path})",
-              flush=True)
+        log.warning("profile_sample_enroll: no embedding produced (%s)", sample_path)
         return
     from ..core.speaker_backfill import append_ref
     with get_session() as s:
@@ -499,7 +501,7 @@ def run_profile_reembed(profile_id: int) -> None:
         from ..core.speaker_backfill import recompute_profile_embedding
         detail = recompute_profile_embedding(profile_id)
     except Exception as e:  # noqa: BLE001 — reembed ne lonit udalenie etalona
-        print(f"profile_reembed fail (profil {profile_id}): {e}", flush=True)
+        log.warning("profile_reembed failed (profile %s): %s", profile_id, e)
         return
     _profile_event(profile_id, "profile_reembed", detail)
 
@@ -516,7 +518,7 @@ def run_reverify_profile(profile_id: int) -> None:
                                              recompute_profile_embedding)
         detail = recompute_profile_embedding(profile_id)
     except Exception as e:  # noqa: BLE001
-        print(f"reverify fail (profil {profile_id}): {e}", flush=True)
+        log.warning("reverify failed (profile %s): %s", profile_id, e)
         _profile_event(profile_id, "reverify_failed", str(e)[:500])
         return
     jobs = profile_review_jobs(profile_id)
@@ -527,7 +529,7 @@ def run_reverify_profile(profile_id: int) -> None:
             rematch_job(job_id)
             rematched += 1
         except Exception as e:  # noqa: BLE001 — odin plotnoy job ne lonit pereproverku
-            print(f"reverify rematch fail (job {job_id}): {e}", flush=True)
+            log.warning("reverify rematch failed (job %s): %s", job_id, e)
     _profile_event(profile_id, "reverify_done",
                    f"{detail}; pere-macheno vstrech: {rematched}/{len(jobs)}")
 

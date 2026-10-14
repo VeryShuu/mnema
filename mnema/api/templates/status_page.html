@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — Mnema{% endblock %}
+{% block content %}
+<div class="status-page">
+  <div class="card status-card {{ tone }}">
+    <div class="status-icon" aria-hidden="true">{{ icon }}</div>
+    <h2>{{ title }}</h2>
+    <p class="muted">{{ text }}</p>
+    <p><a href="/">Панель управления</a></p>
+  </div>
+</div>
+{% endblock %}

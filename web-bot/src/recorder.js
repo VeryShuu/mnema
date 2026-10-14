@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildJoinUrl } from "./config.js";
+import { createLogger } from "./log.js";
 import { decideSilence, shouldAskConfirmEnd } from "./silence.js";
 import { segKey, shortMixWarningS, ebmlHeaderOffsets, filterUsableSegs, mixWorseThanInput, pickBestDecoded, MIN_SEGMENT_BYTES } from "./seg_key.js";
 import { decodedAudioSeconds, reencodeWebm } from "./webm_fix.js";
@@ -17,6 +18,8 @@ import {
   ENDED_MEETING_SRC,
 } from "./zoom_labels.js";
 import { cleanSingletonLocks, freshProfileCopy, profilesRoot, publicVncPort } from "./vnc_manager.js";
+
+const log = createLogger("recorder");
 
 // Fake-audio-device Chrome (fake-device-for-media-stream) generiruet
 // periodicheskiye bip-y — ik slishat vse uchastniki vstrechi, i oni zhe
@@ -31,7 +34,7 @@ function ensureSilenceWav(dataDir) {
     }
     return fs.statSync(p).size > 0 ? p : null;
   } catch (e) {
-    console.error("[mic] ne udalos' sozdat' bezmolvnyy wav:", e.message);
+    log.error("mic: failed to create silent wav:", e.message);
     return null;
   }
 }
@@ -53,10 +56,10 @@ export async function healthCheckSession(cfg) {
     });
     const v = await classifyPage(page);
     const ok = v !== "login_required" && v !== "bot_wall";
-    if (!ok) console.log("[health] zoom sessiya ne zhivaya:", v);
+    if (!ok) log.info("health: zoom session not alive:", v);
     return ok;
   } catch (e) {
-    console.error("[health] oshibka provery:", e.message);
+    log.error("health: check failed:", e.message);
     return false;
   } finally {
     if (ctx) { try { await ctx.close(); } catch { /* */ } }
@@ -105,7 +108,7 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
       fs.mkdirSync(profilesRoot(), { recursive: true });
       freshProfileCopy(cfg.zoomProfileDir, profileDir);
     } catch (e) {
-      console.error(`[job ${jobId}] kopirovaniye profilya:`, e.message);
+      log.error(`job ${jobId}: profile copy:`, e.message);
       profileDir = cfg.zoomProfileDir; // degradaciya: legasiy obshchiy profil'
       cleanSingletonLocks(cfg.zoomProfileDir);
     }
@@ -437,11 +440,11 @@ async function askConfirmEnd(page, cfg, state, onEvent, reason) {
     });
     if (!r.ok) {
       state.confirmAskedTs = null; // ne došlo — povtorim v sleduyushchem cikla
-      console.error(`confirm-end ${state.jobId} -> ${r.status}`);
+      log.error(`confirm-end ${state.jobId} -> ${r.status}`);
     }
   } catch (e) {
     state.confirmAskedTs = null;
-    console.error(`confirm-end ${state.jobId}:`, e.message);
+    log.error(`confirm-end ${state.jobId}:`, e.message);
   }
 }
 
@@ -907,7 +910,7 @@ function alertOperator(subject, body) {
   fetch(`${API}/api/alert`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ subject, body, dedup_key: "captcha" }),
-  }).catch((e) => console.error("alert fail:", e.message));
+  }).catch((e) => log.error("alert post failed:", e.message));
 }
 
 // Dialog vtorm Shaga vykhoda («Leave meeting» / «End meeting for all»):

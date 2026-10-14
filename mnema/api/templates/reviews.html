@@ -2,10 +2,10 @@
 {% block content %}
 <div class="page-head"><h2>Очередь уточнений</h2></div>
 {% for r in pending %}
-<div class="card" style="border-left:4px solid var(--warn)">
-  <h3 style="display:flex;justify-content:space-between;align-items:center;gap:.5rem">
+<div class="card callout-warn">
+  <h3 class="card-head">
     <span>Встреча №{{ r.job_id }} ({{ jobs[r.job_id].topic if r.job_id in jobs else '' }}) — голосовой кластер «{{ r.cluster_label }}»</span>
-    <button type="button" style="flex:none" onclick="toggleCluster({{ r.id }})" id="toggle_{{ r.id }}">Свернуть</button>
+    <button type="button" class="flex-none" onclick="toggleCluster({{ r.id }})" id="toggle_{{ r.id }}">Свернуть</button>
   </h3>
   <div id="cluster_body_{{ r.id }}">
   {% if r.candidate %}
@@ -13,7 +13,7 @@
     <form onsubmit="answer({{ r.id }}, {{ r.candidate_id }}, null);return false;">
       <button type="submit">Да, это {{ r.candidate }}</button>
     </form>
-    <form style="margin-top:.3rem" onsubmit="return createFor({{ r.id }})">
+    <form class="mt-md" onsubmit="return createFor({{ r.id }})">
       Нет — создать новый профиль: <input placeholder="ФИО" id="name_{{ r.id }}" required>
       <button type="submit">Создать</button>
     </form>
@@ -32,9 +32,9 @@
   {% for seg in refsegs.get(r.id, []) %}
     <p><audio class="refseg" controls preload="none" data-start="{{ seg.t_start }}" src="/api/jobs/{{ r.job_id }}/audio?format=wav#t={{ seg.t_start }},{{ seg.t_end }}"></audio>
     <span class="muted">{{ '%.0f'|format(seg.t_start) }}–{{ '%.0f'|format(seg.t_end) }} с: {{ seg.text[:80] }}</span></p>
-    <p style="margin-top:.2rem"><button type="button" title="Убрать этот фрагмент из кластера"
+    <p class="mt-sm"><button type="button" title="Убрать этот фрагмент из кластера"
             onclick="removeSegment({{ r.id }}, {{ seg.id }})">Удалить из кластера</button>
-    <button type="button" style="margin-left:.3rem" title="Фрагмент с двумя голосами/посторонними звуками — не анализировать"
+    <button type="button" class="ml-sm" title="Фрагмент с двумя голосами/посторонними звуками — не анализировать"
             onclick="excludeSegment({{ r.id }}, {{ seg.id }})">Исключить из анализа</button></p>
   {% endfor %}
   </div>
@@ -44,7 +44,7 @@
 function setCollapsed(rid, collapsed){
   const body = document.getElementById('cluster_body_'+rid);
   const btn = document.getElementById('toggle_'+rid);
-  body.style.display = collapsed ? 'none' : '';
+  body.classList.toggle('hidden', collapsed);
   btn.textContent = collapsed ? 'Развернуть' : 'Свернуть';
   try {
     const s = new Set(JSON.parse(localStorage.getItem('collapsedReviews') || '[]'));
@@ -54,7 +54,7 @@ function setCollapsed(rid, collapsed){
 }
 function toggleCluster(rid){
   const body = document.getElementById('cluster_body_'+rid);
-  setCollapsed(rid, body.style.display !== 'none');
+  setCollapsed(rid, !body.classList.contains('hidden'));
 }
 document.addEventListener('DOMContentLoaded', () => {
   let collapsed = [];
@@ -72,13 +72,13 @@ function createFor(rid){
   const sel = document.getElementById('sel_'+rid);
   if (sel && sel.value){ answer(rid, parseInt(sel.value), null, false); return false; }
   const nm = document.getElementById('name_'+rid).value.trim();
-  if(!nm){ alert('Укажите ФИО'); return false; }
+  if(!nm){ toast('Укажите ФИО','warn'); return false; }
   answer(rid, null, nm, true); return false;
 }
 async function removeSegment(rid, segId){
   if(!confirm('Убрать этот фрагмент из кластера? Он станет отдельным голосом в очереди уточнений.')) return;
   const r = await fetch('/api/reviews/'+rid+'/segments/'+segId, {method:'DELETE'});
-  if(!r.ok){ alert('Не удалось убрать фрагмент: ' + r.status); return; }
+  if(!r.ok){ toast('Не удалось убрать фрагмент: ' + r.status,'error'); return; }
   location.reload();
 }
 document.querySelectorAll('audio.refseg').forEach((a) => {
@@ -87,7 +87,7 @@ document.querySelectorAll('audio.refseg').forEach((a) => {
 async function excludeSegment(rid, segId){
   if(!confirm('Исключить этот фрагмент из анализа полностью? Он не попадёт в стенограмму и протокол.')) return;
   const r = await fetch('/api/reviews/'+rid+'/segments/'+segId+'/exclude', {method:'POST'});
-  if(!r.ok){ alert('Не удалось исключить фрагмент: ' + r.status); return; }
+  if(!r.ok){ toast('Не удалось исключить фрагмент: ' + r.status,'error'); return; }
   location.reload();
 }
 </script>

@@ -300,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[{pid}] {text}")
     if args.job:
         rematch_job(args.job)
-        print(f"job {args.job}: voiceprint pere-machin, auto-sovpadeniya zakryty")
+        print(f"job {args.job}: voiceprint re-matched, auto-matches closed")
     return 0
 
 

@@ -11,7 +11,7 @@ function playAt(h, m, s) {
   p.play();
 }
 </script>
-<div class="card" style="margin-top:1rem">
+<div class="card mt-card">
   <h3>Структурированная часть</h3>
   <div class="table-wrap">
   <table>
@@ -32,7 +32,7 @@ function playAt(h, m, s) {
   </div>
 </div>
 <div class="card">
-  <h3>Стенограмма <span class="muted" style="font-weight:400">(нажмите на время, чтобы перемотать и прослушать фрагмент)</span></h3>
+  <h3>Стенограмма <span class="muted muted-plain">(нажмите на время, чтобы перемотать и прослушать фрагмент)</span></h3>
   {% for s in segments %}
   <p><a href="#" onclick="playAt({{ (s.t_start // 3600)|int }},{{ ((s.t_start % 3600) // 60)|int }},{{ (s.t_start % 60)|int }});return false;">{{ '%02d:%02d:%02d'|format((s.t_start//3600)|int, (s.t_start%3600//60)|int, (s.t_start%60)|int) }}</a>
   <b>{{ s.display_name }}</b>: {{ s.text }}

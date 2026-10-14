@@ -2,10 +2,10 @@
 {% from "_macros.html" import badge %}
 {% block content %}
 <h2>Встречи и расписание</h2>
-{% if error_text %}<div class="card" style="border-color:var(--err);color:var(--err)">{{ error_text }}</div>{% endif %}
+{% if error_text %}<div class="card callout-err">{{ error_text }}</div>{% endif %}
 <div class="card">
   <h3>Запланировать встречу</h3>
-  <form method="post" action="/jobs/create" style="display:flex;gap:.5rem;flex-wrap:wrap" onsubmit="return validateSchedule(this)">
+  <form method="post" action="/jobs/create" class="form-row" onsubmit="return validateSchedule(this)">
     <select name="preset_id" onchange="applyPreset(this)" title="Предопределённая ссылка">
       <option value="">— своя ссылка —</option>
       {% for p in presets %}<option value="{{ p.id }}" data-link="{{ p.meeting_link }}">{{ p.title }}</option>{% endfor %}
@@ -22,7 +22,7 @@
     </div>
     <button type="submit" class="primary">Запланировать</button>
   </form>
-  <form method="post" action="/jobs/import-ics" enctype="multipart/form-data" style="margin-top:.7rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+  <form method="post" action="/jobs/import-ics" enctype="multipart/form-data" class="form-row">
     <input type="file" name="file" accept=".ics">
     <button type="submit">Импорт из календаря (.ics)</button>
   </form>
@@ -30,7 +30,7 @@
 <div class="card">
   <h3>Начать встречу</h3>
   <p class="muted">Принудительно сразу запустить запись уже идущей встречи.</p>
-  <form method="post" action="/jobs/create" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center" onsubmit="return validateZoomLink(this)">
+  <form method="post" action="/jobs/create" class="form-row" onsubmit="return validateZoomLink(this)">
     <input type="hidden" name="start_now" value="1">
     <select name="preset_id" onchange="applyPreset(this)" title="Предопределённая ссылка">
       <option value="">— своя ссылка —</option>
@@ -45,7 +45,7 @@
   <h3>Предопределённые ссылки</h3>
   <p class="muted">Ссылки с паролями для быстрого выбора при планировании и запуске встречи.</p>
   {% for p in presets %}
-  <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:.3rem;flex-wrap:wrap">
+  <div class="preset-row">
     <strong>{{ p.title }}</strong>
     <code>{{ p.meeting_link }}</code>
     {% if p.pwd_ref %}<span class="muted">пароль сохранён</span>{% endif %}
@@ -54,7 +54,7 @@
   {% else %}
   <p class="muted">Предопределённых ссылок пока нет.</p>
   {% endfor %}
-  <form method="post" action="/presets/add" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem">
+  <form method="post" action="/presets/add" class="form-row">
     <input name="title" placeholder="Название (например: Совет директоров)" required>
     <input name="meeting_link" placeholder="Ссылка Zoom (или номер встречи)" size="50" required>
     <input name="pwd" placeholder="Пароль (если в ссылке нет pwd)">
@@ -114,7 +114,7 @@ function validateZoomLink(form){
       || /app\.zoom\.us\/wc\/\d{9,11}/i.test(v)
       || /zoom\.us\/my\/[\w.\-]+/i.test(v);
   if(!ok){
-    alert("Некорректная ссылка Zoom. Пример: https://us06web.zoom.us/j/4383506695?pwd=... или номер встречи (9–11 цифр)");
+    toast("Некорректная ссылка Zoom. Пример: https://us06web.zoom.us/j/4383506695?pwd=... или номер встречи (9–11 цифр)","warn");
     form.meeting_link.focus();
     return false;
   }
@@ -124,7 +124,7 @@ function validateSchedule(form){
   if(!validateZoomLink(form)) return false;
   var s=form.start_at.value, e=form.end_at.value;
   if(s && e && e<=s){
-    alert("Время окончания должно быть позже времени начала");
+    toast("Время окончания должно быть позже времени начала","warn");
     form.end_at.focus();
     return false;
   }
