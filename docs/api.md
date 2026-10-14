@@ -141,8 +141,13 @@ REST API сервиса `api` (FastAPI). Реализация: `mnema/api/main.p
 }
 ```
 
-Регистрирует `audio_files`, переводит job в `processing` и ставит в очередь
-ASR-оркестрацию. Ответ: `{"ok": true}`
+Регистрирует `audio_files` (dedup по kind), переводит job в `processing` и
+ставит в очередь ASR-оркестрацию. Идемпотентен: повторный пост (retry по сети,
+salvage ubitogo web-bot) не даёт 409 — файлы перезаписываются по метаданным,
+ответ `{"ok": true, "already": true}` без повторного transition/enqueue.
+Из статуса `failed` (salvage упавшей задачи — данные на диске) возвращает
+задачу в `processing` с событием `recording_recovered`.
+Ответ: `{"ok": true}`
 
 ### `POST /api/jobs/{jid}/leave`
 

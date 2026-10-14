@@ -21,28 +21,28 @@ function streamedWebm(dir, seconds = 6) {
 }
 
 test("decodedAudioSeconds: streamed webm bez probe-metadannykh schityvaetsya",
-  { skip: !hasFfmpeg && "nuzhen ffmpeg" }, () => {
+  { skip: !hasFfmpeg && "nuzhen ffmpeg" }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "webmfix-"));
     const p = streamedWebm(dir, 6);
-    const d = decodedAudioSeconds(p);
+    const d = await decodedAudioSeconds(p);
     assert.ok(d >= 4.5 && d <= 7.5, `dekod ${d} s vshe 6 s`);
   });
 
 test("decodedAudioSeconds: garbage i nesushchestvuyushchiy fayl dayut 0",
-  { skip: !hasFfmpeg && "nuzhen ffmpeg" }, () => {
+  { skip: !hasFfmpeg && "nuzhen ffmpeg" }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "webmfix-"));
     const bad = path.join(dir, "bad.webm");
     fs.writeFileSync(bad, Buffer.concat(Array(50).fill(Buffer.from("garbage!!"))));
-    assert.equal(decodedAudioSeconds(bad), 0);
-    assert.equal(decodedAudioSeconds(path.join(dir, "net.webm")), 0);
+    assert.equal(await decodedAudioSeconds(bad), 0);
+    assert.equal(await decodedAudioSeconds(path.join(dir, "net.webm")), 0);
   });
 
 test("reencodeWebm: iz postradavshego konteynera delayet chisty s probe",
-  { skip: !hasFfmpeg && "nuzhen ffmpeg" }, () => {
+  { skip: !hasFfmpeg && "nuzhen ffmpeg" }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "webmfix-"));
     const src = streamedWebm(dir, 6);
     const dst = path.join(dir, "fixed.webm");
-    assert.equal(reencodeWebm(src, dst), true);
+    assert.equal(await reencodeWebm(src, dst), true);
     const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries",
       "format=duration", "-of", "default=nw=1:nk=1", dst], { encoding: "utf8" });
     const dur = parseFloat(probe.stdout);
@@ -50,10 +50,10 @@ test("reencodeWebm: iz postradavshego konteynera delayet chisty s probe",
   });
 
 test("reencodeWebm: garbage — False bez sozdaniya vykhoda",
-  { skip: !hasFfmpeg && "nuzhen ffmpeg" }, () => {
+  { skip: !hasFfmpeg && "nuzhen ffmpeg" }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "webmfix-"));
     const bad = path.join(dir, "bad.webm");
     fs.writeFileSync(bad, Buffer.concat(Array(50).fill(Buffer.from("garbage!!"))));
     const dst = path.join(dir, "fixed.webm");
-    assert.equal(reencodeWebm(bad, dst), false);
+    assert.equal(await reencodeWebm(bad, dst), false);
   });

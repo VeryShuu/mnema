@@ -386,7 +386,7 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
         onEvent(EVENT.ERROR, "страница умерла после всех перезагрузок — собираю запись из сохранённого");
         const screenshot_path = await captureFailureShot(page, jobId, cfg);
         for (const rec of segs0) { try { fs.closeSync(rec.fd); rec.fdClosed = true; } catch { /* */ } }
-        const res = finalize(jobId, segs0, webmPath, wavPath, mp3Path, state,
+        const res = await finalize(jobId, segs0, webmPath, wavPath, mp3Path, state,
           { reason: "page_crash_salvaged" }, onEvent);
         res.screenshot_path = screenshot_path;
         return res;

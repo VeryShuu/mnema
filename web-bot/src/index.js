@@ -39,7 +39,7 @@ async function handleSalvage(task) {
   salvaging.add(jobId);
   try {
     const ev = (e, d) => { postEvent(jobId, e, d).catch(() => {}); };
-    const res = salvageFromDisk(jobId, cfg, ev);
+    const res = await salvageFromDisk(jobId, cfg, ev);
     if (res.ok) {
       await postEvent(jobId, "recording_salvaged",
         res.already_finalized ? "запись уже была собрана — досылаю finished"
@@ -173,7 +173,7 @@ async function runTask(task, redis) {
     // vozmozhno zapis' uzhe idla i chanki na diske — pytaemsya spasti to,
     // chto yest', prezhde chem soobschat' o probele
     try {
-      const res = salvageFromDisk(job_id, cfg, (ev2, d2) =>
+      const res = await salvageFromDisk(job_id, cfg, (ev2, d2) =>
         postEvent(job_id, ev2, d2).catch(() => {}));
       if (res.ok) {
         await postEvent(job_id, "recording_salvaged",

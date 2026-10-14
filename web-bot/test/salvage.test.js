@@ -24,7 +24,7 @@ function streamedWebm(p, seconds) {
   return p;
 }
 
-test("rawSegsFromDisk: poryadok po n, epoch po bajtam, prochie fayly ignor", () => {
+test("rawSegsFromDisk: poryadok po n, epoch po bajtam, prochie fayly ignor", async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "salv-"));
   // <256b segmenty filterUsableSegs otbrasyvaet — delay >1KiB kazhdomu
   fs.writeFileSync(path.join(d, "raw.0_w1.webm"), Buffer.alloc(8000));
@@ -39,50 +39,50 @@ test("rawSegsFromDisk: poryadok po n, epoch po bajtam, prochie fayly ignor", () 
   assert.equal(segs[1].epochMs, Math.round(8000 / 8), "otsenka epoh: +bytes/8 ms");
 });
 
-test("rawSegsFromDisk: pustoy/otsutstvuyushchiy katalog — [], ne padenie", () => {
+test("rawSegsFromDisk: pustoy/otsutstvuyushchiy katalog — [], ne padenie", async () => {
   assert.deepEqual(rawSegsFromDisk("/nonexistent/xyz"), []);
 });
 
-test("salvage: uze finalize (raw.webm est') — otdaj puti, ne peresobiraj", () => {
+test("salvage: uze finalize (raw.webm est') — otdaj puti, ne peresobiraj", async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "salv-"));
   const jobDir = path.join(d, "jobs", "77");
   fs.mkdirSync(jobDir, { recursive: true });
   fs.writeFileSync(path.join(jobDir, "raw.webm"), Buffer.alloc(5000));
   fs.writeFileSync(path.join(jobDir, "raw.0_w1.webm"), Buffer.alloc(5000));
   const cfg = { dataDir: d };
-  const res = salvageFromDisk(77, cfg);
+  const res = await salvageFromDisk(77, cfg);
   assert.equal(res.ok, true);
   assert.equal(res.already_finalized, true);
   assert.equal(res.end_reason, "already_finalized");
   assert.equal(res.sizes.webm, 5000);
 });
 
-test("salvage: syryye bez final'nyh i nie > MIN_SEGMENT_BYTES — no_raw_segments", () => {
+test("salvage: syryye bez final'nyh i nie > MIN_SEGMENT_BYTES — no_raw_segments", async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "salv-"));
   const jobDir = path.join(d, "jobs", "78");
   fs.mkdirSync(jobDir, { recursive: true });
   fs.writeFileSync(path.join(jobDir, "raw.0_w1.webm"), Buffer.alloc(10));
-  const res = salvageFromDisk(78, { dataDir: d });
+  const res = await salvageFromDisk(78, { dataDir: d });
   assert.equal(res.ok, false);
   assert.equal(res.fail_reason, "no_raw_segments");
 });
 
-test("salvage: syryye segmenty -> finalize sozdaet raw.webm/meeting.mp3", { skip: !haveFfmpeg() }, () => {
+test("salvage: syryye segmenty -> finalize sozdaet raw.webm/meeting.mp3", { skip: !haveFfmpeg() }, async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "salv-"));
   const jobDir = path.join(d, "jobs", "42");
   fs.mkdirSync(jobDir, { recursive: true });
   streamedWebm(path.join(jobDir, "raw.0_w1.webm"), 4);
-  const res = salvageFromDisk(42, { dataDir: d });
+  const res = await salvageFromDisk(42, { dataDir: d });
   assert.equal(res.ok, true, `salvage dayet ok; fail=${res.fail_reason}`);
   assert.ok(fs.existsSync(path.join(jobDir, "raw.webm")));
   assert.ok(res.duration_s >= 2, `dlitelnost' iz dekada: ${res.duration_s}`);
   assert.ok(res.sizes.webm > 1000);
 });
 
-test("salvage: pusty katalog job — no_raw_segments", () => {
+test("salvage: pusty katalog job — no_raw_segments", async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "salv-"));
   fs.mkdirSync(path.join(d, "jobs", "79"), { recursive: true });
-  const res = salvageFromDisk(79, { dataDir: d });
+  const res = await salvageFromDisk(79, { dataDir: d });
   assert.equal(res.ok, false);
   assert.equal(res.fail_reason, "no_raw_segments");
 });

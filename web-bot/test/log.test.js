@@ -3,9 +3,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const LOG_JS = fileURLToPath(new URL("../src/log.js", import.meta.url));
 
 const SNIFF = `
-import { createLogger } from ${JSON.stringify(path.resolve("web-bot/src/log.js")
+import { createLogger } from ${JSON.stringify(LOG_JS
   .split(path.sep).join("/"))};
 const log = createLogger("test");
 log.debug("d-line");

@@ -10,11 +10,13 @@
 // poryadok sozdaniya) s otsenkoy epoh po bajtam i pushaem v tot ze finalize.
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { shortMixWarningS, filterUsableSegs, ebmlHeaderOffsets, mixWorseThanInput, pickBestDecoded, MIN_SEGMENT_BYTES } from "./seg_key.js";
 import { decodedAudioSeconds, reencodeWebm } from "./webm_fix.js";
 import { parseRawSegName } from "./record_guard.js";
 
+const execFileP = promisify(execFile);
 const ERROR = "error";
 
 // ------------------------------------------------------------- finalize FT-6/41
@@ -22,8 +24,9 @@ const ERROR = "error";
 // obshchiy khronometrazh — epochMs (Date.now momenta rec.start() po chasu
 // konteynera). Baza shkly — pervyy segment. Odin segment bez shvona — prosto
 // kopiruem. Vozvrat: {webm, wav|null, mp3|null, duration_s, sizes}; ok opredelyaet
-// vyzyvayushchiy po nalichiyu/readable webm.
-export function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, onEvent) {
+// vyzyvayushchiy po nalichiyu/readable webm. ASYNC: vsie vneshnie protsessy
+// (ffmpeg/ffprobe/mkvmerge) ne dolzhny blokirovat' event-loop web-bot.
+export async function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, onEvent) {
   let durationS = null;
   const tooSmall = (segs || []).filter((s) => s.bytes > 0 && s.bytes < MIN_SEGMENT_BYTES);
   const real = filterUsableSegs((segs || []).filter((s) => s.bytes > 0 && fs.existsSync(s.p)
@@ -70,7 +73,7 @@ export function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, on
       fs.copyFileSync(inputs[0].p, tmpMix);
     } else {
       try {
-        mixSegments(inputs, base, tmpMix);
+        await mixSegments(inputs, base, tmpMix);
       } catch (e2) {
         onEvent(ERROR, `микс упал (${String(e2.message).slice(0, 120)}) — проверяю фрагменты`);
       }
@@ -81,11 +84,11 @@ export function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, on
     // 72 s). Esli mikš korotche luchshego dekodiruyemogo fragmenta, sozdayem
     // vyvod peresborkoy-totogo-fragmenta reenkodom (chitaet cherez povrezhdeniya).
     let useFallback = false, bestSeg = null;
-    const mixDec = fs.existsSync(tmpMix) ? decodedAudioSeconds(tmpMix) : 0;
+    const mixDec = fs.existsSync(tmpMix) ? await decodedAudioSeconds(tmpMix) : 0;
     if (inputs.length > 1) {
       let bestDec = 0;
       for (const s of inputs) {
-        const d = decodedAudioSeconds(s.p);
+        const d = await decodedAudioSeconds(s.p);
         if (d > bestDec) { bestDec = d; bestSeg = s; }
       }
       useFallback = bestSeg !== null && mixWorseThanInput(mixDec, bestDec);
@@ -93,7 +96,7 @@ export function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, on
         onEvent(ERROR, `микс прочитался на ${Math.round(mixDec)} c из ${Math.round(bestDec)} c `
           + `— восстанавливаю реэнкодом фрагмента ${path.basename(bestSeg.p)}`);
     }
-    if (useFallback && reencodeWebm(bestSeg.p, webmPath)) { /* gotovo */ }
+    if (useFallback && await reencodeWebm(bestSeg.p, webmPath)) { /* gotovo */ }
     else if (!useFallback && mixDec > 0) fs.renameSync(tmpMix, webmPath);
     else if (fs.existsSync(tmpMix) && fs.statSync(tmpMix).size > 0) fs.renameSync(tmpMix, webmPath);
     else {
@@ -114,15 +117,15 @@ export function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, on
   // variant s nejdl'shim POLNOMU DEKODOM. Sravnivaem varianty PO POLNOMU DEKODU
   // (ffmpeg-reencode s ignore_err, mkvmerge, sam Syracuse) i berem nejdl'shiy:
   // mkvmerge na obryvanom bez cues mozhet s"est' 97% payload (job 17).
-  if (!probeDuration(webmPath)) {
-    const cands = [{ p: webmPath, decodedS: decodedAudioSeconds(webmPath) }];
+  if (!await probeDuration(webmPath)) {
+    const cands = [{ p: webmPath, decodedS: await decodedAudioSeconds(webmPath) }];
     const ff = webmPath + ".fffix.webm";
-    if (reencodeWebm(webmPath, ff)) cands.push({ p: ff, decodedS: decodedAudioSeconds(ff), fixed: true });
+    if (await reencodeWebm(webmPath, ff)) cands.push({ p: ff, decodedS: await decodedAudioSeconds(ff), fixed: true });
     try {
       const fixed = webmPath + ".fixed.webm";
-      execFileSync("mkvmerge", ["-o", fixed, webmPath], { stdio: "pipe" });
+      await execFileP("mkvmerge", ["-o", fixed, webmPath]);
       if (fs.existsSync(fixed) && fs.statSync(fixed).size > 0)
-        cands.push({ p: fixed, decodedS: decodedAudioSeconds(fixed), fixed: true });
+        cands.push({ p: fixed, decodedS: await decodedAudioSeconds(fixed), fixed: true });
     } catch (e) { /* mkvmerge nie vsetda spasayet */ }
     const winner = pickBestDecoded(cands);
     for (const c of cands)
@@ -130,7 +133,7 @@ export function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, on
     if (winner && winner.p !== webmPath) { try { fs.renameSync(winner.p, webmPath); } catch { /* */ } }
   }
   try {
-    durationS = probeDuration(webmPath);
+    durationS = await probeDuration(webmPath);
   } catch { durationS = null; }
   // sanity: микс заметно короче wall-clock записи — потерянный хвост (job
   // 16) — loudим в events operatora I SOHRANYAEM syryye segmenty: bez nih
@@ -165,13 +168,13 @@ export function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, on
   // wav i mp3 (mp3 srazu — FT-41a)
   let wavOk = false, mp3Ok = false;
   try {
-    execFileSync("ffmpeg", ["-y", "-err_detect", "ignore_err", "-i", webmPath,
-      "-ar", "16000", "-ac", "1", wavPath], { stdio: "pipe" });
+    await execFileP("ffmpeg", ["-y", "-err_detect", "ignore_err", "-i", webmPath,
+      "-ar", "16000", "-ac", "1", wavPath]);
     wavOk = fs.existsSync(wavPath);
   } catch (e) { /* worker povtorit */ }
   try {
-    execFileSync("ffmpeg", ["-y", "-err_detect", "ignore_err", "-i", webmPath,
-      "-ar", "44100", "-ac", "1", "-b:a", "64k", mp3Path], { stdio: "pipe" });
+    await execFileP("ffmpeg", ["-y", "-err_detect", "ignore_err", "-i", webmPath,
+      "-ar", "44100", "-ac", "1", "-b:a", "64k", mp3Path]);
     mp3Ok = fs.existsSync(mp3Path);
   } catch (e) { /* mp3 encoder niedostupen — razresheno vydat webm */ }
   const sizes = {};
@@ -197,7 +200,7 @@ export function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, on
 
 // atrim do armEpoch + adelay posle nego + amix v odin webm (normalize=0 —
 // bez padaniya levelya). Vse segmenty na odnoy globalnoy shkalе vremeni.
-export function mixSegments(real, base, outPath) {
+export async function mixSegments(real, base, outPath) {
   // ignore_err: povrezhdennyye kadry v seredine potoka nie dolzhny umerbishch'
   // ves' amix — eto input-opciya, pered kazhdym -i (dlya vseh vvodov).
   const args = ["-y"];
@@ -214,15 +217,15 @@ export function mixSegments(real, base, outPath) {
     ? `${labels[0]}anull[out]`
     : `${labels.join("")}amix=inputs=${real.length}:duration=longest:normalize=0[out]`;
   parts.push(chain);
-  execFileSync("ffmpeg", [...args,
+  await execFileP("ffmpeg", [...args,
     "-filter_complex", parts.join(";"),
     "-map", "[out]", "-c:a", "libopus", "-b:a", "64k", outPath],
-  { stdio: "pipe", timeout: 600000 });
+  { timeout: 600000, maxBuffer: 16 * 1024 * 1024 });
 }
 
-export function probeDuration(p) {
+export async function probeDuration(p) {
   try {
-    const out = execFileSync("ffprobe", ["-v", "quiet", "-print_format", "json",
+    const { stdout: out } = await execFileP("ffprobe", ["-v", "quiet", "-print_format", "json",
       "-show_format", p], { encoding: "utf8" });
     return parseFloat(JSON.parse(out).format.duration) || 0;
   } catch { return 0; }
@@ -258,8 +261,8 @@ export function rawSegsFromDisk(jobDir) {
 
 // Vosstanovlenie zadachi Po syrym segmentam na diske (web-bot umen/skonchilsya
 // mid-zapisi). Vozvrat kaka v finalize, no ok=false yesli validnogo vyvoda net;
-// nichyego ne brosaet isklyucheniyami.
-export function salvageFromDisk(jobId, cfg, onEvent = () => {}) {
+// nichyego ne brosaet isklyucheniyami. ASYNC: finalize ne blokiruet event-loop.
+export async function salvageFromDisk(jobId, cfg, onEvent = () => {}) {
   const jobDir = path.join(cfg.dataDir, "jobs", String(jobId));
   const webmPath = path.join(jobDir, "raw.webm");
   const wavPath = path.join(jobDir, "meeting.wav");
@@ -274,7 +277,7 @@ export function salvageFromDisk(jobId, cfg, onEvent = () => {}) {
       ok: true, already_finalized: true, webm: webmPath,
       wav: fs.existsSync(wavPath) ? wavPath : null,
       mp3: fs.existsSync(mp3Path) ? mp3Path : null,
-      duration_s: probeDuration(webmPath) || null, sizes,
+      duration_s: (await probeDuration(webmPath)) || null, sizes,
       end_reason: "already_finalized",
     };
   }
@@ -284,7 +287,7 @@ export function salvageFromDisk(jobId, cfg, onEvent = () => {}) {
   }
   const state = { joinedAt: null, browserTotal: {} };
   try {
-    const res = finalize(jobId, segs, webmPath, wavPath, mp3Path,
+    const res = await finalize(jobId, segs, webmPath, wavPath, mp3Path,
       state, { reason: "salvaged" }, onEvent);
     const good = fs.existsSync(webmPath) && fs.statSync(webmPath).size > MIN_SEGMENT_BYTES;
     return { ...res, ok: good };

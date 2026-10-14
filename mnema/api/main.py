@@ -247,14 +247,17 @@ class FinishedIn(BaseModel):
 def api_job_finished(jid: int, body: FinishedIn):
     """web-bot soobschaet o zavershenii zapisi: audio_files + processing (FT-34).
     Idempotenten: povtorny finished (retry po seti, salvage ubitogo web-bot)
-    ne davayet 409 — esli job uze posle recording, pishem fayly (dedup po kind)
-    i vazvraschaem ok bez povtornogo transition/enqueue."""
+    ne davayet 409 — pishem fayly (dedup po kind). Iz failed (salvage
+    upavshey zdachi, dannye na diske) vozvraschaem zadachu v processing;
+    iz ostanal'nyh statusov (done/cancelled/...) — prosto ok bez transition."""
     from ..core.pipeline import register_recording_finished
     with get_session() as s:
         job = s.get(Job, jid)
         if job is None:
             raise HTTPException(404)
-        already = job.status not in ("recording", "launching", "scheduled")
+        recoverable = job.status == "failed"
+        already = job.status not in ("recording", "launching", "scheduled",
+                                     "failed")
     register_recording_finished(jid, webm_path=body.webm_path, duration_s=body.duration_s)
     sizes = body.sizes or {}
 
@@ -274,6 +277,12 @@ def api_job_finished(jid: int, body: FinishedIn):
     if already:
         return {"ok": True, "already": True}
     transition(jid, "processing", event="recording_finished")
+    if recoverable:
+        with get_session() as s:
+            s.add(SessionEvent(job_id=jid, event="recording_recovered",
+                               detail="finished posle failed — dannye na diske, "
+                                      "zvraschena v processing"))
+            s.commit()
     from ..core.queue import enqueue_job
     processing_started = enqueue_job("asr", "mnema.worker.tasks.run_orchestrate", jid)
     if not processing_started:

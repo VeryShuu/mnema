@@ -99,6 +99,23 @@ def test_povtorny_watchdog_ne_spamit_posle_salvage_requested(db, monkeypatch):
     assert len(calls) == 1
 
 
+def test_redis_otkaz_ne_piset_marku_i_povtoryaetsya(db, monkeypatch):
+    # request_salvage vernul False (redis nedostupen) — marku 'salvage_requested'
+    # NE pishem: taymer tishiny ne sbrosyetsya, sleduyushchiy protih poprovit snova
+    monkeypatch.setenv("STALLED_RECORDING_MIN", "20")
+    monkeypatch.setattr("mnema.core.jobs_launch.request_salvage",
+                        lambda job_id, reason=None: False)
+    _recording_job(started_min_ago=45)
+    from mnema.core.db import get_session
+    from mnema.core.models import SessionEvent
+    from mnema.core.pipeline import stalled_recording_watch
+    assert stalled_recording_watch() == 0
+    with get_session() as s:
+        marks = s.scalars(select(SessionEvent).where(
+            SessionEvent.event == "salvage_requested")).all()
+        assert marks == []
+
+
 def test_ne_chuzye_statusy_ne_tromaemsya(db, monkeypatch):
     monkeypatch.setenv("STALLED_RECORDING_MIN", "20")
     calls = _salvage_calls(monkeypatch)

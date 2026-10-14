@@ -202,9 +202,12 @@ def stalled_recording_watch() -> int:
     peresoberet ih v final'nye fayly i soobschit finished (akaktivnuyu v tom
     zhe processe zadachu sam propustit).
 
-    Vklad 'salvage_requested' pisetsya v zhurnal i peremelaya taymer tishiny,
-    poproskolu sleduyushchaya popitka vozmozhna ne ranye etogo zhe poroga —
-    bez spam-a kazhdye 5 minut. Vozvraschaet chislo postavlennyh salvage."""
+    Vklad 'salvage_requested' pisetsya v zhurnal tol'ko pri uspeshnom enqueue
+    (pri nedostupnom redis marku ne pishem — taymer tishiny ne sbrosyetsya,
+    sleduyushchiy protih maintenance poprovit snova) i peremelaya taymer
+    tishiny, poproskolu sleduyushchaya popitka vozmozhna ne ranye etogo zhe
+    poroga — bez spam-a kazhdye 5 minut. Vozvraschaet chislo postavlennyh
+    salvage."""
     import os
     minutes = int(os.environ.get("STALLED_RECORDING_MIN", "20") or 20)
     now = dt.datetime.now(dt.timezone.utc)
@@ -233,7 +236,8 @@ def stalled_recording_watch() -> int:
             if quiet_min < minutes:
                 continue
             hb_age = _heartbeat_age_s()
-            jobs_launch.request_salvage(jid, "stalled_recording")
+            if not jobs_launch.request_salvage(jid, "stalled_recording"):
+                continue  # redis nedostupen — marku ne pishem, taymer ne sbros
             s.add(SessionEvent(
                 job_id=jid, event="salvage_requested",
                 detail=f"watchdog: net sobytiy {int(quiet_min)} min; heartbeat "

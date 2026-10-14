@@ -1061,3 +1061,60 @@ def test_protocol_page_drops_empty_and_merges_same_speaker(client):
     assert r.status_code == 200
     assert r.text.count("Голос SPEAKER_01") == 1
     assert "slovo eshcho slovo" in r.text
+
+
+def _touch(path):
+    Path(path).write_bytes(b"\x1a\x45\xdf\xa3" + b"webm-fake" * 10)
+    return str(path)
+
+
+def test_finished_idempotent_no_duplicate_rows(client, tmp_path):
+    """Povtorny POST /finished (retry po seti) ne dadet 409 i ne udvoit
+    audio_files: vtoryj otvet already=true, storok po kazhdomu kind — odna."""
+    jid = client.post("/api/jobs", json={"meeting_id": "551155111"}).json()["id"]
+    client.post(f"/api/jobs/{jid}/status", json={"status": "launching"})
+    client.post(f"/api/jobs/{jid}/status", json={"status": "recording"})
+    webm = _touch(tmp_path / "raw.webm")
+    wav = _touch(tmp_path / "meeting.wav")
+    body = {"webm_path": webm, "wav_path": wav, "duration_s": 12.5, "sizes": {}}
+    assert client.post(f"/api/jobs/{jid}/finished", json=body).status_code == 200
+    r2 = client.post(f"/api/jobs/{jid}/finished", json=body)
+    assert r2.status_code == 200 and r2.json().get("already") is True
+    from mnema.core.db import get_session
+    from mnema.core.models import AudioFile
+    from sqlalchemy import select
+    with get_session() as s:
+        rows = s.scalars(select(AudioFile).where(AudioFile.job_id == jid)).all()
+        assert sorted(r.kind for r in rows) == ["wav", "webm"]
+
+
+def test_finished_posle_failed_vozvrashchaet_v_processing(client, tmp_path):
+    """Salvage upavshej zdachi: /finished iz failed -> processing +
+    sobytie recording_recovered (dannye na diske — ASR prohodim)."""
+    jid = client.post("/api/jobs", json={"meeting_id": "552255222"}).json()["id"]
+    client.post(f"/api/jobs/{jid}/status", json={"status": "launching"})
+    client.post(f"/api/jobs/{jid}/status", json={"status": "recording"})
+    client.post(f"/api/jobs/{jid}/status",
+                json={"status": "failed", "fail_reason": "recording_lost"})
+    webm = _touch(tmp_path / "raw2.webm")
+    r = client.post(f"/api/jobs/{jid}/finished",
+                    json={"webm_path": webm, "duration_s": 30.0, "sizes": {}})
+    assert r.status_code == 200
+    assert client.get(f"/api/jobs/{jid}").json()["status"] == "processing"
+    events = [e["event"] for e in client.get(f"/api/jobs/{jid}").json()["events"]]
+    assert "recording_recovered" in events
+
+
+def test_finished_done_status_ne_vozvraschaet_v_processing(client, tmp_path):
+    """Iz done (ne failed) — prosto already:true, bez transition."""
+    jid = client.post("/api/jobs", json={"meeting_id": "553355333"}).json()["id"]
+    client.post(f"/api/jobs/{jid}/status", json={"status": "launching"})
+    client.post(f"/api/jobs/{jid}/status", json={"status": "recording"})
+    webm = _touch(tmp_path / "raw3.webm")
+    client.post(f"/api/jobs/{jid}/finished",
+                json={"webm_path": webm, "duration_s": 10.0, "sizes": {}})
+    client.post(f"/api/jobs/{jid}/status", json={"status": "done"})
+    r = client.post(f"/api/jobs/{jid}/finished",
+                    json={"webm_path": webm, "duration_s": 10.0, "sizes": {}})
+    assert r.status_code == 200 and r.json().get("already") is True
+    assert client.get(f"/api/jobs/{jid}").json()["status"] == "done"
