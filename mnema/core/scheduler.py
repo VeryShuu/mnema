@@ -147,9 +147,13 @@ def digest_job() -> None:
 
 
 def maintenance_job() -> None:
-    from .pipeline import review_timeout_check
+    from .pipeline import review_timeout_check, stalled_recording_watch
     from .uploads import gc_stale_uploads
     review_timeout_check()
+    try:
+        stalled_recording_watch()
+    except Exception:  # noqa: BLE001 — watchdog ne dolzhen lonit' maintenance
+        pass
     NotifyService().dispatch_pending()
     try:
         gc_stale_uploads()

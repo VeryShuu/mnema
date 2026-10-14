@@ -245,8 +245,16 @@ class FinishedIn(BaseModel):
 
 @app.post("/api/jobs/{jid}/finished")
 def api_job_finished(jid: int, body: FinishedIn):
-    """web-bot soobschaet o zavershenii zapisi: audio_files + processing (FT-34)."""
+    """web-bot soobschaet o zavershenii zapisi: audio_files + processing (FT-34).
+    Idempotenten: povtorny finished (retry po seti, salvage ubitogo web-bot)
+    ne davayet 409 — esli job uze posle recording, pishem fayly (dedup po kind)
+    i vazvraschaem ok bez povtornogo transition/enqueue."""
     from ..core.pipeline import register_recording_finished
+    with get_session() as s:
+        job = s.get(Job, jid)
+        if job is None:
+            raise HTTPException(404)
+        already = job.status not in ("recording", "launching", "scheduled")
     register_recording_finished(jid, webm_path=body.webm_path, duration_s=body.duration_s)
     sizes = body.sizes or {}
 
@@ -263,6 +271,8 @@ def api_job_finished(jid: int, body: FinishedIn):
                 s.commit()
     _add("wav", body.wav_path)
     _add("mp3", body.mp3_path)
+    if already:
+        return {"ok": True, "already": True}
     transition(jid, "processing", event="recording_finished")
     from ..core.queue import enqueue_job
     processing_started = enqueue_job("asr", "mnema.worker.tasks.run_orchestrate", jid)

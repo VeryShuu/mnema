@@ -104,9 +104,12 @@ def _notify_protocol_ready(job_id: int) -> None:
 def register_recording_finished(job_id: int, *, webm_path: str | None,
                                 duration_s: float | None,
                                 events: list[dict] | None = None) -> None:
-    """vypolnyaetsya pered transition(recording->processing): pishi audio_files + event-log."""
+    """vypolnyaetsya pered transition(recording->processing): pishi audio_files + event-log.
+    Idempotenten po kind (salvage mozhet povtorit' finished posle smerti mezhdu
+    finalize i otvetom api) — vklad webm pishetsya odin raz."""
     with get_session() as s:
-        if webm_path:
+        if webm_path and s.scalars(select(AudioFile).where(
+                AudioFile.job_id == job_id, AudioFile.kind == "webm")).first() is None:
             import os as _os
             s.add(AudioFile(job_id=job_id, kind="webm", path=webm_path,
                             bytes=(_os.path.getsize(webm_path)
@@ -176,6 +179,68 @@ def review_requests_resolved(job_id: int) -> bool:
             ReviewRequest.job_id == job_id,
             ReviewRequest.status == "pending")).first()
         return unresolved is None
+
+
+def _heartbeat_age_s() -> float | None:
+    """Vozrast molotka web-bot (fayl na obshchem /data); None — fayla net."""
+    import os
+    from pathlib import Path
+    hb = os.environ.get("WEBBOT_HEARTBEAT_FILE", "/data/web-bot.heartbeat")
+    try:
+        ts = float(Path(hb).read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return max(0.0, dt.datetime.now(dt.timezone.utc).timestamp() - ts / 1000.0)
+
+
+def stalled_recording_watch() -> int:
+    """Watchdog zalishchayushchikh v `recording`: job bez novykh sobytiy dolshe
+    STALLED_RECORDING_MIN — oznachayet, chto zapisi bol'she net ni v rekordere,
+    ni v API (web-bot umer mezhdu finalize i POST /finished, /finished ne
+    doshyel, ili recorder molchit pri zhivoj stranice). Syryye segmenty mogut
+    lezat v /data/jobs/<id> — stavim job v salvage-ochered' web-bot: tot
+    peresoberet ih v final'nye fayly i soobschit finished (akaktivnuyu v tom
+    zhe processe zadachu sam propustit).
+
+    Vklad 'salvage_requested' pisetsya v zhurnal i peremelaya taymer tishiny,
+    poproskolu sleduyushchaya popitka vozmozhna ne ranye etogo zhe poroga —
+    bez spam-a kazhdye 5 minut. Vozvraschaet chislo postavlennyh salvage."""
+    import os
+    minutes = int(os.environ.get("STALLED_RECORDING_MIN", "20") or 20)
+    now = dt.datetime.now(dt.timezone.utc)
+    with get_session() as s:
+        ids = [j.id for j in s.scalars(
+            select(Job).where(Job.status == "recording"))]
+    from . import jobs_launch
+    requested = 0
+    for jid in ids:
+        with get_session() as s:
+            job = s.get(Job, jid)
+            if job is None or job.status != "recording":
+                continue
+            last_ev = s.scalars(select(SessionEvent).where(
+                SessionEvent.job_id == jid).order_by(SessionEvent.ts.desc())
+                .limit(1)).first()
+            base = job.started_ts or job.start_at or now
+            if base.tzinfo is None:
+                base = base.replace(tzinfo=dt.timezone.utc)
+            lt = None
+            if last_ev is not None:
+                lt = last_ev.ts
+                if lt.tzinfo is None:
+                    lt = lt.replace(tzinfo=dt.timezone.utc)
+            quiet_min = (now - (lt or base)).total_seconds() / 60.0
+            if quiet_min < minutes:
+                continue
+            hb_age = _heartbeat_age_s()
+            jobs_launch.request_salvage(jid, "stalled_recording")
+            s.add(SessionEvent(
+                job_id=jid, event="salvage_requested",
+                detail=f"watchdog: net sobytiy {int(quiet_min)} min; heartbeat "
+                       + ("net_dannyh" if hb_age is None else f"{int(hb_age)} s")))
+            s.commit()
+            requested += 1
+    return requested
 
 
 def rerun_llm_analysis(job_id: int) -> bool:

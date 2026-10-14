@@ -9,8 +9,9 @@ import { execFileSync } from "node:child_process";
 import { buildJoinUrl } from "./config.js";
 import { createLogger } from "./log.js";
 import { decideSilence, shouldAskConfirmEnd } from "./silence.js";
-import { segKey, shortMixWarningS, ebmlHeaderOffsets, filterUsableSegs, mixWorseThanInput, pickBestDecoded, MIN_SEGMENT_BYTES } from "./seg_key.js";
-import { decodedAudioSeconds, reencodeWebm } from "./webm_fix.js";
+import { segKey, MIN_SEGMENT_BYTES } from "./seg_key.js";
+import { finalize } from "./salvage.js";
+import { chunkWritePlan } from "./record_guard.js";
 import {
   END_CONTROL_SRC, LEAVE_SRCS, LEAVE_DIALOG_SRCS,
   MIC_CANDIDATE_SRC, MIC_MUTED_SRC, MIC_ACTIVE_SRC, MIC_MUTED_ICON_SRC,
@@ -156,8 +157,19 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
   //     real'nogo rec.start() (running AudioContext + anchor-blip 17.5k 8 ms v
   //     nachale). Na finalize okna sravnivayutsya adelay+amix — bez atrimov po
   //     lozhnym epoham, kotorye syedali nachalo fraz.
+  //     Chanki s absolute-offsetom + ack: na disk pishetsya v tochnoye mesto;
+  //     pri oshibke zapisi chanki ostayutsya v pamyati stranicy do povtornoy
+  //     popitki (ne teryayutsya), propusk po pamyati zalivayetsya nulami.
+  const MIN_FREE_BYTES = cfg.minFreeDiskBytes;
+  let diskLowAlerted = false;
+  function freeBytes() {
+    try {
+      const s = fs.statfsSync(jobDir);
+      return s.bavail * s.bsize;
+    } catch { return Infinity; }
+  }
   let recording = false;
-  const frameFiles = new Map(); // `${fr}|${docId}|w<W>` -> {n, p, fd, bytes, epochMs}
+  const frameFiles = new Map(); // `${fr}|${docId}|w<W>` -> {n, p, fd, bytes, acked, epochMs}
   let frameSeq = 0;
   // docId (nonce JS-документа страницы) обязателен в ключе: Zoom перезагружает
   // свой фрейм внутри страницы (job 16: на ~13-й минуте); новый контекст по
@@ -170,10 +182,41 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
     if (!rec) {
       const n = frameSeq++;
       const p = path.join(jobDir, `raw.${n}_w${w}.webm`);
-      rec = { n, key, p, fd: fs.openSync(p, "w"), bytes: 0 };
+      rec = { n, key, p, fd: fs.openSync(p, "w"), bytes: 0, acked: 0 };
       frameFiles.set(key, rec);
     }
     return rec;
+  };
+  // Zapishet vkhod okna (b64 ili gap) v ego tochnoye mesto kontinual'no za
+  // rec.acked; vozvrat novyy rec.acked. Brosaet pri oshibke diska —
+  // vyzyvayushchiy togda ne ackaet etu granitsu.
+  const writeEntry = (rec, e) => {
+    // region v okno: [e.off, e.off+len). b64-pisanie — cherez chunkWritePlan
+    // (propusk pered nim zalivayetsya nulami, overlap otsekaetsya);
+    // gap — prosto zalivayem vse, chego ne khvataet do kontsa regiona.
+    const total = e.off + e.len;
+    if (rec.acked >= total) return rec.acked; // uze na diskе (povtorny drain)
+    let zerosBytes = 0;
+    let payload = Buffer.alloc(0);
+    if (e.gap) {
+      zerosBytes = total - rec.acked;
+    } else {
+      const plan = chunkWritePlan(rec.acked, e.off, e.len);
+      if (!plan) return rec.acked;
+      zerosBytes = plan.zeros;
+      if (e.b64) payload = Buffer.from(e.b64, "base64").subarray(plan.sliceFrom);
+    }
+    if (zerosBytes > 0) fs.writeSync(rec.fd, Buffer.alloc(zerosBytes), 0, zerosBytes, rec.acked);
+    if (payload.length > 0) fs.writeSync(rec.fd, payload, 0, payload.length, rec.acked + zerosBytes);
+    const added = zerosBytes + payload.length;
+    rec.acked += added;
+    rec.bytes += added;
+    state.chunksSaved += added;
+    if (e.gap && zerosBytes > 0 && !rec.gapAlerted) {
+      rec.gapAlerted = true;
+      onEvent(EVENT.ERROR, `в ${path.basename(rec.p)} залит пропуск ${zerosBytes} б: страница потеряла чанки из памяти (не записанными на диск раньше) — в этом месте аудио нет`);
+    }
+    return rec.acked;
   };
   const flushTimer = setInterval(async () => {
     if (!recording) return;
@@ -187,33 +230,82 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
             try { window.__mnemaArm(); } catch (e) { /* */ }
           }
           if (!window.__mnemaDrain) return null;
+          // samodiagnostika: MediaRecorder umer/AudioContext zasp — ozhivlyaem
+          // do vyachki, chtoby etoy zhe papkoy ne propalo bol'he
+          let revived = false;
+          try { revived = !!(window.__mnemaReviveIfStalled && window.__mnemaReviveIfStalled()); }
+          catch (e) { /* */ }
           const d = window.__mnemaDrain();
           const s = window.__mnemaStatus ? window.__mnemaStatus() : {};
-          return { d, s };
+          return { d, s, revived };
         }).catch(() => null);
         return { fr, st };
       }));
       for (const { fr, st } of statuses) {
         if (!st || !st.d || !st.d.wins) continue;
+        if (st.revived) {
+          // rate-limit: esli revive nie mozet ozhivit' payplayn (ctx v vechnom
+          // resume) — ne spamit' kazhdy flush
+          const dk = `${fr.url()}|${st.d.docId || ""}`;
+          const last = (flushTimer.revivedTs = flushTimer.revivedTs || new Map()).get(dk) || 0;
+          if (Date.now() - last > 120000) {
+            flushTimer.revivedTs.set(dk, Date.now());
+            onEvent("recorder_revived", "MediaRecorder/AudioContext были мертвы — попытка рестарта записи");
+          }
+        }
+        if (st.s && (st.s.unackedBytes || 0) > 16_000_000 && flushTimer.unAcked !== 1) {
+          flushTimer.unAcked = 1;
+          onEvent(EVENT.ERROR, `в памяти страницы ${Math.round(st.s.unackedBytes / 1e6)} МБ незаписанного аудио — диск недоступен?`);
+        } else if (st.s && (st.s.unackedBytes || 0) < 4_000_000) {
+          flushTimer.unAcked = 0;
+        }
         // skol'ko vbrosila stsa (nakopitel'no s zagruzki dokumenta) — dla
         // sverki s zapisannymi bajtami v finalize (poteri mezhdu drainami)
         if (st.d.total) state.browserTotal[`${fr.url()}|${st.d.docId || ""}`] = st.d.total;
-        for (const [wStr, chunks] of Object.entries(st.d.wins)) {
+        for (const [wStr, entries] of Object.entries(st.d.wins)) {
           const w = parseInt(wStr, 10);
-          if (!w || !chunks || !chunks.length) continue; // okno 0 (pre-arm) - v korzinku; w>=1: otdalnoe fail
+          if (!w || !entries || !entries.length) continue; // okno 0 (pre-arm) - v korzinku
           const rec = ensureSegFor(fr, w, st.d.docId);
           if (rec.epochMs === undefined)
             rec.epochMs = (st.d.epochs && st.d.epochs[w]) || Date.now();
-          const buf = Buffer.from(chunks.join(''), "base64");
-          fs.writeSync(rec.fd, buf);
-          rec.bytes += buf.length;
-          state.chunksSaved += buf.length;
-          gotAny = true;
+          let ackTo = 0, err = null;
+          for (const e of entries) {
+            try {
+              ackTo = writeEntry(rec, e);
+              gotAny = true;
+            } catch (e2) {
+              err = e2;
+              break; // eto okno v etom flushe dalshe ne pishem; chankiostayutsya v pamyati
+            }
+          }
+          // ack tol'ko uspeshno zapissannoe; v sluchae oshibki stranitsa
+          // khranit ostal'noye do sleduyushchego flusha
+          try {
+            await fr.evaluate(({ w, upTo }) => {
+              try { window.__mnemaAck && window.__mnemaAck({ [w]: upTo }); } catch (e) { /* */ }
+            }, { w, upTo: ackTo }).catch(() => {});
+          } catch { /* */ }
+          if (err) {
+            onEvent(EVENT.ERROR, `запись ${path.basename(rec.p)}: ${err.message.slice(0, 140)} — чанки остаются в памяти страницы`);
+          }
         }
         if (st.s && st.s.tracks > tracks) tracks = st.s.tracks;
       }
       if (gotAny) state.lastChunksTs = Date.now();
       state.liveTracks = tracks;
+      const free = freeBytes();
+      if (free < MIN_FREE_BYTES) {
+        if (!diskLowAlerted) {
+          diskLowAlerted = true;
+          onEvent(EVENT.ERROR, `свободно на томе записи ${Math.round(free / 1e6)} МБ (< ${Math.round(MIN_FREE_BYTES / 1e6)}) — запись вот-вот упадёт, освободите /data`);
+          fetch(`${process.env.API_URL || "http://api:8000"}/api/alert`, {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ subject: "Диск web-bot почти заполнен",
+              body: `Осталось ${Math.round(free / 1e6)} МБ на томе /data. Запись встреч останавливается при переполнении — очистите архив задач.`,
+              dedup_key: "disk_low" }),
+          }).catch(() => {});
+        }
+      } else if (free > MIN_FREE_BYTES * 2) diskLowAlerted = false;
       if (tracks > 0 && (flushTimer.counter = (flushTimer.counter || 0) + 1) % 6 === 0)
         onEvent(EVENT.TRACK_ADDED, `активных дорожек: ${tracks}`);
       if (gotAny && (flushTimer.saved = (flushTimer.saved || 0) + 1) % 12 === 0)
@@ -269,20 +361,36 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
         const d = await fr.evaluate(() =>
           window.__mnemaDrain ? window.__mnemaDrain() : null).catch(() => null);
         if (!d || !d.wins) continue;
-        for (const [wStr, chunks] of Object.entries(d.wins)) {
+        for (const [wStr, entries] of Object.entries(d.wins)) {
           const w = parseInt(wStr, 10);
-          if (!w || !chunks || !chunks.length) continue;
+          if (!w || !entries || !entries.length) continue;
           const rec = ensureSegFor(fr, w, d.docId);
           if (rec.epochMs === undefined)
             rec.epochMs = (d.epochs && d.epochs[w]) || Date.now();
-          const buf = Buffer.from(chunks.join(''), "base64");
-          fs.writeSync(rec.fd, buf);
-          rec.bytes += buf.length;
+          let ackTo = 0;
+          for (const e of entries) {
+            try { ackTo = writeEntry(rec, e); } catch { break; }
+          }
+          await fr.evaluate(({ w: wN, upTo }) => {
+            try { window.__mnemaAck && window.__mnemaAck({ [wN]: upTo }); } catch (e) { /* */ }
+          }, { w, upTo: ackTo }).catch(() => {});
         }
       } catch { /* stranitsa uzhe mohla utochn */ }
     }
 
     if (end.reason === "reload_exhausted") {
+      // stranitsa umerla, no chast' zapisi uze na diske — chastichnaya zapis'
+      // luchshe nulya: finalize soberaet to, chto yest', i my soobschaet finished
+      const segs0 = [...frameFiles.values()].filter((r) => r.bytes > 0);
+      if (segs0.some((r) => r.bytes >= MIN_SEGMENT_BYTES)) {
+        onEvent(EVENT.ERROR, "страница умерла после всех перезагрузок — собираю запись из сохранённого");
+        const screenshot_path = await captureFailureShot(page, jobId, cfg);
+        for (const rec of segs0) { try { fs.closeSync(rec.fd); rec.fdClosed = true; } catch { /* */ } }
+        const res = finalize(jobId, segs0, webmPath, wavPath, mp3Path, state,
+          { reason: "page_crash_salvaged" }, onEvent);
+        res.screenshot_path = screenshot_path;
+        return res;
+      }
       const screenshot_path = await captureFailureShot(page, jobId, cfg);
       return { ok: false, fail_reason: "page_crash",
                error: "страница умерла после всех перезагрузок", webm: webmPath,
@@ -1099,220 +1207,6 @@ async function waitForEnd(page, cfg, state, onEvent) {
   return { reason: "stopped" };
 }
 
-// ------------------------------------------------------------- finalize FT-6/41
-// segs: [{p, bytes, epochMs}] — po odnomu webm-potoku na freym-payplayn;
-// rekordery ne ostanavlivayutsya nichego, kogoда (migraciya trekov mezhdu
-// freymami nie dayet propadov). Obshchiy khronometrazh — epochMs sozdaniya
-// payplayna po chasu konteynera. Baza shkly — armEpochMs (momet po完成
-// privetstviya): khvosty do nego (sam privetstviye/hold) otrezayutsya atrimom,
-// boleye polozhennye segmenty sdvigayutsya adelay. Odin segament bez shvona —
-// prosto kopiruem.
-function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, end, onEvent) {
-  let durationS = null;
-  const tooSmall = (segs || []).filter((s) => s.bytes > 0 && s.bytes < MIN_SEGMENT_BYTES);
-  const real = filterUsableSegs((segs || []).filter((s) => s.bytes > 0 && fs.existsSync(s.p)
-    && fs.statSync(s.p).size > 0))
-    .sort((a, b) => (a.epochMs || 0) - (b.epochMs || 0));
-  if (tooSmall.length)
-    onEvent(EVENT.ERROR, `отброшено сегментов <1 KiB: ${tooSmall.length} — amix падает на нечитаемом входе целиком (job 17)`);
-  // 1) Strahovka odnogo iznosa: esli v segment zapisan >1 EBML-zagolovka, vnutri
-  // nego skleeny neskolko MediaRecorder-potokov (shva) — dekor teryayet chtenie
-  // za pervym. Rezhem po offsetam; chasti idut v miksh otdel'no (epoch sleduyushchey
-  // chasti otsenivaemsya po bajtam: ~8 KB/s pri 64 kbps).
-  const inputs = [];
-  for (const s of real) {
-    let parts = [s];
-    try {
-      const offs = ebmlHeaderOffsets(fs.readFileSync(s.p));
-      if (offs.length > 1) {
-        onEvent(EVENT.ERROR, `segment ${path.basename(s.p)}: skleeny ${offs.length} potokov — rezu po shvam`);
-        parts = [];
-        for (let k = 0; k < offs.length; k++) {
-          const from = offs[k];
-          const to = k + 1 < offs.length ? offs[k + 1] : fs.statSync(s.p).size;
-          if (to - from < 1024) continue; // sluchaynoe sovpadenie magic v opus-dannyh
-          const pp = `${s.p}.p${k}.webm`;
-          const wfd = fs.openSync(pp, "w");
-          const chunk = Buffer.allocUnsafe(to - from);
-          const rfd = fs.openSync(s.p, "r");
-          fs.readSync(rfd, chunk, 0, to - from, from);
-          fs.writeSync(wfd, chunk);
-          fs.closeSync(rfd); fs.closeSync(wfd);
-          const epochMs = (s.epochMs || 0)
-            + Math.round((k === 0 ? 0 : offs[k] - offs[0]) / 8); // bajt -> ms pri 64kbps
-          parts.push({ p: pp, bytes: to - from, epochMs, partOf: s.p });
-        }
-      }
-    } catch { /* ne procitalis' — kak est' odnim fragmentom */ }
-    inputs.push(...parts);
-  }
-  const base = (inputs[0] && inputs[0].epochMs) || Date.now();
-  const tmpMix = webmPath + ".mix.webm";
-  try { fs.rmSync(tmpMix, { force: true }); } catch { /* */ }
-  try {
-    if (inputs.length === 1) {
-      fs.copyFileSync(inputs[0].p, tmpMix);
-    } else {
-      try {
-        mixSegments(inputs, base, tmpMix);
-      } catch (e2) {
-        onEvent(EVENT.ERROR, `микс упал (${String(e2.message).slice(0, 120)}) — проверяю фрагменты`);
-      }
-    }
-    // Validaciya rezul'tata POLNYM DEKODOM: amix mozhet upast' na povrezhdennoy
-    // vkhode uzhe na shkve, ostaviv nepustoy obryv, a probe takogo i vovse ne
-    // pokazyvaet — dal'niy «remont» mkvmerge s"edal dannye (job 17: 3980 s ->
-    // 72 s). Esli mikš korotche luchshego dekodiruyemogo fragmenta, sozdayem
-    // vyvod peresborkoy-totogo-fragmenta reenkodom (chitaet cherez povrezhdeniya).
-    let useFallback = false, bestSeg = null;
-    const mixDec = fs.existsSync(tmpMix) ? decodedAudioSeconds(tmpMix) : 0;
-    if (inputs.length > 1) {
-      let bestDec = 0;
-      for (const s of inputs) {
-        const d = decodedAudioSeconds(s.p);
-        if (d > bestDec) { bestDec = d; bestSeg = s; }
-      }
-      useFallback = bestSeg !== null && mixWorseThanInput(mixDec, bestDec);
-      if (useFallback)
-        onEvent(EVENT.ERROR, `микс прочитался на ${Math.round(mixDec)} c из ${Math.round(bestDec)} c `
-          + `— восстанавливаю реэнкодом фрагмента ${path.basename(bestSeg.p)}`);
-    }
-    if (useFallback && reencodeWebm(bestSeg.p, webmPath)) { /* gotovo */ }
-    else if (!useFallback && mixDec > 0) fs.renameSync(tmpMix, webmPath);
-    else if (fs.existsSync(tmpMix) && fs.statSync(tmpMix).size > 0) fs.renameSync(tmpMix, webmPath);
-    else {
-      const biggest = [...inputs].sort((a, b) => b.bytes - a.bytes)[0];
-      if (biggest) { try { fs.copyFileSync(biggest.p, webmPath); } catch { /* */ } }
-    }
-  } catch (e) {
-    /* bolshe vsego potokov — beriem naibolee polnyy bez shkly */
-    if (!fs.existsSync(webmPath) || fs.statSync(webmPath).size === 0) {
-      const biggest = [...inputs].sort((a, b) => b.bytes - a.bytes)[0];
-      if (biggest) { try { fs.copyFileSync(biggest.p, webmPath); } catch { /* */ } }
-    }
-  } finally {
-    try { fs.rmSync(tmpMix, { force: true }); } catch { /* */ }
-  }
-
-  // pocinka povrezhdёnogo webm (FT-6), yesli konteyner ne chitaetsya. Berem
-  // variant s nejdl'shim POLNYM DEKODOM (ffmpeg-reencode s ignore_err, mkvmerge):
-  // mkvmerge na obryvanom bez cues mozhet s"est' 97% payload (job 17).
-  // Sravnivaem varianty PO POLNOMU DEKODU (ffmpeg-reencode s ignore_err,
-  // mkvmerge, sam Syracuse) i berem nejdl'shiy: mkvmerge na obryvanom bez cues
-  // mozhet s"est' 97% payload (job 17: 3980 s -> 72 s).
-  if (!probeDuration(webmPath)) {
-    const cands = [{ p: webmPath, decodedS: decodedAudioSeconds(webmPath) }];
-    const ff = webmPath + ".fffix.webm";
-    if (reencodeWebm(webmPath, ff)) cands.push({ p: ff, decodedS: decodedAudioSeconds(ff), fixed: true });
-    try {
-      const fixed = webmPath + ".fixed.webm";
-      execFileSync("mkvmerge", ["-o", fixed, webmPath], { stdio: "pipe" });
-      if (fs.existsSync(fixed) && fs.statSync(fixed).size > 0)
-        cands.push({ p: fixed, decodedS: decodedAudioSeconds(fixed), fixed: true });
-    } catch (e) { /* mkvmerge nie vsetda spasayet */ }
-    const winner = pickBestDecoded(cands);
-    for (const c of cands)
-      if (winner && c.p !== winner.p && c.p !== webmPath) { try { fs.rmSync(c.p, { force: true }); } catch { /* */ } }
-    if (winner && winner.p !== webmPath) { try { fs.renameSync(winner.p, webmPath); } catch { /* */ } }
-  }
-  try {
-    durationS = probeDuration(webmPath);
-  } catch { durationS = null; }
-  // sanity: микс заметно короче wall-clock записи — потерянный хвост (job
-  // 16) — loudим в events operatora I SOHRANYAEM syryye segmenty: bez nih
-  // vstrecha nevosstanovimaya.
-  let suspect = false;
-  if (state.joinedAt) {
-    const warnS = shortMixWarningS(durationS, (Date.now() - state.joinedAt) / 1000);
-    if (warnS !== null) {
-      suspect = true;
-      onEvent(EVENT.ERROR, `длительность записи ${Math.round(durationS)} c заметно короче встречи `
-        + `(${Math.round((Date.now() - state.joinedAt) / 1000)} c) — часть аудио потеряна при склейке`);
-    }
-  }
-  // 2) Sverka: browser (nakopitel'nyy __mnemaTotal po vsem dokumentam) vs zapisannoye
-  // na disk. Bol'shaya nesootvetstvie = propadeny mezhdu drainami — tozhe sohranyaem.
-  const writtenByDoc = new Map();
-  for (const s of segs) {
-    if (!s.key) continue;
-    const docPart = s.key.split("|")[1] || "";
-    writtenByDoc.set(docPart, (writtenByDoc.get(docPart) || 0) + s.bytes);
-  }
-  let browserBytes = 0, writtenBytes = 0;
-  for (const [k, tot] of Object.entries(state.browserTotal || {})) {
-    const docPart = k.split("|")[1] || "";
-    browserBytes += tot;
-    writtenBytes += writtenByDoc.get(docPart) || 0;
-  }
-  if (browserBytes > 1_000_000 && writtenBytes < browserBytes * 0.9) {
-    suspect = true;
-    onEvent(EVENT.ERROR, `записано ${writtenBytes} байт из ${browserBytes}, выброшенных браузером — часть аудио потеряна`);
-  }
-  // wav i mp3 (mp3 srazu — FT-41a)
-  let wavOk = false, mp3Ok = false;
-  try {
-    execFileSync("ffmpeg", ["-y", "-err_detect", "ignore_err", "-i", webmPath,
-      "-ar", "16000", "-ac", "1", wavPath], { stdio: "pipe" });
-    wavOk = fs.existsSync(wavPath);
-  } catch (e) { /* worker povtorit */ }
-  try {
-    execFileSync("ffmpeg", ["-y", "-err_detect", "ignore_err", "-i", webmPath,
-      "-ar", "44100", "-ac", "1", "-b:a", "64k", mp3Path], { stdio: "pipe" });
-    mp3Ok = fs.existsSync(mp3Path);
-  } catch (e) { /* mp3 encoder niedostupen — razresheno vydat webm */ }
-  const sizes = {};
-  if (suspect) {
-    // ne lonim syryye fajly: pri podozrenii na poteru eto edinstvennaya
-    // vozmozhnost' vosstanovit' vstrechu vruchnuyu (raw.*_w*.webm v kataologe job)
-    onEvent(EVENT.ERROR, "сырые сегменты сохранены в каталоге задачи для ручного восстановления");
-  } else {
-    for (const p of segs) { try { fs.rmSync(p.p, { force: true }); } catch { /* */ } }
-  }
-  for (const p of inputs) {
-    if (!p.partOf) continue; // vydvizhki razrezki — vsegda korotkie: udalyaem
-    try { fs.rmSync(p.p, { force: true }); } catch { /* */ }
-  }
-  for (const [k, p] of [["webm", webmPath], ["wav", wavPath], ["mp3", mp3Path]])
-    if (fs.existsSync(p)) sizes[k] = fs.statSync(p).size;
-  return {
-    ok: true, webm: webmPath, wav: wavOk ? wavPath : null,
-    mp3: mp3Ok ? mp3Path : null, duration_s: durationS, sizes,
-    end_reason: end.reason,
-  };
-}
-
-// atrim do armEpoch + adelay posle nego + amix v odin webm (normalize=0 —
-// bez padaniya levelya). Vse segmenty na odnoy globalnoy shkalе vremeni.
-function mixSegments(real, base, outPath) {
-  // ignore_err: povrezhdennyye kadry v seredine potoka nie dolzhny umerbishch'
-  // ves' amix — eto input-opciya, pered kazhdym -i (dlya vseh vvodov).
-  const args = ["-y"];
-  for (const s of real) args.push("-err_detect", "ignore_err", "-i", s.p);
-  const parts = [];
-  const labels = [];
-  real.forEach((s, i) => {
-    const epoch = s.epochMs ?? base;
-    const delayMs = Math.max(0, Math.round(epoch - base));
-    parts.push(`[${i}:a]aresample=48000,adelay=${delayMs}|${delayMs}[a${i}]`);
-    labels.push(`[a${i}]`);
-  });
-  const chain = labels.length === 1
-    ? `${labels[0]}anull[out]`
-    : `${labels.join("")}amix=inputs=${real.length}:duration=longest:normalize=0[out]`;
-  parts.push(chain);
-  execFileSync("ffmpeg", [...args,
-    "-filter_complex", parts.join(";"),
-    "-map", "[out]", "-c:a", "libopus", "-b:a", "64k", outPath],
-  { stdio: "pipe", timeout: 600000 });
-}
-
-function probeDuration(p) {
-  try {
-    const out = execFileSync("ffprobe", ["-v", "quiet", "-print_format", "json",
-      "-show_format", p], { encoding: "utf8" });
-    return parseFloat(JSON.parse(out).format.duration) || 0;
-  } catch { return 0; }
-}
 
 async function cleanupContext(ctx, jobId, cfg, onEvent) {
   try { await ctx.close(); } catch (e) { onEvent(EVENT.ERROR, `ctx close: ${e.message}`); }
@@ -1377,12 +1271,26 @@ async function playAnnouncement(page, cfg, onEvent) {
 // ============================================================ INIT SCRIPT
 // Vpryskivaetsya do navigacii (addInitScript). Pat RTCPeerConnection:
 // kazhdy udalenny audiotrek -> AudioContext -> miksh -> MediaRecorder.
-// window.__mnemaDrain(offset) -> {data: base64 chankov s offset, total}.
+// Protokol: __mnemaDrain() nie destructive (chanki s absolute offset po
+// oknam + gap-marker), __mnemaAck({w: upTo}) udalyayet tol'ko zapisannoye
+// na disk, __mnemaReviveIfStalled() restartuet mertryvshiy MediaRecorder /
+// zaspshiy AudioContext (okno W+1 s novoy epohoy).
 const INIT_SCRIPT = `
 (function () {
   window.__mnemaChunks = [];
   window.__mnemaTotal = 0;
   window.__mnemaTracks = 0;
+  // Ack-protocol: chankam prisvaivaetsya absolute-offset v okne (winTotals[w]).
+  // Node chitaet ikh nie-razrushayushche (__mnemaDrain) i pishet na disk,
+  // podytverzhdayu tol'ko uspeshno zapisannoye (__mnemaAck). Ozhidka zapisi
+  // (ENOSPC/IO) bolshe ne teryaet audio: chanki zhivut v pamyati do ack,
+  // povtorny drain zapishiut to zhe samoye idempotentno. Pamyat' pogranichena
+  // RETENTION_CAP (~70 min pri 64 kbps): sverh — davnie chanki vydralyvayutsya,
+  // obrazuya propusk, kotoryy Node zalivayet nulami i mezhaet v sobytiye.
+  const RETENTION_CAP = 32 * 1024 * 1024;
+  const winTotals = {};
+  const winAcked = {};
+  let retained = 0;
   // nonce документа: Zoom перезагружает фрейм внутри страницы — новый контекст
   // получает новый docId, Node открывает под него отдельный сегмент-файл
   // (иначе второй webm-поток дописывается в тот же fd и склейка нечитаема).
@@ -1409,28 +1317,104 @@ const INIT_SCRIPT = `
     const begin = () => {
       win += 1;
       winEpochs[win] = Date.now();
+      winTotals[win] = 0;
       const w = win;
       rec = new MediaRecorder(dest.stream, { mimeType: 'audio/webm' });
       rec.ondataavailable = (ev) => {
         if (ev.data && ev.data.size > 0) {
+          // offset i razmer privazyvayutsya SINKHRONNO v poryadke videopotoka;
+          // b64 dosbiraetsya v then (poryadok v massive = poryadok off,
+          // ne-zavershennye entries Node vidit kak b64:null i zhdjet)
+          const off = winTotals[w];
+          winTotals[w] += ev.data.size;
+          window.__mnemaTotal += ev.data.size;
+          const item = { off, w, len: ev.data.size, b64: null, loaded: false,
+                         dropped: false };
+          window.__mnemaChunks.push(item);
           ev.data.arrayBuffer().then((ab) => {
             const u8 = new Uint8Array(ab);
             let bin = '';
             const slice = 0x8000;
             for (let i = 0; i < u8.length; i += slice)
               bin += String.fromCharCode.apply(null, u8.subarray(i, i + slice));
-            window.__mnemaChunks.push({ b64: btoa(bin), len: u8.byteLength, w });
-            window.__mnemaTotal += u8.byteLength;
+            item.b64 = btoa(bin);
+            item.loaded = true;
+            retained += item.len;
+            trimRetention();
+          }).catch(() => {
+            // blob ne procitalis' — offset srazumy propushchennym (Node
+            // zalivayet nulami), inache kursor okna vstane navsegda
+            item.dropped = true;
           });
         }
       };
-      rec.start(4000);
+      // MediaRecorder mozhet umervt' (InvalidStateError / OOM renderera):
+      // bez restart-a tihiy khvost do kontsa vstrechi. ostanavlivayem i
+      // otkryvayem novoye okno s novoy epohoy (finalize skleyet po epokham).
+      rec.onerror = () => { try { revive(); } catch (e) { /* */ } };
+      rec.onstop = () => { /* shtatnyi stop v startWin/revive — nikakikh deystviy */ };
+      try { rec.start(4000); } catch (e) { scheduleRevive(); }
     };
     if (rec && rec.state === 'recording') {
       rec.onstop = begin;
       try { rec.stop(); } catch (e) { begin(); }
     } else begin();
   }
+
+  // Retention: pri otkazakh zapisi na disk chanki nabegayut v pamyati stranicy.
+  // Sverh kapa vydralyvayemsya samye rannie ACK-NUTYYE (ne ack) — dozzhie
+  // dannyye vazhhe samogo rannego khvosta; propusk vidit Node (nulivaya
+  // zalivka) i dozhdet sobytiye.
+  function trimRetention() {
+    if (retained <= RETENTION_CAP) return;
+    const notAcked = window.__mnemaChunks
+      .filter((c) => !c.acked && c.b64)
+      .sort((a, b) => a.w - b.w || a.off - b.off);
+    for (const c of notAcked) {
+      if (retained <= RETENTION_CAP) break;
+      retained -= c.len;
+      // len SOHRANYAEM: po nemu drain označaet propusk (gap) tochnogo razmera;
+      // vykinut' tol'ko b64
+      c.dropped = true;
+      c.b64 = null;
+    }
+  }
+
+  // Revive payplayna: MediaRecorder umer li AudioContext zasp, kogda okno uzhe
+  // vooruzheno. Ne chashche 60 s: za eto vremya odin restart uje v idyot.
+  let reviving = false, lastReviveTs = 0;
+  function revive() {
+    if (reviving || !window.__mnemaGlobalArm || win < 1) return;
+    const healthy = rec && rec.state === 'recording' && ctx && ctx.state === 'running';
+    if (healthy) return;
+    if (ctx && ctx.state === 'closed') return; // novyye dorozhki peresozdut payplayn
+    if (ctx && ctx.state === 'suspended') { ctx.resume().catch(() => {}); }
+    if (!ctx || !dest) { ensurePipeline(); }
+    if (!ctx) return;
+    const now = Date.now();
+    if (now - lastReviveTs < 5000) return;
+    lastReviveTs = now;
+    reviving = true;
+    const prev = rec;
+    if (prev && prev.state === 'recording') {
+      try { prev.stop(); } catch (e) { /* uze nie pishet */ }
+    }
+    startWin();
+    // reviving s nimayetsya posle zaversheniya step-resume (esli AudioContext
+    // zasp — startWin zavershitsya v rekurzii posle resume(), no flag vse ravno
+    // snizhaetsya: povtornyy signal za eto vremya vse ravno ne nuzhen)
+    setTimeout(() => { reviving = false; }, 10000);
+    window.__mnemaRevives = (window.__mnemaRevives || 0) + 1;
+  }
+  function scheduleRevive() { setTimeout(revive, 0); }
+  // Node kazhdy flush proveryaet zdorov'ye payplayna: umer MediaRecorder ili
+  // zasp AudioContext pri vooruzhennom okne — restart s novym oknom.
+  window.__mnemaReviveIfStalled = function () {
+    if (!window.__mnemaGlobalArm || win < 1) return false;
+    const alive = rec && rec.state === 'recording' && ctx && ctx.state === 'running';
+    if (!alive) revive();
+    return !alive;
+  };
 
   window.__mnemaArm = function () {
     // arm odin raz na kontekst: esli uzhe pishem okno >=1 — nie pieriezazhyvat'
@@ -1547,22 +1531,59 @@ const INIT_SCRIPT = `
   };
   window.RTCPeerConnection.prototype = OrigPC.prototype;
 
-  // Vyachka VSEH nakoplennyh chanov (destruktivno): massiv ochishchaetscha.
-  // Vozvraschaet ih po oknam (w): okno 0 (pre-arm) Node vytrasyvaet,
-  // kazhdoye okno >=1 pishetsya v svoy fail raw.<n>_<w>.webm.
+  // Vyachka nakoplennyh chanov (NE destrukтивна: dannyye udayalyutsya tol'ko
+  // po __mnemaAck). Vozvraschaet ikh po oknam (w) s absolute-offsetami:
+  // kazhdaya entry {off, len, b64} ilи {gap:true, off, len} (propusk — blob
+  // ne procitalis'/vyrzučen po retention: Node zalivayet nulami, vremya ne
+  // syezhaet). Po pervomu neprochnuvshegoся (b64 nie prishël) entry v okne
+  // drain ostanavlivaetsya — poryadok vyzivchiy ne narushaetsya.
   window.__mnemaDrain = function () {
     const out = {};
-    for (const c of window.__mnemaChunks) {
-      (out[c.w] = out[c.w] || []).push(c.b64);
+    for (const w of Object.keys(winEpochs)) {
+      const e = [];
+      const wN = parseInt(w, 10);
+      let contig = winAcked[wN] || 0;
+      // poryadok massive = poryadok offsetov; chunks uže ack-nutyye (contig),
+      // propusk pered entry — gap
+      for (const c of window.__mnemaChunks) {
+        if (c.w !== wN) continue;
+        const end = c.off + c.len;
+        if (end <= contig) continue; // celykom zapisan — podytverzhdajetsya otdel'no
+        if (c.off > contig) e.push({ gap: true, off: contig, len: c.off - contig });
+        contig = end;
+        if (!c.loaded && !c.dropped) break; // podozhdi b64 — dal'she ne gidem
+        if (c.dropped) e.push({ gap: true, off: c.off, len: c.len });
+        else e.push({ off: c.off, len: c.len, b64: c.b64 });
+      }
+      if (e.length) out[w] = e;
     }
-    window.__mnemaChunks = [];
-    return { wins: out, epochs: winEpochs, total: window.__mnemaTotal, startMs: winEpochs[win],
-             docId: window.__mnemaDocId };
+    return { wins: out, epochs: winEpochs, total: window.__mnemaTotal,
+             startMs: winEpochs[win], docId: window.__mnemaDocId };
+  };
+  // Podtverzhdenie zapisi: udelayu tol'ko to, cto uze lezhit na diske
+  // (off+len <= upTo pri uspeshnom flush). winAcked[w] — kontinual'no
+  // podytverzhdennaya granica okna (drain ot nego schoeta pocket).
+  // Povytor/propuschennyye ack bezopasny.
+  window.__mnemaAck = function (acks) {
+    if (!acks) return 0;
+    const wasRetained = retained;
+    window.__mnemaChunks = window.__mnemaChunks.filter((c) => {
+      const upTo = acks[c.w];
+      if (upTo === undefined || upTo === null) return true;
+      if (c.off + c.len > upTo) return true;
+      if (c.loaded && !c.dropped) retained -= c.len;
+      winAcked[c.w] = Math.max(winAcked[c.w] || 0, upTo);
+      return false;
+    });
+    return wasRetained - retained;
   };
   window.__mnemaStatus = function () {
     return { tracks: window.__mnemaTracks, bytes: window.__mnemaTotal,
              recording: rec && rec.state === 'recording',
-             micMixer: !!micMixerDest, win, startMs: winEpochs[win] || 0 };
+             ctxState: ctx && ctx.state, revives: window.__mnemaRevives || 0,
+             micMixer: !!micMixerDest, win, startMs: winEpochs[win] || 0,
+             unackedBytes: window.__mnemaChunks.reduce(
+               (a, c) => a + ((c.loaded && !c.dropped) ? c.len : 0), 0) };
   };
 
   // Uroven zvuka sozwona na mikshe udalennyh dorozhek: RMS v dBFS

@@ -16,6 +16,7 @@ from .queue import get_queue
 LAUNCH_QUEUE_KEY = "mnema:launch"
 STOP_QUEUE_KEY = "mnema:stop"
 HEALTHCHECK_KEY = "mnema:session_healthcheck"
+SALVAGE_QUEUE_KEY = "mnema:salvage"
 
 
 def enqueue_launch(job_id: int, run_at: dt.datetime) -> bool:
@@ -67,6 +68,22 @@ def request_session_healthcheck() -> None:
                                           json.dumps({"ts": dt.datetime.now(dt.timezone.utc).isoformat()}))
     except Exception:
         pass
+
+
+def request_salvage(job_id: int, reason: str | None = None) -> bool:
+    """Postavit' zadachu v Salvage ochered web-bot: web-bot probeduet syryye
+    segmenty v /data/jobs/<id>/, sberezhet ih v raw.webm/meeting.wav/meeting.mp3
+    i soobschit finished. Ispolzuetsya watchdog-gilya (stalled recording)."""
+    try:
+        from redis import Redis
+        from .queue import redis_url
+        payload = {"job_id": job_id}
+        if reason:
+            payload["reason"] = reason
+        Redis.from_url(redis_url()).lpush(SALVAGE_QUEUE_KEY, json.dumps(payload))
+        return True
+    except Exception:
+        return False
 
 
 def mark_launching(job_id: int) -> None:

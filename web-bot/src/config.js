@@ -21,6 +21,9 @@ export function loadConfig() {
     headful: process.env.HEADFUL === "1",
     captchaWaitMin: int(process.env.CAPTCHA_WAIT_MIN, 15),
     chunkFlushMs: int(process.env.CHUNK_FLUSH_MS, 5000),
+    // molotok zhivost'i web-bot na obshchem /data dla watchdog-a v api
+    heartbeatFile: process.env.WEBBOT_HEARTBEAT_FILE
+      || `${process.env.DATA_DIR || "/data"}/web-bot.heartbeat`,
     vncMaxSlots: int(process.env.VNC_MAX_SLOTS, 20),
     vncPublicPortBase: int(process.env.VNC_PUBLIC_PORT_BASE, 8080),
     vncScreen: process.env.VNC_SCREEN || "1440x900x24",
@@ -30,6 +33,9 @@ export function loadConfig() {
     // neprezyvyymo: ogranichenie publikatsii websockify (napr. 0.0.0.0);
     // pustoy — bind na vse interfeysy (tekushcheedovanie docker port-mapping)
     vncBindAddr: process.env.VNC_BIND_ADDR || "",
+    // disk-gard: menshe etogo svobodnogo meste na tome /data -> alert, zapis'
+    // prodolzhaetsya poka mozhet (dannye vazhne; chanki kopitsya v pamyati)
+    minFreeDiskBytes: int(process.env.MIN_FREE_DISK_MB, 100) * 1_000_000,
   };
 }
 

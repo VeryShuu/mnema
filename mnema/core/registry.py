@@ -117,6 +117,18 @@ REGISTRY: tuple[Block, ...] = (
         Key("ANNOUNCE_WAV", DEFAULTED, "templates/announce.wav",
             readers="web-bot", when="FT-10",
             if_empty="templates/announce.wav; net faila -> bez ob'yavleniya"),
+        Key("WEBBOT_HEARTBEAT_FILE", DEFAULTED, "/data/web-bot.heartbeat",
+            readers="web-bot/api", when="diagnostika watchdog-a (v detailyah sobytiya)",
+            if_empty="/data/web-bot.heartbeat (obshchiy volume)",
+            comment="molotok zhivost'i web-bot, piletsya kazhdye 15 s"),
+        Key("STALLED_RECORDING_MIN", DEFAULTED, "20",
+            readers="api (maintenance_job)", when="watchdog recording",
+            if_empty="20 min", comment="net eventov dolshe — v salvage-ochered'"
+                    " (syryye segmenty -> final'nye fayly, POST finished)"),
+        Key("MIN_FREE_DISK_MB", DEFAULTED, "100",
+            readers="web-bot", when="disk-gard pri zapisi chankov",
+            if_empty="100 MB", comment="padezh/IO oshibka -> alert + chanki"
+                    " ostayutsya v pamyati stranicy do osvobozhdeniya"),
     )),
     Block("notify (obyazatel'en; sboy bez pisma = defekt, FT-24)", (
         Key("SMTP_HOST", REQUIRED,
