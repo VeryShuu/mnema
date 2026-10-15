@@ -216,6 +216,19 @@ REGISTRY: tuple[Block, ...] = (
         Key("LLM_MODEL_ALLOWLIST", DEFAULTED, "",
             readers="worker:structure", when="operatorskiy geyt",
             if_empty="razresheny vse modeli"),
+        Key("LLM_THINKING", DEFAULTED, "off",
+            readers="worker:structure", when="razmyshleniya modeli (rezhim mysley)",
+            if_empty="off (minimum razmyshleniy: think=false)",
+            comment="on = razreshit' glubokie razmyshleniya modeley (medlennee; "
+                    "esli server ne znaet flag think — on avtomaticheski "
+                    "otmershaetsya i bolshe ne peredaetsya)"),
+        Key("LLM_LOCK_WAIT_TIMEOUT_S", DEFAULTED, "3600",
+            readers="worker:structure", when="ozhidanie svoy ocheredi k LLM",
+            if_empty="3600 s; svyyshe — LLMError (awaiting_llm / split_skipped)"),
+        Key("LLM_LOCK_LEASE_S", DEFAULTED, "720",
+            readers="worker:structure", when="arenda LLM-tokena (redis zamyok)",
+            if_empty="720 s (vsegda >= 660); umershiy process otpustit ne dolshe",
+            comment="odnovremenno k LLM — rovno odin zaprosov (FIFO-ochered')"),
     )),
     Block("storage", (
         Key("ARCHIVE_DIR", REQUIRED,

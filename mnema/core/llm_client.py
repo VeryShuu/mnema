@@ -29,6 +29,15 @@ class LLMError(Exception):
     pass
 
 
+_THINK_REJECTED = False  # server ne znaet parametr think — bolshe ne peredavat'
+
+
+def _thinking_enabled() -> bool:
+    """razmyshleniya modeli: po umolchaniyu minimum (off)."""
+    return os.environ.get("LLM_THINKING", "off").strip().lower() in (
+        "on", "1", "true", "yes")
+
+
 def llm_model() -> str:
     m = os.environ.get("LLM_MODEL", "").strip()
     allow = os.environ.get("LLM_MODEL_ALLOWLIST", "").strip()
@@ -37,19 +46,49 @@ def llm_model() -> str:
     return m or "llama3-saiga:32b"
 
 
-def _chat(messages: list[dict], retries: int = 2) -> str:
-    import time
+def _post_chat(payload: dict):
+    """Odin POST /chat/completions v exklyuzivnom LLM-zamke (odin analiz za
+    raz; ozhidanie — FIFO-ochered'yu). Bez redis zamyok — no-op."""
+    from .llm_gate import LLMGateTimeout, llm_turn
     base = os.environ.get("LLM_BASE_URL", "").rstrip("/")
     key = os.environ.get("LLM_API_KEY", "").strip()
     headers = {"Authorization": f"Bearer {key}"} if key else {}
+    try:
+        with llm_turn():
+            return httpx.post(f"{base}/chat/completions", headers=headers,
+                              json=payload, timeout=600.0)
+    except LLMGateTimeout as e:
+        # zhdali ocheredi slishkom dolgo: eto oshibka LLM, a ne konveyera
+        # (awaiting_llm / split_skipped, mozhno rerunut')
+        raise LLMError(str(e)) from e
+
+
+def _chat(messages: list[dict], retries: int = 2) -> str:
+    global _THINK_REJECTED
+    import time
+    thinking_on = _thinking_enabled()
+    payload: dict = {"model": llm_model(), "messages": messages,
+                     "temperature": 0.1}
+    if not _THINK_REJECTED:
+        # dva formata odnovremenno: ollama (`think`) i OpenAI-style
+        # (`thinking.type`); neznakomye poly servery ignoriiruyut, a strogiy
+        # 400 s «think» otlavlivaeetsya nizhe i flag bolshe ne peredaetsya
+        payload["think"] = thinking_on
+        payload["thinking"] = {"type": "enabled" if thinking_on else "disabled"}
     last_err = None
     for attempt in range(retries + 1):
         try:
-            r = httpx.post(f"{base}/chat/completions", headers=headers,
-                           json={"model": llm_model(), "messages": messages,
-                                 "temperature": 0.1},
-                           timeout=600.0)
+            r = _post_chat(payload)
             if r.status_code >= 400:
+                if ("think" in payload and r.status_code == 400
+                        and "think" in r.text):
+                    # server (ne ollama) ne priemaet flag mysley — prodolzhaem
+                    # bez nego, chtoby ne lomayut'sya na kazhdom zaprase
+                    _THINK_REJECTED = True
+                    payload.pop("think")
+                    payload.pop("thinking")
+                    last_err = LLMError(f"LLM HTTP {r.status_code}: {r.text[:200]}")
+                    continue
                 raise LLMError(f"LLM HTTP {r.status_code}: {r.text[:200]}")
             return r.json()["choices"][0]["message"]["content"]
         except (LLMError, httpx.HTTPError) as e:
