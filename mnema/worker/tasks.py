@@ -117,7 +117,7 @@ def run_asr_text(job_id: int) -> None:
         engine = engine_name()
         with get_session() as s:
             s.add(SessionEvent(job_id=job_id, event="asr_start",
-                               detail=f"engine={engine}"))
+                               detail=f"движок: {engine}"))
             s.commit()
         vad = [{"t_start": s.t_start, "t_end": s.t_end} for s in segs]
         results = transcribe_segments(wav, vad) if wav.exists() else []
@@ -131,7 +131,7 @@ def run_asr_text(job_id: int) -> None:
                 row.confidence = txt.get("confidence")
                 row.asr_json = txt.get("parts")
             s.add(SessionEvent(job_id=job_id, event="asr_done",
-                               detail=f"engine={engine}"))
+                               detail=f"движок: {engine}"))
             s.commit()
     except Exception as e:  # noqa: BLE001
         _fail_branch(job_id, e, "asr_error")
@@ -839,7 +839,7 @@ def _build_protocol(job_id: int) -> None:
         proto.steno_md_path = str(p["steno"])
         proto.llm_model = llm_model()
         s.add(SessionEvent(job_id=job_id, event="llm_done",
-                           detail=f"model={llm_model()}"))
+                           detail=f"модель: {llm_model()}"))
         s.commit()
     from ..core import export
     export.export_protocol_files(job_id)  # zerkalo: vnutri try/except

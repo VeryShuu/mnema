@@ -46,7 +46,8 @@ def create_job(*, meeting_link: str | None = None, meeting_id: str | None = None
         s.add(job)
         s.flush()
         s.add(SessionEvent(job_id=job.id, event="created",
-                           detail=f"created_by={created_by} immediate={immediate}"))
+                            detail=f"создал: {created_by} · запуск: "
+                                   f"{'сразу' if immediate else 'по расписанию'}"))
         s.commit()
         s.refresh(job)
     from .scheduler import schedule_job_for

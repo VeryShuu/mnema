@@ -115,7 +115,7 @@ def create_upload(*, filename: str, bytes_total: int | None = None,
             s.add(job)
             s.flush()
             s.add(SessionEvent(job_id=job.id, event="created",
-                               detail=f"архив-загрузка, файл={fname}"))
+                               detail=f"архив-загрузка · файл: {fname}"))
         uid = uuid.uuid4().hex
         tmp_path = _uploads_dir() / f"{uid}{ext}"
         tmp_path.touch()
@@ -233,7 +233,8 @@ def finalize(upload_id: int) -> Job:
             s.add(AudioFile(job_id=job_id, kind=ext.lstrip("."), path=str(dest),
                             bytes=dest.stat().st_size, duration_s=duration))
         s.add(SessionEvent(job_id=job_id, event="upload_complete",
-                           detail=f"{dest.name} {dest.stat().st_size}B {duration:.1f}s"))
+                           detail=f"файл: {dest.name} · {dest.stat().st_size} Б · "
+                                  f"{duration:.1f} с"))
         s.commit()
     transition(job_id, "processing", event="upload_finished")
     from .queue import enqueue_job

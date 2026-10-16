@@ -44,7 +44,7 @@ export async function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, e
     try {
       const offs = ebmlHeaderOffsets(fs.readFileSync(s.p));
       if (offs.length > 1) {
-        onEvent(ERROR, `segment ${path.basename(s.p)}: skleeny ${offs.length} potokov — rezu po shvam`);
+        onEvent(ERROR, `сегмент ${path.basename(s.p)}: склеено ${offs.length} потоков — режу по швам`);
         parts = [];
         for (let k = 0; k < offs.length; k++) {
           const from = offs[k];

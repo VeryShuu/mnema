@@ -236,7 +236,7 @@ def _done_events(key: str, vad_done: bool, asr_done: bool, diar_done: bool,
         "llm": ("llm_done",),
         "review": ("reviews_done", "review_resolved"),
         "split": ("split_done",),
-        "done": ("status->done",),
+        "done": ("status:done", "status->done"),
     }.get(key, ())
 
 

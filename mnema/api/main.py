@@ -280,8 +280,8 @@ def api_job_finished(jid: int, body: FinishedIn):
     if recoverable:
         with get_session() as s:
             s.add(SessionEvent(job_id=jid, event="recording_recovered",
-                               detail="finished posle failed — dannye na diske, "
-                                      "zvraschena v processing"))
+                               detail="finished после failed — данные на диске, "
+                                      "возвращена в processing"))
             s.commit()
     from ..core.queue import enqueue_job
     processing_started = enqueue_job("asr", "mnema.worker.tasks.run_orchestrate", jid)

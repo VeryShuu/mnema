@@ -50,7 +50,7 @@ def transition(job_id: int, new_status: str, *, error: str | None = None,
         if new_status in ("done", "failed"):
             job.ended_ts = dt.datetime.now(dt.timezone.utc)
         if event:
-            s.add(SessionEvent(job_id=job_id, event=event, detail=f"status->{new_status}"))
+            s.add(SessionEvent(job_id=job_id, event=event, detail=f"статус: {new_status}"))
         s.commit()
         s.refresh(job)
         snap = dict(id=job.id, topic=job.topic, mid=job.zoom_meeting_id,
@@ -240,8 +240,8 @@ def stalled_recording_watch() -> int:
                 continue  # redis nedostupen — marku ne pishem, taymer ne sbros
             s.add(SessionEvent(
                 job_id=jid, event="salvage_requested",
-                detail=f"watchdog: net sobytiy {int(quiet_min)} min; heartbeat "
-                       + ("net_dannyh" if hb_age is None else f"{int(hb_age)} s")))
+                detail=f"watchdog: событий нет {int(quiet_min)} мин; heartbeat "
+                       + ("нет данных" if hb_age is None else f"{int(hb_age)} с")))
             s.commit()
             requested += 1
     return requested

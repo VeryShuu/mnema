@@ -737,7 +737,7 @@ async function fillNameAndJoin(page, cfg, onEvent) {
     await clickAnyFrame(page, /accept cookies/i, 2500);
     // ekran «Join meeting» -> «Join from browser»
     if (await clickAnyFrame(page, /join from browser|войти из браузера/i, 4000)) {
-      onEvent(EVENT.PREJOIN, "clicked 'Join from browser'");
+      onEvent(EVENT.PREJOIN, "нажат «Join from browser»");
       await page.waitForTimeout(4000);
     }
     // pred-join: imya + Join
@@ -748,14 +748,14 @@ async function fillNameAndJoin(page, cfg, onEvent) {
     // dispatch-eventom napryamuyu; esli capcha interactive — ee proydyot
     // chelovek cherez noVNC (wait daze eto i predusmatrivaet).
     if (await clickJoinButton(page)) {
-      onEvent(EVENT.PREJOIN, "clicked 'Join'");
+      onEvent(EVENT.PREJOIN, "нажат «Join»");
       await page.waitForTimeout(3000);
     } else {
       onEvent(EVENT.ERROR, "кнопка Join не найдена/перкрыта — ждём VNC");
     }
     // vybor audiomarshruta (esli wyskakhyvaet okno)
     if (await clickAnyFrame(page, /join( with)?( computer)? audio|войти с компьютер/i, 8000)) {
-      onEvent(EVENT.PREJOIN, "clicked 'Join with computer audio'");
+      onEvent(EVENT.PREJOIN, "нажат «Join with computer audio»");
     }
   } catch (e) {
     onEvent(EVENT.ERROR, `fillNameAndJoin: ${e.message}`);
@@ -1001,7 +1001,7 @@ async function muteMicrophone(page, onEvent) {
           return true;
         }
         onEvent("mute", `слепой клик не подтвердился (mic=${st.label}, ` +
-          `klik=${clicked ? "да" : "нет"})`);
+          `клик=${clicked ? "да" : "нет"})`);
         break;
       }
     }
