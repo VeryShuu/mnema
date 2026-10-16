@@ -129,6 +129,7 @@ def run_asr_text(job_id: int) -> None:
                 row.lang = txt.get("lang")
                 row.engine = engine
                 row.confidence = txt.get("confidence")
+                row.asr_json = txt.get("parts")
             s.add(SessionEvent(job_id=job_id, event="asr_done",
                                detail=f"engine={engine}"))
             s.commit()
@@ -714,8 +715,9 @@ def _write_steno(job_id: int, p: dict) -> Path:
         ).order_by(Segment.t_start)).all()
         job = s.get(Job, job_id)
     lines = [f"# Протокол (транскрипт): {job.topic}", ""]
-    from ..core.coalesce import coalesce_segments, speaker_display
-    for seg in coalesce_segments(segs):
+    from ..core.coalesce import coalesce_segments, expand_segments, speaker_display
+    for seg in coalesce_segments(expand_segments(list(segs),
+                                                 job.diar_turns if job else None)):
         tag = " (trebuetsya utochnenie)" if seg.needs_review else ""
         lines.append(f"{_fmt(seg.t_start)} {speaker_display(seg)}{tag}: {seg.text}")
     p["steno"].write_text("\n".join(lines), encoding="utf-8")
@@ -815,7 +817,7 @@ def _build_protocol(job_id: int) -> None:
         ).order_by(Segment.t_start)).all()
         job = s.get(Job, job_id)
         roster = _llm_roster(s, segs)
-    transcript = _transcript_lines(segs)
+    transcript = _transcript_lines(segs, job.diar_turns if job else None)
     with get_session() as s:
         s.add(SessionEvent(job_id=job_id, event="llm_start",
                            detail=f"сегментов: {len(segs)}"))
@@ -851,9 +853,9 @@ def _route_after_structure(job_id: int) -> None:
         transition(job_id, "done")
 
 
-def _transcript_lines(segs: list) -> str:
-    from ..core.coalesce import coalesce_segments, speaker_display
+def _transcript_lines(segs: list, turns: list | None = None) -> str:
+    from ..core.coalesce import coalesce_segments, expand_segments, speaker_display
     out = []
-    for seg in coalesce_segments(segs):
+    for seg in coalesce_segments(expand_segments(list(segs), turns)):
         out.append(f"{_fmt(seg.t_start)} {speaker_display(seg)}: {seg.text}")
     return "\n".join(out)

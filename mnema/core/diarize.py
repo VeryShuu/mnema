@@ -151,6 +151,16 @@ def _pyannote_labels(pipe, wav: Path,
     return out, turns, ratios
 
 
+def coverage_by_label(turns: list, t0: float, t1: float) -> dict[str, float]:
+    """Dolya (s) pokrytiya kazhdogo govoryashchego na otrezke [t0, t1]."""
+    cov: dict[str, float] = {}
+    for ts, te, spk in turns:
+        ov = min(te, t1) - max(ts, t0)
+        if ov > 0:
+            cov[spk] = cov.get(spk, 0.0) + ov
+    return cov
+
+
 def _dominant_label(turns: list, t0: float, t1: float) -> tuple[str | None, float]:
     """(govoryashchiy s naibol'shim pokrytiem, dolya pokrytiya segmenta).
 
@@ -159,11 +169,7 @@ def _dominant_label(turns: list, t0: float, t1: float) -> tuple[str | None, floa
     odnomu golosu tselikom i portil etalon klastera. Dolya < 1 signaliruet
     na lozhenie (overlap) — takiy fragment v embedding brat nel'zya."""
     dur = max(1e-9, t1 - t0)
-    cov: dict[str, float] = {}
-    for ts, te, spk in turns:
-        ov = min(te, t1) - max(ts, t0)
-        if ov > 0:
-            cov[spk] = cov.get(spk, 0.0) + ov
+    cov = coverage_by_label(turns, t0, t1)
     if not cov:
         return None, 0.0
     best = max(cov, key=cov.get)

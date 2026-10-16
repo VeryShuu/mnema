@@ -92,6 +92,25 @@ def test_map_asr_concatenates_several_asr_per_vad():
     assert 0.2 < out[0]["confidence"] < 0.7  # srednee exp po logprob
 
 
+def test_map_asr_exposes_parts_with_timestamps():
+    """parts — vkhodyashchie ASR-segmenty s ihr timeshampami: po nim stroka
+    rezhetsya na granitsah govorivykh (bez nikh vtoroy golos propadaet)."""
+    from mnema.core.asr_client import _map_verbose_to_segments
+    raw = [{"start": 1.0, "end": 4.0, "text": "pervaya"},
+           {"start": 9.5, "end": 11.0, "text": "vtoraya"}]
+    vad = [{"t_start": 0.5, "t_end": 12.0}]
+    out = _map_verbose_to_segments({"segments": raw, "language": "ru"}, vad)
+    assert out[0]["parts"] == [{"s": 1.0, "e": 4.0, "t": "pervaya"},
+                               {"s": 9.5, "e": 11.0, "t": "vtoraya"}]
+
+
+def test_map_asr_parts_none_when_empty():
+    from mnema.core.asr_client import _map_verbose_to_segments
+    vad = [{"t_start": 0.5, "t_end": 2.0}]
+    out = _map_verbose_to_segments({"segments": [], "language": "ru"}, vad)
+    assert out[0]["parts"] is None
+
+
 # ---- vetki konveyera ----------------------------------------------------------
 
 import os
@@ -185,6 +204,44 @@ def test_asr_branch_rerun_idempotent(env):
         assert len(segs) == 3
         assert all(seg.text == "slova" for seg in segs)
         assert s.get(Job, 1).status == "processing"
+
+
+def test_asr_branch_persists_parts(env, monkeypatch):
+    """asr_json stroki — timeshampy ASR-chastey: po nim VAD-stroka rezhetsya
+    na granitsah govorivykh pri vyvode stenogrammy."""
+    import mnema.core.asr_client as ac
+    parts = [{"s": 0.5, "e": 1.5, "t": "slova"}]
+    monkeypatch.setattr(
+        ac, "transcribe_segments",
+        lambda wav, vad: [{"text": "slova", "lang": "ru", "confidence": 0.9,
+                           "parts": list(parts)} for _ in vad])
+    _mkjob_with_segs()
+    _wav_for(1, Path(os.environ["DATA_DIR"]))
+    from mnema.core.db import get_session
+    from mnema.core.models import Segment
+    from mnema.worker.tasks import run_asr_text
+    run_asr_text(1)
+    with get_session() as s:
+        segs = s.scalars(select(Segment).where(Segment.job_id == 1)).all()
+        assert all(seg.asr_json == parts for seg in segs)
+
+
+def test_asr_branch_clears_stale_parts(env, monkeypatch):
+    """Rerun bez parts (fallback-dvizhok) ne ostavlyayet ustellarshie timeshampy."""
+    import mnema.core.models as m
+    from mnema.core.db import get_session
+    _mkjob_with_segs()
+    with get_session() as s:
+        for seg in s.scalars(select(m.Segment).where(
+                m.Segment.job_id == 1)).all():
+            seg.asr_json = [{"s": 0.0, "e": 1.0, "t": "staroe"}]
+        s.commit()
+    _wav_for(1, Path(os.environ["DATA_DIR"]))
+    from mnema.worker.tasks import run_asr_text
+    run_asr_text(1)   # fixture-lookup bez klucha parts
+    with get_session() as s:
+        segs = s.scalars(select(m.Segment).where(m.Segment.job_id == 1)).all()
+        assert all(seg.asr_json is None for seg in segs)
 
 
 def test_orchestrate_direct_mode_end_to_end(env):

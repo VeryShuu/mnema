@@ -1473,8 +1473,9 @@ def web_protocol(request: Request, pid: int):
         segs = s.scalars(select(Segment).where(
             Segment.job_id == p.job_id, Segment.excluded.is_(False)
         ).order_by(Segment.t_start)).all()
-    from ..core.coalesce import coalesce_segments
-    segs = coalesce_segments(list(segs))
+        turns = job.diar_turns if job is not None else None
+    from ..core.coalesce import coalesce_segments, expand_segments
+    segs = coalesce_segments(expand_segments(list(segs), turns))
     md = ""
     if p.md_path and Path(p.md_path).exists():
         md = Path(p.md_path).read_text(encoding="utf-8")

@@ -1,7 +1,8 @@
 """Unit testy koalescencii stenogrammy: pustye reperiki i povtory odnogo golosa."""
 from types import SimpleNamespace
 
-from mnema.core.coalesce import DisplaySegment, coalesce_segments, speaker_display
+from mnema.core.coalesce import (DisplaySegment, coalesce_segments,
+                                 expand_segments, speaker_display)
 
 
 def _seg(t0, t1, text, speaker_id="SPEAKER_00", speaker_name=None, needs_review=False):
@@ -108,3 +109,101 @@ def test_returned_items_are_display_segments():
 
 def test_empty_input():
     assert coalesce_segments([]) == []
+
+
+# ---- razbienie VAD-stroki s dvumya golosami (turn boundaries) -------------
+
+def _asr_seg(t0, t1, text, parts, diar_label="SPEAKER_00", speaker_id=None,
+             speaker_name=None, needs_review=False):
+    return SimpleNamespace(t_start=t0, t_end=t1, text=text, parts=None,
+                           asr_json=parts, speaker_id=speaker_id or diar_label,
+                           diar_label=diar_label, speaker_name=speaker_name,
+                           needs_review=needs_review)
+
+
+TURNS_AB = [[0.0, 9.0, "SPEAKER_00"], [9.0, 15.0, "SPEAKER_01"]]
+
+
+def _two_voice_line():
+    return _asr_seg(0.0, 15.0, "pervaya fraza vtornaya fraza",
+                    [{"s": 0.5, "e": 4.0, "t": "pervaya fraza"},
+                     {"s": 4.5, "e": 8.5, "t": "toze pervogo"},
+                     {"s": 9.4, "e": 14.5, "t": "vtornaya fraza"}])
+
+
+def test_expand_splits_line_with_two_voices():
+    out = expand_segments([_two_voice_line()], TURNS_AB)
+    assert len(out) == 2
+    assert out[0].speaker_id == "SPEAKER_00"
+    assert out[1].speaker_id == "SPEAKER_01"
+    assert out[0].text == "pervaya fraza toze pervogo"
+    assert out[1].text == "vtornaya fraza"
+
+
+def test_expand_piece_times_come_from_asr_parts():
+    out = expand_segments([_two_voice_line()], TURNS_AB)
+    assert (out[0].t_start, out[0].t_end) == (0.5, 8.5)
+    assert (out[1].t_start, out[1].t_end) == (9.4, 14.5)
+
+
+def test_expand_second_speaker_unnamed_needs_review():
+    out = expand_segments([_two_voice_line()], TURNS_AB)
+    assert out[1].speaker_name is None
+    assert out[1].needs_review is True
+    assert speaker_display(out[1]) == "Голос SPEAKER_01"
+
+
+def test_expand_uses_resident_name_of_other_cluster():
+    """Imya vtorogo golosa beretsya iz drugogo segmenta togo zhe klastera."""
+    other = _seg(20.0, 25.0, "ok", "SPEAKER_01", "Petrov")
+    out = expand_segments([_two_voice_line(), other], TURNS_AB)
+    piece = out[1]
+    assert piece.speaker_name == "Petrov"
+    assert piece.needs_review is False
+    assert speaker_display(piece) == "Petrov"
+
+
+def test_expand_keeps_line_with_single_voice():
+    seg = _asr_seg(0.0, 10.0, "a b", [{"s": 0.5, "e": 4.0, "t": "a"},
+                                       {"s": 5.0, "e": 9.0, "t": "b"}])
+    turns = [[0.0, 10.0, "SPEAKER_00"]]
+    out = expand_segments([seg], turns)
+    assert out == [seg]
+
+
+def test_expand_without_turns_passthrough():
+    line = _two_voice_line()
+    out = expand_segments([line], None)
+    assert out == [line]
+
+
+def test_expand_disabled_env_passthrough(monkeypatch):
+    monkeypatch.setenv("COALESCE_SPLIT_TURNS", "0")
+    line = _two_voice_line()
+    assert expand_segments([line], TURNS_AB) == [line]
+
+
+def test_expand_tiny_overlap_not_cut():
+    """Domina chuzhogo golosa na chasti nizhe poroga — chast' ostaetsya baze."""
+    seg = _asr_seg(0.8, 20.0, "a b", [{"s": 1.0, "e": 4.0, "t": "a"},
+                                       {"s": 10.0, "e": 20.0, "t": "b"}])
+    # na [10,20] dominante S1 pokryvaet tol'ko 1 s iz 10 (ratio 0.1 < 0.35)
+    turns = [[0.0, 4.5, "SPEAKER_00"], [11.0, 12.0, "SPEAKER_01"],
+             [15.0, 16.0, "SPEAKER_02"]]
+    out = expand_segments([seg], turns)
+    assert out == [seg]
+
+
+def test_expand_line_without_parts_untouched():
+    """Starye joby bez asr_json: stroka kak byla."""
+    seg = _seg(0.0, 15.0, "staraya stroka", "S0")
+    assert expand_segments([seg], TURNS_AB) == [seg]
+
+
+def test_expand_then_coalesce_keeps_voices_separate():
+    """Regressiya glavnogo defekta: dve frazy dvuh lyudey v odnoy VAD-stroke
+    posle vyvoda — dve otdel'nyye reperiki s raznymi govorashchimi."""
+    other = _seg(16.0, 20.0, "eto tozhe ya", "SPEAKER_01", "Petrov")
+    disp = coalesce_segments(expand_segments([_two_voice_line(), other], TURNS_AB))
+    assert [d.speaker_name for d in disp] == [None, "Petrov"]
+

@@ -257,6 +257,16 @@ REGISTRY: tuple[Block, ...] = (
             readers="api/worker", when="sliyanie sosednih reperok odnogo govoryashchego",
             if_empty="20 s",
             comment="pri vyvode (pustye reperiki vykidyvayutsya vsegda)"),
+        Key("COALESCE_SPLIT_TURNS", DEFAULTED, "1",
+            readers="api/worker", when="razbienie VAD-stroki s dvumya golosami",
+            if_empty="vkl (0 = vyklyuchit' razrez po turns)",
+            comment="stroka s dvumya govorashchimi delaetsya na otdel'nyye "
+                    "replitu po granitsam diar turns i timeshampam ASR-chastey"),
+        Key("COALESCE_PART_MIN_COVERAGE", DEFAULTED, "0.35",
+            readers="api/worker", when="porog otdeleniya ASR-chasti s chuzhim golosom",
+            if_empty="0.35",
+            comment="dolya pokrytiya chuzhim turn-om pri kotoroy chast' "
+                    "otdelyaetsya ot stroki (nizhe — mel'koe nakhozhenie ne rezhetsya)"),
     )),
 )
 

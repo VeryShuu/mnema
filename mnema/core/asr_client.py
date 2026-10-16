@@ -228,11 +228,17 @@ def _map_verbose_to_segments(payload: dict, vad_segments: list[dict]) -> list[di
     """Sootnesti ASR-segmenty VAD'yu: kazhdiy ASR-segment naznachaetsya odnomu
     VAD-segmentu (maks. peresechenie), teksty one zhe VAD skleydayutsya po
     vremeni. Ranshe bralsya tol'ko 'luchshiy' perosek — slova gubilis', a
-    odin ASR-segment popadalo v neskol'ko VAD (dubli v stenogamme)."""
+    odin ASR-segment popadalo v neskol'ko VAD (dubli v stenogamme).
+
+    Dlya kazhdogo VAD-ryada sohralyayetsya `parts` — vkhodyashchie ASR-segmenty
+    s ih sobstvennymi timesh tampami: granicy govorivykh (diar turns) layut
+    mezhdu nimi, poetomi bez nikh fraza vtorogo golosa pri kleike propadaet
+    kak odna repika odnogo cheloveka."""
     raw = sorted(payload.get("segments") or [],
                  key=lambda r: (r.get("start", 0), r.get("end", 0)))
     lang = payload.get("language")
     texts: list[list[str]] = [[] for _ in vad_segments]
+    parts: list[list[dict]] = [[] for _ in vad_segments]
     logprobs: list[list[float]] = [[] for _ in vad_segments]
     for r in raw:
         idx = _owner_vad(r, vad_segments)
@@ -241,6 +247,9 @@ def _map_verbose_to_segments(payload: dict, vad_segments: list[dict]) -> list[di
         t = (r.get("text") or "").strip()
         if t:
             texts[idx].append(t)
+            parts[idx].append({"s": round(float(r.get("start", 0)), 3),
+                               "e": round(float(r.get("end", 0)), 3),
+                               "t": t})
         lp = r.get("avg_logprob")
         if lp is not None:
             logprobs[idx].append(lp)
@@ -249,7 +258,8 @@ def _map_verbose_to_segments(payload: dict, vad_segments: list[dict]) -> list[di
         lp = logprobs[i]
         conf = _conf_from_logprob(sum(lp) / len(lp)) if lp else None
         out.append({"text": " ".join(texts[i]).strip(),
-                    "lang": lang, "confidence": conf})
+                    "lang": lang, "confidence": conf,
+                    "parts": parts[i] or None})
     return out
 
 

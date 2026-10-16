@@ -360,15 +360,18 @@ def _slice_duration(p: dict, kinds: tuple[str, ...]) -> float:
 
 def _transcript_for_split(job_id: int) -> str:
     from ..worker.tasks import _fmt, _transcript_lines
-    from .coalesce import coalesce_segments, speaker_display
+    from .coalesce import coalesce_segments, expand_segments, speaker_display
     with get_session() as s:
+        job = s.get(Job, job_id)
+        turns = job.diar_turns if job is not None else None
         segs = s.scalars(select(Segment).where(
             Segment.job_id == job_id, Segment.excluded.is_(False)
         ).order_by(Segment.t_start, Segment.id)).all()
     gap = silence_gap_s()
+    expanded = expand_segments(list(segs), turns)
     if gap <= 0:
-        return _transcript_lines(segs)
-    disp = coalesce_segments(segs)
+        return _transcript_lines(segs, turns)
+    disp = coalesce_segments(expanded)
     out: list[str] = []
     prev_end: float | None = None
     for seg in disp:

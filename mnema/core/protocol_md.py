@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .coalesce import coalesce_segments, speaker_display
+from .coalesce import coalesce_segments, expand_segments, speaker_display
 
 
 def _fmt(sec: float) -> str:
@@ -14,8 +14,10 @@ def _fmt(sec: float) -> str:
     return f"{sec // 3600:02d}:{(sec % 3600) // 60:02d}:{sec % 60:02d}"
 
 
-def render_markdown(job, data: dict, segments: list) -> str:
-    segments = coalesce_segments(segments)
+def render_markdown(job, data: dict, segments: list,
+                    turns: list | None = None) -> str:
+    turns = turns if turns is not None else getattr(job, "diar_turns", None)
+    segments = coalesce_segments(expand_segments(list(segments), turns))
     lines: list[str] = []
     topic = (data.get("topic") or job.topic)
     lines.append(f"# Протокол: {topic}")
@@ -62,9 +64,11 @@ def render_markdown(job, data: dict, segments: list) -> str:
     return "\n".join(lines)
 
 
-def write_docx(job, data: dict, segments: list, path: Path) -> None:
+def write_docx(job, data: dict, segments: list, path: Path,
+               turns: list | None = None) -> None:
     from docx import Document
-    segments = coalesce_segments(segments)
+    turns = turns if turns is not None else getattr(job, "diar_turns", None)
+    segments = coalesce_segments(expand_segments(list(segments), turns))
     template = Path(__file__).resolve().parents[2] / "templates" / "protocol.docx"
     doc = Document(str(template)) if template.exists() else Document()
     topic = data.get("topic") or job.topic

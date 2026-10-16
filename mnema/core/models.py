@@ -139,6 +139,9 @@ class Segment(Base):
     lang: Mapped[str | None] = mapped_column(String(8), nullable=True)
     engine: Mapped[str | None] = mapped_column(String(32), nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ASR-сегменты внутри VAD-строки: [{s, e, t}] — точные тайминги фраз для
+    # разбиения строки по границам говорящих (diar turns) при выводе
+    asr_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     job: Mapped[Job] = relationship(back_populates="segments")
 
