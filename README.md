@@ -104,33 +104,71 @@ ASR fallback ~2x, диаризация — при включённом fp16/ба
 -> ASR по сегментам (gigastt verbose_json с восстановлением пунктуации;
    fallback faster-whisper) -> эмбеддинги кластеров -> матчинг с голосовым
 реестром -> (пороги) -> уточнение оператора (ФТ-28) -> накопление профилей
--> стенограмма (коалесценция реплик, COALESCE_MAX_GAP_S) -> разделение встреч
-(LLM-детекция границ, см. ниже) -> LLM-протокол
+-> стенограмма (коалесценция реплик, COALESCE_MAX_GAP_S; VAD-строка с двумя
+говорящими режется на отдельные реплики по diar-turns и таймстампам ASR-частей,
+COALESCE_SPLIT_TURNS) -> разделение встреч (LLM-детекция границ, см. ниже)
+-> LLM-протокол
 ```
 
+Порядок «уточнение людей → анализ»: LLM-протокол строится **после** того, как
+все говорящие определены. При нераспознанных голосах Job останавливается в
+`awaiting_review` (дедлайн `REVIEW_TIMEOUT_HOURS`), после закрытия уточнений
+(`POST /api/reviews/{rid}`) обработка продолжается. Все LLM-анализы (протокол
+и детекция границ) сериализованы FIFO-локом в redis — одновременно к LLM
+идёт ровно один запрос (`LLM_LOCK_WAIT_TIMEOUT_S`, `LLM_LOCK_LEASE_S`);
+глубина «размышлений» модели — `LLM_THINKING` (по умолчанию `off`).
+
 Состояния Job (НТ‑2): `scheduled → launching → recording → processing →
-[awaiting_llm?] → [awaiting_review?] → done | failed`. Для архивных загрузок:
-`scheduled → uploading → processing → …`. Пере-запуск LLM из `done`/`awaiting_llm`
+[awaiting_review?] → [awaiting_llm?] → done | failed`. Для архивных загрузок:
+`scheduled → uploading → processing → …`. Из `failed` возможен возврат в
+`processing` (обычный перезапуск) и `uploading` (salvage-досыл аудио, см.
+«Надёжность записи»). Пере-запуск LLM из `done`/`awaiting_llm`
 (`→ processing`) — кнопка в UI и `POST /jobs/{id}/rerun-llm`. Processing
-идемпотентен.
+идемпотентен, `POST /api/jobs/{id}/finished` — тоже (повторный post salvage
+не даёт 409/дублей).
+
+## Надёжность записи (без потерь аудио)
+
+Приоритет «звук записывается всегда»: web-bot пишет чанки с **ack-протоколом**
+(page хранит чанки в памяти, пока Node не запишет их на диск и не подтвердит;
+ENOSPC/IO не теряет аудио, лимит памяти страницы 32 МБ); при каждом flush
+проверяет здоровье MediaRecorder/AudioContext и оживляет их в новое окно
+(`recorder_revived`) и делает disk-guard `MIN_FREE_DISK_MB` (ниже — alert).
+Обрывы восстанавливаются **salvage**'ем: web-bot дособирает сырые сегменты с
+диска (в т.ч. orphan'ы после краха) в финальные файлы и досылает их через
+`POST .../finished` (очередь `mnema:salvage` в redis); watchdog
+`stalled_recording_watch` в maintenance поднимает зависшие в `recording` без событий дольше
+`STALLED_RECORDING_MIN` (`WEBBOT_HEARTBEAT_FILE` — файл живости web-bot для
+диагностики). Если встреча «не заканчивается» (слепой детектор тишины) —
+ручной безопасный выход: `POST /api/jobs/{id}/confirm-end` отправляет письмо с
+двумя ссылками («Завершить» → `GET /confirm-end/{token}`, «Посмотреть экран»
+→ noVNC). Клейка сегментов не теряет аудио на битых швах (EBML-разрезка,
+`webm_fix.js`).
 
 ## Разделение встреч (этап split)
 
 Одна запись (непрерывный созвон) может содержать несколько совещаний подряд.
 После стенограммы и уточнения голосов LLM ищет границы между совещаниями
 (`SPLIT_SYSTEM_PROMPT` в `mnema/core/llm_client.py`); граница прищёлкивается
-к паузе между сегментами VAD. При уверенности ≥ `SPLIT_MIN_CONFIDENCE` хвосты
-переезжают в дочерние Job'ы (`source=split`, `parent_job_id`), время сегментов
-пересчитывается от 0, аудио режется от полной копии `meeting-full.*`
-(создаётся всегда перед усечением). Каждая часть далее обрабатывается
-независимо: свой протокол, аудио, экспорт в самбу, уведомление.
+к паузе между сегментами VAD. В стенограмму вставляются метки длинной тишины
+(≥ `SPLIT_SILENCE_GAP_S`, по умолчанию 60 с) — ориентир для детекции границ.
+При уверенности ≥ `SPLIT_MIN_CONFIDENCE` хвосты переезжают в дочерние Job'ы
+(`source=split`, `parent_job_id`), время сегментов пересчитывается от 0, аудио
+режется от полной копии `meeting-full.*` (создаётся всегда перед усечением);
+сегменты, пересекающие границу, обрезаются по неё. Применение границ
+полуатомарное: при обрыве в середине цикла `jobs.split_json` получает
+`partial=true` с уже созданными потомками (повтор не дублирует хвосты, потомки
+уходят в обработку), событие `split_error`; ошибка самой детекции — `split_skipped`,
+Job не тонет. Каждая часть далее обрабатывается независимо: свой протокол,
+аудио, экспорт в самбу, уведомление.
 
 Параметры (env worker'а): `SPLIT_MEETINGS=1` (kill-switch `0`),
 `SPLIT_MIN_MINUTES=20` (короче — не делим), `SPLIT_MIN_CONFIDENCE=0.7`
 (порог уверенности LLM), `SPLIT_WINDOW_CHARS=40000` (скользящие окна
-детекции с перекрытием 10%). Решение фиксируется в `jobs.split_json`
-(границы или причина пропуска) — повторный запуск не делит повторно.
-Ограничения v1: потомки повторно не делятся, ручная правка границ — вне рамок.
+детекции с перекрытием 10%), `SPLIT_SILENCE_GAP_S=60`. Решение фиксируется
+в `jobs.split_json` (границы или причина пропуска) — повторный запуск не делит
+повторно. Ограничения v1: потомки повторно не делятся, ручная правка границ —
+вне рамок.
 
 ## Загрузка архивных записей совещаний
 
@@ -164,13 +202,16 @@ ASR fallback ~2x, диаризация — при включённом fp16/ба
   редактирование сегментов.
 - REST: полное описание — `docs/api.md`; Swagger — `GET /docs`. Основное:
   `GET/POST/DELETE /api/jobs`, `GET /api/jobs/{id}/join-info`,
+  `POST /api/jobs/{id}/rerun-llm`, `POST /api/jobs/{id}/confirm-end` +
+  `GET /confirm-end/{token}` (ручное безопасное завершение),
   `POST /api/uploads*` (архив‑загрузки), `GET /api/protocols/{id}`
   (`?format=md|docx|json`), `GET /api/protocols/{id}/audio?format=mp3|wav|webm`
   (Range), `PATCH .../segments`, `GET/POST /api/reviews`,
   `GET/POST/PATCH/DELETE /api/voice-profiles` (+ `/samples`, `/clusters`,
   `/reverify`), `GET/POST /api/vnc/*`, `GET /health`.
 - Уведомления — HTML‑письма (FT‑35/36): failure + скриншот страницы inline,
-  `protocol_ready`, `awaiting_llm`, relogin‑напоминания, `job_export_failed`;
+  `protocol_ready`, `awaiting_llm`, `confirm_end` (+ скриншот экрана),
+  relogin‑напоминания, `job_export_failed`;
   cooldown `ALERT_COOLDOWN_MIN`, дайджест `ALERT_DIGEST_CRON`.
 
 ## Выгрузка в самба-шару (SMB-зеркало)
@@ -188,7 +229,8 @@ SessionEvent `export_error` + ретраи в maintenance (≤5 за прохо�
 python -m venv venv && ./venv/bin/pip install -r requirements.txt && ./venv/bin/pip install pytest
 ./venv/bin/python -m pytest    # unit + api-integration + offline pipeline smoke (без сети/Zoom/GPU)
                                # ~11 мин; на разработку гонять затронутые файлы, см. AGENTS.md
-node --test web-bot/test/      # чистые модули web-bot: детектор тишины, ярлыки Zoom (RU/EN)
+node --test web-bot/test/      # чистые модули web-bot: ack-drain, record guard, salvage,
+                               # склейка webm (EBML), детектор тишины, ярлыки Zoom (RU/EN)
 ```
 
 Проверка конфига (ФТ‑37…40): `.env.example` генерируется из реестра ключей

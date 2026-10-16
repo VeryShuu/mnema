@@ -176,17 +176,20 @@ salvage ubitogo web-bot) не даёт 409 — файлы перезаписыв
 Ставит `confirm_end_requests` (`pending`, одноразовый токен), событие
 `confirm_end_requested` и отправляет письмо с двумя ссылками
 (`Завершить запись` → `GET /confirm-end/<token>`, `Посмотреть экран` → noVNC)
-и inline-скриншотом.
+и inline-скриншотом. Запись продолжается, пока оператор не ответит.
 
 Ответ: `{"ok": true, "request_id": 5}` или
 `{"ok": true, "request_id": 5, "already_pending": true}`
 
 ### `GET /confirm-end/{token}`
 
-Кнопка «Завершить» из письма: отмечает запрос `confirmed` и ставит web-botу
-stop (`manual_leave`), запись уходит в обработку. HTML-ответ. Одноразово:
-повторный вызов той же ссылки возвращает «уже обработано» и повторный stop не
-делает. Неизвестный токен → `404`.
+Кнопка «Завершить» из письма: отмечает запрос `confirmed`, пишет событие
+`confirm_end_confirmed` и ставит web-botу stop (`manual_leave`), запись уходит
+в обработку. HTML-ответ. Одноразово: повторный вызов той же ссылки возвращает
+«уже обработано» и повторный stop не делает. Неизвестный токен → `404`.
+Частные случаи (страница с предупреждением ⚠): redis недоступен — запрос
+подтверждён, но команда остановки не поставилась (нужно завершить кнопкой в
+интерфейсе); запись уже не `recording` — завершать нечего.
 
 ---
 
@@ -240,6 +243,19 @@ stop (`manual_leave`), запись уходит в обработку. HTML-о�
 Аудио встречи протокола. `format=mp3|wav|webm` (default `mp3`), поддержка
 `Range`. Неверный формат → `400`.
 
+### `PATCH /api/protocols/{pid}/segments`
+
+FT-32: ручное исправление имён говорящих в сегментах встречи.
+
+Тело: `{"segments": [{"id": <segment_id>, "speaker_name": "Иванов И. И."}, ...]}`
+
+Для каждого сегмента (проверяется принадлежность job'у протокола, чужие id
+молча пропускаются) проставляется `speaker_name`, `speaker_source=voiceprint`,
+снимается `needs_review`. Если изменён хотя бы один сегмент — опубликованный
+протокол освежается (`refresh_protocol`), чтобы имена в md/docx совпадали.
+
+Ответ: `{"updated": N}` — `404`, если протокол не найден.
+
 ---
 
 ## Аудио / исходники встречи
@@ -264,9 +280,14 @@ mp3 доступен сразу после окончания записи.
 
 | Параметр (query) | По умолчанию | Описание |
 |---|---|---|
-| `status` | `pending` | `pending` / `confirmed` / ... |
+| `status` | `pending` | `pending` / `confirmed` / `excluded` / `superseded` / `timeout` |
 
 Ответ: `[{id, job_id, cluster_label, candidate, candidate_id, similarity, status}]`
+
+Значения: `pending` — ждёт ответа; `confirmed` — отвечено оператором;
+`excluded` — кластер закрыт исключением всех фрагментов; `superseded` —
+кластер опустел после открепления фрагмента (см. DELETE); `timeout` — закрыт
+maintenance по истечении `REVIEW_TIMEOUT_HOURS`.
 
 ### `POST /api/reviews/{rid}`
 
@@ -281,15 +302,21 @@ mp3 доступен сразу после окончания записи.
 }
 ```
 
+Фрагменты с `speaker_source=multi_voice` (в двух голосах в одной VAD-строке)
+имя НЕ получают — реплики второго человека не должны появляться под первым
+именем; такие фрагменты остаются на ручной правке сегментов.
+
 После ответа кластер переобучается (enroll в workere) и, если все уточнения
-закрыты, анализ возобновляется.
+закрыты, анализ возобновляется (переход `awaiting_review → processing`).
 Ответ: `{"ok": true, "name": "...", "job_done": bool}`
 
 ### `DELETE /api/reviews/{rid}/segments/{seg_id}`
 
-Вырвать фрагмент из кластера: segment переносится в собственный подкластер и
-получает новый pending review-request. Если в исходном кластере не осталось
-фрагментов — review закрывается. Только для `pending` reviews (иначе `409`).
+Вырвать фрагмент из кластера: segment переносится в собственный подкластер
+(`<label>-x<seg_id>`) и получает новый pending review-request. Если в
+исходном кластере не осталось неоисключённых фрагментов — review закрывается
+(`status=superseded`) и анализ возобновляется. Только для `pending` reviews
+(иначе `409`).
 
 Ответ: `{"ok", "cluster_label", "review_closed", "job_done"}`
 
@@ -393,7 +420,7 @@ mp3 доступен сразу после окончания записи.
 
 ### `GET /api/uploads/{uid}/offset`
 
-Текущий прогресс: `{"offset": N, "status": "pending|uploading|complete"}`
+Текущий прогресс: `{"offset": N, "status": "pending|uploading|complete|failed"}`
 
 ### `POST /api/uploads/{uid}/chunk?offset=N`
 
@@ -403,12 +430,18 @@ mp3 доступен сразу после окончания записи.
 
 ### `POST /api/uploads/{uid}/finalize`
 
-Завершение загрузки → job переходит в `processing` и ставится в очередь.
-Ответ: `{"ok": true, "job_id", "status"}`
+Завершение загрузки: ffprobe-валидация аудио/видеодорожки (выполняется вне
+сессии БД), перенос файла в `/data/jobs/<id>/raw.<ext>`, переход job'а в
+`processing` и постановка в очередь ASR. Ответ:
+`{"ok": true, "job_id", "status"}`. Ошибки: `400` — файл загружен не
+полностью / отсутствует / не удалось извлечь валидную дорожку (загрузка
+переходит в `failed` с `error`); уже finalized/отменён — тоже `400`.
 
 ### `POST /api/uploads/{uid}/cancel`
 
-Отмена незавершённой загрузки.
+Отмена незавершённой загрузки: загрузка → `failed` («отменено оператором»),
+временный файл удаляется; job в статусе `uploading` переходит в `cancelled`.
+Ответ: `{"ok", "job_id", "status|null"}`.
 
 ### `GET /api/jobs/{jid}/uploads/active`
 
@@ -452,6 +485,7 @@ mp3 доступен сразу после окончания записи.
 
 | Метод и путь | Описание |
 |---|---|
+| `GET /static/*` | Статика (css/js) |
 | `GET /` | Дашборд: активные встречи, ошибки, здоровье очередей/Zoom, VNC |
 | `GET /jobs` | Список встреч (`?status=` фильтр) |
 | `POST /jobs/create` | Форма создания встречи (preset_id / meeting_link / pwd / topic / start_at / end_at / start_now); ошибки — redirect `?error=link|date|preset|end_before_start` |
@@ -480,6 +514,14 @@ mp3 доступен сразу после окончания записи.
 
 - **web-bot** (Node.js) — ходит в встречи Zoom и пишет через
   `POST /api/jobs/{jid}/status`, `/events`, `/finished`, читает
-  `GET /api/jobs/{jid}/join-info`, шлёт `POST /api/alert`.
-- **worker** — берёт задачи из очереди (Redis);API с ним общается только
+  `GET /api/jobs/{jid}/join-info`, шлёт `POST /api/alert`, при слепом
+  детекторе уровня после `end_at` — `POST /api/jobs/{jid}/confirm-end`.
+  Потребляет redis-очередь salvage (`mnema:salvage`): по сигналу или при
+  старте дособирает сырые webm-сегменты с диска в финальные файлы и шлёт
+  `POST .../finished` (восстановление после падения, идемпотентно).
+- **worker** — берёт задачи из очереди (Redis); API с ним общается только
   через очередь (`enqueue_job`) и общий volume `DATA_DIR`.
+- **api maintenance** — `stalled_recording_watch`: job в `recording` без
+  событий дольше `STALLED_RECORDING_MIN` → `rpush mnema:salvage` (событие
+  `salvage_requested`, без спама) + `review_timeout_check` (FT-28) +
+  ретраи выгрузки в SMB.
