@@ -91,9 +91,15 @@ REST API сервиса `api` (FastAPI). Реализация: `mnema/api/main.p
 (`disabled`, `too_short`, `too_few_segments`, `llm_not_configured`,
 `no_boundaries_found`, …). У потомка `split` = `{"parent": <id>, "boundary_t": <сек>}`.
 
+При сбое применения границ (потомки уже созданы, но цикл разделения
+прерван) в `split_json` родителя пишется `"partial": true`, `"children": [id]`
+и `"error"` — rerun не создаст дубликатов хвостов; этап `split` показывается
+как `failed`.
+
 События этапа: `split_start`, `split_done` (границы и id детей в detail),
 `split_skipped` (причина), `split_audio_error` (ошибка ffmpeg — разделение
-в БД при этом остаётся в силе).
+в БД при этом остаётся в силе), `split_error` (сбой применения границ,
+частичное разделение).
 
 ### `DELETE /api/jobs/{jid}`
 

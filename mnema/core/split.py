@@ -9,6 +9,11 @@ meeting-full.*. Дальше каждая часть обрабатываетс�
 Идемпотентность rerun: решённый job имеет split_json (границы или skipped).
 Ошибки аудио (ffmpeg) НЕ роняют job: событие split_audio_error, разделение
 в БД выполняется без аудио-слайсов (протокол важнее).
+
+Сбой применения границ (не детекции) — SplitApplyError: уже созданные потомки
+передаются вызывающему (чтобы они не остались без run_structure), а в
+split_json родителя фиксируется частичное решение (partial=True) и событие
+split_error — rerun не создаст дубликатов.
 """
 from __future__ import annotations
 
@@ -45,6 +50,20 @@ def min_confidence() -> float:
 
 MIN_SEGMENTS = 10          # меньше реплик — делить нечего
 MIN_TAIL_S = 120.0         # хвост короче двух минут — потомок не создаём
+
+
+class SplitApplyError(Exception):
+    """Границы приняты, но применение сорвалось на середине.
+
+    child_ids — потомки, уже созданные и коммитнутые (их сегменты переехали):
+    вызывающий обязан поставить им run_structure, иначе они зависнут в
+    processing. split_json родителя помечен partial — rerun не повторит
+    разделение и не создаст дубликатов."""
+
+    def __init__(self, message: str, child_ids: list[int]):
+        super().__init__(message)
+        self.child_ids = list(child_ids)
+
 
 
 def silence_gap_s() -> float:
@@ -153,14 +172,42 @@ def _persist_skip(job_id: int, reason: str) -> None:
 
 
 def _dedupe_boundaries(boundaries: list[dict], min_gap_s: float = 60.0) -> list[dict]:
-    out: list[dict] = []
-    for b in sorted(boundaries, key=lambda b: b["t"]):
-        if out and b["t"] - out[-1]["t"] < min_gap_s:
-            if b["confidence"] > out[-1]["confidence"]:
-                out[-1] = b
-            continue
-        out.append(b)
-    return out
+    from .llm_client import merge_boundary_candidates
+    return merge_boundary_candidates(boundaries, min_gap_s)
+
+
+def _abort_partial(job_id: int, accepted: list[dict],
+                   child_ids: list[int], error: str) -> None:
+    """Применение границ сорвалось: фиксируем состояние, чтобы rerun не создал
+    дубликаты уже отделившихся хвостов. Ни один потомок не коммитнут —
+    решение НЕ пишем: rerun получит чистый шанс. Committed хвосты — последние
+    len(child_ids) границ (хвосты снимались справа налево)."""
+    if child_ids:
+        try:
+            with get_session() as s:
+                job = s.get(Job, job_id)
+                if job is not None and job.split_json is None:
+                    job.split_json = {
+                        "boundaries": [
+                            {"t": float(bb["t"]),
+                             "confidence": float(bb["confidence"]),
+                             "topic_before": job.topic or "",
+                             "topic_after": bb.get("topic_after") or ""}
+                            for bb in accepted[len(accepted) - len(child_ids):]],
+                        "children": sorted(child_ids),
+                        "partial": True,
+                        "error": error[:500],
+                        "ts": dt.datetime.now(dt.timezone.utc).isoformat()}
+                s.commit()
+        except Exception:  # noqa: BLE001 — маркировка best effort
+            pass
+    try:
+        _event(job_id, "split_error",
+               f"применение границ сорвалось "
+               f"(создано потомков: {len(child_ids)}): {error[:300]}")
+    except Exception:  # noqa: BLE001 — событие не должно перекрывать причину
+        pass
+
 
 
 def _child_topic(boundary: dict, idx: int, parent_topic: str) -> str:
@@ -224,6 +271,16 @@ def _model_name() -> str | None:
         return None
 
 
+def _trim_straddlers(s, job_id: int, b: float) -> None:
+    """Реплика, начатая до границы и окончившаяся после неё, остаётся
+    предыдущей части, но обрезается по границу: текст не выходит за усечённое
+    аудио части (хвост слышен потомку, текст — нет)."""
+    s.execute(update(Segment)
+              .where(Segment.job_id == job_id,
+                     Segment.t_start < b, Segment.t_end > b)
+              .values(t_end=b))
+
+
 def split_job(job_id: int) -> list[int]:
     """Главная функция этапа: детекция границ + разделение.
 
@@ -271,73 +328,82 @@ def split_job(job_id: int) -> list[int]:
 
     child_ids: list[int] = []
     # справа налево: сегменты переезжают ровно один раз (хвост уже снят с
-    # родителя предыдущим шагом), пересчёт t=0 — один раз на хвост
-    for idx in range(len(accepted) - 1, -1, -1):
-        b = float(accepted[idx]["t"])
-        hi = float(accepted[idx + 1]["t"]) if idx + 1 < len(accepted) else duration_s
+    # родителя предыдущим шагом), пересчёт t=0 — один раз на хвост.
+    # Сбой применения — SplitApplyError: уже созданные потомки не должны
+    # остаться без run_structure, решение фиксируется partial (без дубликатов).
+    try:
+        for idx in range(len(accepted) - 1, -1, -1):
+            b = float(accepted[idx]["t"])
+            hi = float(accepted[idx + 1]["t"]) if idx + 1 < len(accepted) else duration_s
+            with get_session() as s:
+                _trim_straddlers(s, job_id, b)
+                child = Job(source="split", parent_job_id=job_id,
+                            topic=_child_topic(accepted[idx], idx, job_topic),
+                            status="processing", created_by="split",
+                            start_at=(parent_start + dt.timedelta(seconds=b)
+                                      if parent_start else None),
+                            split_json={"parent": job_id, "boundary_t": b,
+                                        "ts": dt.datetime.now(
+                                            dt.timezone.utc).isoformat()})
+                s.add(child)
+                s.flush()
+                cid = child.id
+                s.execute(update(Segment)
+                          .where(Segment.job_id == job_id, Segment.t_start >= b)
+                          .values(job_id=cid,
+                                  t_start=Segment.t_start - b,
+                                  t_end=Segment.t_end - b))
+                s.commit()
+            child_ids.append(cid)
+            # 7b: пресет этапов-предков — иначе stages потомка вечно показывают
+            # prep/asr/speaker «running» (vetki у потомка не запускаются)
+            for ev in ("vad_done", "asr_done", "diar_done", "voiceprint_done",
+                       "review_resolved"):
+                _event(cid, ev, f"унаследовано от job {job_id}")
+            cp = _job_paths(cid)
+            got = tuple(
+                kind for kind, src in (("wav", p["full_wav"]), ("mp3", p["full_mp3"]))
+                if _slice_audio(cid, src, cp[kind], b, hi))
+            dur = _slice_duration(cp, got)
+            _register_audio(cid, cp, dur, got)
+            with get_session() as s:
+                child = s.get(Job, cid)
+                if child is not None:
+                    child.diar_turns = _clip_turns(parent_turns, b, hi)
+                    s.commit()
+
+        # решение 6: пустая тема родителя заполняется, когда разделение состоялось
         with get_session() as s:
-            child = Job(source="split", parent_job_id=job_id,
-                        topic=_child_topic(accepted[idx], idx, job_topic),
-                        status="processing", created_by="split",
-                        start_at=(parent_start + dt.timedelta(seconds=b)
-                                  if parent_start else None),
-                        split_json={"parent": job_id, "boundary_t": b,
-                                    "ts": dt.datetime.now(
-                                        dt.timezone.utc).isoformat()})
-            s.add(child)
-            s.flush()
-            cid = child.id
-            s.execute(update(Segment)
-                      .where(Segment.job_id == job_id, Segment.t_start >= b)
-                      .values(job_id=cid,
-                              t_start=Segment.t_start - b,
-                              t_end=Segment.t_end - b))
+            job = s.get(Job, job_id)
+            if job is not None and not (job.topic or "").strip():
+                job.topic = f"Встреча {job_id} (часть 1)"[:512]
             s.commit()
-        child_ids.append(cid)
-        # 7b: пресет этапов-предков — иначе stages потомка вечно показывают
-        # prep/asr/speaker «running» (vetki у потомка не запускаются)
-        for ev in ("vad_done", "asr_done", "diar_done", "voiceprint_done",
-                   "review_resolved"):
-            _event(cid, ev, f"унаследовано от job {job_id}")
-        cp = _job_paths(cid)
-        got = tuple(
+
+        # родитель: усечение аудио [0, b1) (источник — полная копия) + diar + json
+        b1 = float(accepted[0]["t"])
+        parent_got = tuple(
             kind for kind, src in (("wav", p["full_wav"]), ("mp3", p["full_mp3"]))
-            if _slice_audio(cid, src, cp[kind], b, hi))
-        dur = _slice_duration(cp, got)
-        _register_audio(cid, cp, dur, got)
+            if _slice_audio(job_id, src, p[kind], 0.0, b1))
+        if parent_got:
+            _register_audio(job_id, p, _slice_duration(p, parent_got), parent_got)
         with get_session() as s:
-            child = s.get(Job, cid)
-            child.diar_turns = _clip_turns(parent_turns, b, hi)
+            job = s.get(Job, job_id)
+            if job is not None:
+                job.diar_turns = _clip_turns(parent_turns, 0.0, b1)
+                job.split_json = {
+                    "boundaries": [{"t": float(bb["t"]),
+                                    "confidence": float(bb["confidence"]),
+                                    "topic_before": job_topic,
+                                    "topic_after": bb.get("topic_after") or ""}
+                                   for bb in accepted],
+                    "model": _model_name(),
+                    "skipped": None,
+                    "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
+                }
             s.commit()
-
-    # решение 6: пустая тема родителя заполняется, когда разделение состоялось
-    with get_session() as s:
-        job = s.get(Job, job_id)
-        if job is not None and not (job.topic or "").strip():
-            job.topic = f"Встреча {job_id} (часть 1)"[:512]
-        s.commit()
-
-    # родитель: усечение аудио [0, b1) (источник — полная копия) + diar + json
-    b1 = float(accepted[0]["t"])
-    parent_got = tuple(
-        kind for kind, src in (("wav", p["full_wav"]), ("mp3", p["full_mp3"]))
-        if _slice_audio(job_id, src, p[kind], 0.0, b1))
-    if parent_got:
-        _register_audio(job_id, p, _slice_duration(p, parent_got), parent_got)
-    with get_session() as s:
-        job = s.get(Job, job_id)
-        job.diar_turns = _clip_turns(parent_turns, 0.0, b1)
-        job.split_json = {
-            "boundaries": [{"t": float(bb["t"]),
-                            "confidence": float(bb["confidence"]),
-                            "topic_before": job_topic,
-                            "topic_after": bb.get("topic_after") or ""}
-                           for bb in accepted],
-            "model": _model_name(),
-            "skipped": None,
-            "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
-        }
-        s.commit()
+    except Exception as e:  # noqa: BLE001 — не бросать потомков без structure
+        _abort_partial(job_id, accepted, child_ids, str(e))
+        raise SplitApplyError(str(e), child_ids) from e
     from . import export
     for cid in child_ids:
         export.export_recording(cid)

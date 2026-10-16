@@ -307,15 +307,15 @@ def detect_meeting_boundaries(transcript: str, topic: str = "",
     if windows and ok_windows == 0 and last_err is not None:
         # vse okna padeni — ete nie "granicy ne naydeny", a sbay detekcii
         raise last_err
-    merged = _merge_boundary_candidates(candidates)
+    merged = merge_boundary_candidates(candidates)
     if duration_s > 0:
         merged = [b for b in merged
                   if 0.0 < b["t"] < duration_s and duration_s - b["t"] > 30.0]
     return merged
 
 
-def _merge_boundary_candidates(cands: list[dict], min_gap_s: float = 60.0
-                               ) -> list[dict]:
+def merge_boundary_candidates(cands: list[dict], min_gap_s: float = 60.0
+                              ) -> list[dict]:
     """Kandidaty iz perekryvayushchikhsya okon: blizkie (<min_gap_s) sliyayutsya,
     peryodayetsya bolshej confidence. Rezultat — monotonno vozrastayushchiy."""
     out: list[dict] = []

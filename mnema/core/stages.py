@@ -157,9 +157,14 @@ def build_stages(job_id: int) -> list[dict]:
     elif is_split_child:
         states["split"] = "skipped"  # потомок — результат разделения, сам не делится
     elif split_decided:
-        states["split"] = "done" if not (job.split_json or {}).get("skipped") \
-            else "skipped"
-    elif failed and failed_stage == "split":
+        sj = job.split_json or {}
+        if sj.get("partial"):
+            states["split"] = "failed"  # применение границ сорвалось на середине
+        elif sj.get("skipped"):
+            states["split"] = "skipped"
+        else:
+            states["split"] = "done"
+    elif failed and (failed_stage == "split" or has("split_error")):
         states["split"] = "failed"
     elif status == "processing" and (has("steno_done") or steno_exists) \
             and not has("split_start"):

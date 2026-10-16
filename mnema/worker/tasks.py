@@ -236,6 +236,8 @@ def run_asr_pipeline(job_id: int) -> None:
 
 def _classify(e: Exception) -> str:
     txt = str(e).lower()
+    if "split" in txt:
+        return "split_error"
     if "asr" in txt or "transcription" in txt:
         return "asr_error"
     return "processing_error"
@@ -375,11 +377,19 @@ def _run_split_and_structure(job_id: int) -> None:
     """Этап split (попытка разделения записи на несколько встреч) перед LLM.
 
     Ошибка детекции (LLMError и иная) не роняет job: событие split_skipped,
-    дальше — обычный _run_structure по полной записи. Потомки получают свои
-    run_structure; падение потомка не трогает родителя."""
+    дальше — обычный _run_structure по полной записи. Сбой применения границ
+    (SplitApplyError) — событие split_error, но частично созданные потомки
+    всё равно получают run_structure (иначе зависнут в processing). Падение
+    потомка не трогает родителя."""
     from ..core import split as split_core
+    apply_failed = False
     try:
         child_ids = split_core.split_job(job_id)
+    except split_core.SplitApplyError as e:
+        _log_event(job_id, "split_error",
+                   f"сбой применения границ: {str(e)[:300]}")
+        child_ids = e.child_ids
+        apply_failed = True
     except Exception as e:  # noqa: BLE001 — split не причина топить job
         _log_event(job_id, "split_skipped", f"ошибка детекции: {str(e)[:300]}")
         child_ids = []
@@ -395,6 +405,9 @@ def _run_split_and_structure(job_id: int) -> None:
                     run_structure(cid)  # direct-режим: inline
                 except Exception:  # noqa: BLE001 — падение потомка не трогает родителя
                     pass
+    if apply_failed:
+        raise RuntimeError("split: применение границ не завершено, "
+                           "родительская стенограмма может быть неполной")
     _run_structure(job_id)
 
 

@@ -632,3 +632,171 @@ def test_child_route_after_structure_reaches_done(env, monkeypatch):
         assert s.get(Job, kids[0]).status == "done"
         assert s.scalars(select(ReviewRequest).where(
             ReviewRequest.job_id == kids[0])).first() is None
+
+
+# ---------------------------------------------------------------- сбой применения
+def _mk_job_straddle(topic: str = "Планёрка"):
+    """30 сегментов по 120 с; сегмент 14 удлинён до 2100 и пересекает границу,
+    к которой пришёллись кандидаты 1910 -> 1920 (snap внутри речи не нужен:
+    1910 попадает в паузу [1896, 1920] между seg15 и seg16)."""
+    import mnema.core.models as m
+    from mnema.core.db import get_session
+    with get_session() as s:
+        job = m.Job(topic=topic, status="processing", source="upload",
+                    start_at=dt.datetime(2026, 10, 8, tzinfo=dt.timezone.utc))
+        s.add(job)
+        s.flush()
+        for i in range(30):
+            t0 = i * 120.0
+            t1 = t0 + 96.0
+            if i == 14:
+                t1 = 2100.0  # overlapping straddler: 1680..2100 через 1920
+            s.add(m.Segment(job_id=job.id, t_start=t0, t_end=t1,
+                            text="рабочая реплика", speaker_id="S0",
+                            diar_label="S0", speaker_source="voiceprint"))
+        s.commit()
+        return job.id
+
+
+def test_straddling_segment_trimmed_to_boundary(env, monkeypatch):
+    """Реплика через границу остаётся предыдущей части, но обрезается по границу:
+    текст не выходит за усечённое аудио родителя."""
+    from mnema.core import split as sp
+    from mnema.core.db import get_session
+    from mnema.core.models import Segment
+    _stub_llm_ok(monkeypatch)
+    _stub_media(monkeypatch)
+    jid = _mk_job_straddle()
+    _stub_detect(monkeypatch, [{"t": 1910.0, "confidence": 0.95,
+                                "topic_after": ""}])
+    kids = sp.split_job(jid)
+    assert len(kids) == 1
+    with get_session() as s:
+        pseg = s.scalars(select(Segment).where(
+            Segment.job_id == jid)).all()
+        trimmed = [sg for sg in pseg if sg.t_start == pytest.approx(1680.0)]
+        assert len(trimmed) == 1
+        assert trimmed[0].t_end == pytest.approx(1920.0)
+        csegs = s.scalars(select(Segment).where(
+            Segment.job_id == kids[0])).all()
+        assert len(csegs) == 14  # seg16..seg29
+        total = s.scalar(select(func.count()).select_from(Segment))
+        assert total == 30  # straddler не переехал и не задвоился
+        assert all(sg.t_start >= 0 and sg.t_end > sg.t_start for sg in csegs)
+
+
+def test_apply_failure_raises_with_children_and_marked_partial(env, monkeypatch):
+    """Сбой применения после коммита первого (правого) потомка: SplitApplyError
+    с child_ids, split_json родителя = partial (rerun не создаст дубликатов),
+    событие split_error."""
+    from mnema.core import split as sp
+    from mnema.core.db import get_session
+    from mnema.core.models import Job, Segment
+    import mnema.worker.tasks as tk
+    _stub_llm_ok(monkeypatch)
+    _stub_media(monkeypatch)
+    jid = _mk_job(segs_count=60, duration_s=120.0)  # ~119 мин
+    # кандидаты в паузах VAD: 2750 ∈ (2736,2760) -> 2760; 5500 ∈ (5496,5520) -> 5520
+    _stub_detect(monkeypatch, [
+        {"t": 2750.0, "confidence": 0.9, "topic_after": "Вторая"},
+        {"t": 5500.0, "confidence": 0.9, "topic_after": "Третья"}])
+    real_paths = tk._job_paths
+
+    def boom_paths(job_id):
+        if job_id != jid:  # paths первого же потомка — диск сгорел
+            raise RuntimeError("диск сгорел")
+        return real_paths(job_id)
+    monkeypatch.setattr(tk, "_job_paths", boom_paths)
+    with pytest.raises(sp.SplitApplyError) as ei:
+        sp.split_job(jid)
+    assert len(ei.value.child_ids) == 1  # правый хвост успел отделиться (коммит)
+    with get_session() as s:
+        job = s.get(Job, jid)
+        sj = job.split_json
+        assert sj and sj.get("partial") is True
+        assert sj["children"] == sorted(ei.value.child_ids)
+        assert "диск сгорел" in sj["error"]
+        assert len(sj["boundaries"]) == 1 and sj["boundaries"][0]["t"] == 5520.0
+        kids = s.scalars(select(Job).where(
+            Job.parent_job_id == jid)).all()
+        assert len(kids) == 1 and kids[0].id == ei.value.child_ids[0]
+        assert kids[0].topic == "Третья"
+        # сегменты не потерялись и не задвоились
+        assert s.scalar(select(func.count()).select_from(Segment)) == 60
+    assert "split_error" in _events(jid)
+    # rerun: решение зафиксировано — повторного разделения (дубликатов) нет
+    assert sp.split_job(jid) == []
+    with get_session() as s:
+        assert s.scalar(select(func.count()).select_from(Job)) == 2
+
+
+def test_apply_error_children_still_structured_parent_marked_failed(env, monkeypatch):
+    """_run_split_and_structure при SplitApplyError: потомки идут в structure
+    (не зависают в processing), родитель structure не получает и бросает
+    RuntimeError (run_join/run_structure -> failed, этап split -> failed)."""
+    from mnema.core import split as sp
+    from mnema.core.db import get_session
+    from mnema.core.models import Job
+    import mnema.core.split as spmod
+    from mnema.worker.tasks import _run_split_and_structure
+    _stub_media(monkeypatch)
+    jid = _mk_job(segs_count=30, duration_s=120.0)
+    kid = _mk_job(segs_count=5, duration_s=120.0, source="split")
+    with get_session() as s:
+        j = s.get(Job, kid)
+        j.parent_job_id = jid
+        s.commit()
+    orig_split = spmod.split_job
+
+    def fake_split(job_id):
+        if job_id == jid:  # у родителя применение границ срывается
+            raise sp.SplitApplyError("диск сгорел", [kid])
+        return orig_split(job_id)  # потомок делиться не будет (child_job)
+    monkeypatch.setattr(spmod, "split_job", fake_split)
+    monkeypatch.setenv("LLM_BASE_URL", "")  # structure потомка -> awaiting_llm
+    with pytest.raises(RuntimeError):
+        _run_split_and_structure(jid)
+    with get_session() as s:
+        assert s.get(Job, kid).status == "awaiting_llm"  # потомок обработан
+        assert s.get(Job, jid).status == "processing"    # structure не запускался
+    assert "split_error" in _events(jid)
+
+
+def test_split_stage_failed_on_error_event(env):
+    """Этап split: событие split_error + fail_reason split_error -> failed."""
+    import mnema.core.models as m
+    from mnema.core.db import get_session
+    from mnema.core.stages import build_stages
+    jid = _mk_job(segs_count=30, duration_s=120.0)
+    from mnema.core.pipeline import transition
+    with get_session() as s:
+        s.add(m.SessionEvent(job_id=jid, event="vad_done", detail=""))
+        s.add(m.SessionEvent(job_id=jid, event="asr_done", detail=""))
+        s.add(m.SessionEvent(job_id=jid, event="diar_done", detail=""))
+        s.add(m.SessionEvent(job_id=jid, event="split_start", detail=""))
+        s.add(m.SessionEvent(job_id=jid, event="split_error",
+                             detail="применение границ сорвалось"))
+        s.commit()
+    transition(jid, "failed", fail_reason="split_error", error="split: boom",
+               notify=False)
+    st = {s_["key"]: s_["state"] for s_ in build_stages(jid)}
+    assert st["split"] == "failed"
+
+
+def test_split_stage_failed_on_partial_json(env):
+    """split_json partial=True (job ещё processing) -> этап split показан failed."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Job
+    from mnema.core.stages import build_stages
+    jid = _mk_job(segs_count=30, duration_s=120.0)
+    with get_session() as s:
+        job = s.get(Job, jid)
+        job.split_json = {"boundaries": [{"t": 1800.0, "confidence": 0.9,
+                                          "topic_before": "Планёрка",
+                                          "topic_after": ""}],
+                          "children": [999], "partial": True,
+                          "error": "диск сгорел",
+                          "ts": "2026-10-08T00:00:00+00:00"}
+        s.commit()
+    st = {s_["key"]: s_["state"] for s_ in build_stages(jid)}
+    assert st["split"] == "failed"
