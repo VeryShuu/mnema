@@ -8,6 +8,8 @@
             onclick="deleteMeeting({{ job.id }})">🗑</button>
     {% if job.source == 'upload' %}<span class="badge upload">Архив</span>{% endif %}
   </h2>
+</div>
+<div id="meeting-edit-block">
   <p id="rename-row" class="hidden">
     <input id="rename-input" size="50" value="{{ job.topic|e }}">
     <button type="button" class="primary" onclick="saveRename({{ job.id }})">Сохранить</button>
