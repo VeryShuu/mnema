@@ -2,7 +2,7 @@
 // Zapusk: node --test web-bot/test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { segKey, shortMixWarningS, ebmlHeaderOffsets, EBML_MAGIC, filterUsableSegs, mixWorseThanInput, pickBestDecoded } from "../src/seg_key.js";
+import { segKey, shortMixWarningS, ebmlHeaderOffsets, EBML_MAGIC, filterUsableSegs, mixWorseThanInput, pickBestDecoded, silentOutputReason, pickFallbackSeg } from "../src/seg_key.js";
 
 const U = "https://corp.vip/w/my/join";
 
@@ -149,4 +149,67 @@ test("fixed poluchaet bonus slack: syroye 100 vs fixed 99 — beretsya fixed", (
 test("fixed proigryayet s deficitom boleye slack — beretsya syroye", () => {
   const w = pickBestDecoded([{ p: "raw", decodedS: 200 }, { p: "ffx", decodedS: 139.9, fixed: true }]);
   assert.equal(w.p, "raw");
+});
+
+// --- silentOutputReason: «čitаemaja tišina» itoga (regressiya job 24) ---
+
+test("itiaj dlyankoj file is 3.7 kbps CNG, long duration — tiшина", () => {
+  // 1.6 MB itog pri 58 min ≈ 4.6 B/s — CNG-tishina pri shtatnom 8000 B/s
+  assert.match(silentOutputReason(1_607_114, 3522, 39_979_779), /тишина/);
+});
+
+test("normal'nyy itog 64 kbps (8000 B/s) s pokrytiem — ne tišina", () => {
+  assert.equal(silentOutputReason(8000 * 3500, 3500, 8000 * 3500), null);
+});
+
+test("itog mal po bajtam otnositel'no syryh vkladov — podozrenie", () => {
+  assert.match(silentOutputReason(100_000, 3500, 20_000_000), /сырых|тишина/);
+});
+
+test("itog mal po bajtam pri normal'nom bitrate — podozrenie po pokrytiyu", () => {
+  // 200 sek normal'nogo audio (8000 B/s) no syryh vkladov 20 MB: itog 1.6 MB
+  // < 20% ot 20 MB, bitrate v norme — lovitsya imenno pokrytiem
+  assert.match(silentOutputReason(1_600_000, 200, 20_000_000), /сырых/);
+});
+
+test("korotkiy itog (< minLongS) proveryku po bitrate ne lovitsya", () => {
+  assert.equal(silentOutputReason(3000, 30, 3000), null);
+});
+
+test("malaya summa syryh (<1 MB) — pokrytie ne proveryaetsya", () => {
+  assert.equal(silentOutputReason(100_000, 15, 500_000), null);
+});
+
+test("pustoy/nil itog — podozrenie", () => {
+  assert.match(silentOutputReason(0, 100, 5_000_000), /пуст/);
+  assert.match(silentOutputReason(null, 100, 5_000_000), /пуст/);
+});
+
+// --- pickFallbackSeg: donor pri umerchem mikse (regressiya job 24) ---
+
+test("mолchal'nyy CNG 3522 s protив 3480 s real'nogo audio — berem po bajtam", () => {
+  const win = pickFallbackSeg([
+    { s: "silence", decodedS: 3522, bytes: 1_607_114 },   // CNG ~4 B/s
+    { s: "real", decodedS: 3480, bytes: 28_000_000 },     // ~8000 B/s
+  ]);
+  assert.equal(win.s, "real");
+});
+
+test("raznica dekada > slack — beremsya dlinneyshiy, bajty ne reshayut", () => {
+  const win = pickFallbackSeg([
+    { s: "long", decodedS: 3522, bytes: 100_000 },
+    { s: "short-fat", decodedS: 100, bytes: 30_000_000 },
+  ]);
+  assert.equal(win.s, "long");
+});
+
+test("odin fragment — on i est' donor", () => {
+  const win = pickFallbackSeg([{ s: "only", decodedS: 10, bytes: 5000 }]);
+  assert.equal(win.s, "only");
+});
+
+test("nichego ne chitaetsya / pustoy vhod — null", () => {
+  assert.equal(pickFallbackSeg([{ s: "a", decodedS: 0, bytes: 10 }, { s: "b", bytes: 999 }]), null);
+  assert.equal(pickFallbackSeg([]), null);
+  assert.equal(pickFallbackSeg(null), null);
 });

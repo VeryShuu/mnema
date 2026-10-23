@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { shortMixWarningS, filterUsableSegs, ebmlHeaderOffsets, mixWorseThanInput, pickBestDecoded, MIN_SEGMENT_BYTES } from "./seg_key.js";
+import { shortMixWarningS, filterUsableSegs, ebmlHeaderOffsets, mixWorseThanInput, pickBestDecoded, MIN_SEGMENT_BYTES, silentOutputReason, pickFallbackSeg } from "./seg_key.js";
 import { decodedAudioSeconds, reencodeWebm } from "./webm_fix.js";
 import { parseRawSegName } from "./record_guard.js";
 
@@ -76,6 +76,33 @@ export async function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, e
         await mixSegments(inputs, base, tmpMix);
       } catch (e2) {
         onEvent(ERROR, `микс упал (${String(e2.message).slice(0, 120)}) — проверяю фрагменты`);
+        // Odin neprochitannyy fragment ubivaet vsyu tsepkhu amix (job 17).
+        // Lechim kazhdyy neprochitannyy reenkodom ignore_err, nelechimye
+        // isklyuchaem i povtoryaem mikš odin raz.
+        const fixed = [];
+        for (const s of inputs) {
+          if (await decodedAudioSeconds(s.p) > 0) { fixed.push(s); continue; }
+          const fx = `${s.p}.fix.webm`;
+          if (await reencodeWebm(s.p, fx)) fixed.push({ ...s, p: fx, sanitized: true });
+          else onEvent(ERROR, `фрагмент ${path.basename(s.p)} не читается и не лечится — исключаю из микса`);
+        }
+        try {
+          if (fixed.length === 1 && fixed[0].p !== inputs[0].p) {
+            onEvent(ERROR, "повторный микс: прочитан только один фрагмент");
+            fs.copyFileSync(fixed[0].p, tmpMix);
+          } else if (fixed.length > 1) {
+            onEvent(ERROR, `повторный микс из ${fixed.length} прочитанных фрагментов`);
+            await mixSegments(fixed, base, tmpMix);
+          } else if (fixed.length === 1) {
+            fs.copyFileSync(fixed[0].p, tmpMix);
+          }
+        } catch (e3) {
+          onEvent(ERROR, `повторный микс тоже упал (${String(e3.message).slice(0, 120)})`);
+        } finally {
+          for (const f of fixed) {
+            if (f.sanitized) { try { fs.rmSync(f.p, { force: true }); } catch { /* */ } }
+          }
+        }
       }
     }
     // Validaciya rezul'tata POLNYM DEKODOM: amix mozhet upast' na povrezhdennoy
@@ -86,11 +113,17 @@ export async function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, e
     let useFallback = false, bestSeg = null;
     const mixDec = fs.existsSync(tmpMix) ? await decodedAudioSeconds(tmpMix) : 0;
     if (inputs.length > 1) {
+      // job 24: molchal'nyy CNG-segment (3.7 kbps) dekodiruetsya celykom i
+      // po odnim sekundam pobezhdayal 38 MB real'nogo audio v podozritel'nyh
+      // fragmentah. Sredi primerno ravnыh po dekovu predpochitaem po bajtam.
+      const items = [];
       let bestDec = 0;
       for (const s of inputs) {
         const d = await decodedAudioSeconds(s.p);
-        if (d > bestDec) { bestDec = d; bestSeg = s; }
+        items.push({ s, decodedS: d, bytes: s.bytes });
+        if (d > bestDec) bestDec = d;
       }
+      bestSeg = (pickFallbackSeg(items) || {}).s || null;
       useFallback = bestSeg !== null && mixWorseThanInput(mixDec, bestDec);
       if (useFallback)
         onEvent(ERROR, `микс прочитался на ${Math.round(mixDec)} c из ${Math.round(bestDec)} c `
@@ -135,16 +168,31 @@ export async function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, e
   try {
     durationS = await probeDuration(webmPath);
   } catch { durationS = null; }
+  let suspect = false;
+  // sanity: итог — «читаемая тишина»? job 24: после crash-a fallback взял
+  // molchal'nyy no chitaemyy segment (3522 s CNG), a 38 MB real'nogo audio v
+  // neschitaemyh fragmentah byly udaleny kak «otrabotannyye». Proverka po
+  // bajtam/bitreytu itoga otnositel'no syryh vkladov — edinstvennaya, kotoraya
+  // lovit eto esli wall-clock i probe v poryadke.
+  const totalInputsBytes = (inputs || []).reduce((a, s) => a + (s.bytes || 0), 0);
+  const outSize = fs.existsSync(webmPath) ? fs.statSync(webmPath).size : 0;
+  const outDecodedS = durationS || await decodedAudioSeconds(webmPath);
+  const silentReason = silentOutputReason(outSize, outDecodedS || 0, totalInputsBytes);
+  if (silentReason) {
+    suspect = true;
+    onEvent(ERROR, `запись под вопросом: ${silentReason} при ${totalInputsBytes} б сырых сегментов `
+      + `— сырые сегменты сохранены, нужна ручная пересборка`);
+  }
   // sanity: микс заметно короче wall-clock записи — потерянный хвост (job
   // 16) — loudим в events operatora I SOHRANYAEM syryye segmenty: bez nih
   // vstrecha nevosstanovimaya.
-  let suspect = false;
-  if (state.joinedAt) {
-    const warnS = shortMixWarningS(durationS, (Date.now() - state.joinedAt) / 1000);
+  const wallS = state.joinedAt ? (Date.now() - state.joinedAt) / 1000 : state.wallClockEstimateS;
+  if (Number.isFinite(wallS)) {
+    const warnS = shortMixWarningS(durationS, wallS);
     if (warnS !== null) {
       suspect = true;
       onEvent(ERROR, `длительность записи ${Math.round(durationS)} c заметно короче встречи `
-        + `(${Math.round((Date.now() - state.joinedAt) / 1000)} c) — часть аудио потеряна при склейке`);
+        + `(${Math.round(wallS)} c) — часть аудио потеряна при склейке`);
     }
   }
   // 2) Sverka: browser (nakopitel'nyy __mnemaTotal po vsem dokumentam) vs zapisannoye
@@ -248,7 +296,7 @@ export function rawSegsFromDisk(jobDir) {
     let st;
     try { st = fs.statSync(p); } catch { continue; }
     if (!st.isFile()) continue;
-    segs.push({ p, bytes: st.size, n: m.n, epochMs: 0 });
+    segs.push({ p, bytes: st.size, n: m.n, epochMs: 0, mtimeMs: st.mtimeMs });
   }
   segs.sort((a, b) => a.n - b.n);
   let acc = 0;
@@ -285,7 +333,13 @@ export async function salvageFromDisk(jobId, cfg, onEvent = () => {}) {
   if (!segs.some((s) => s.bytes >= MIN_SEGMENT_BYTES)) {
     return { ok: false, fail_reason: "no_raw_segments" };
   }
+  // Pri crash-e joinedAt/browserTotal teryayutsya i obe proveryki poter (wall-clock
+  // i bajty brauzera) mолчат. Vosstanavlivаем orientir po mtime syryh segmentov:
+  // razbros mtime ≈ dlitelnost' zapisi na diske.
+  const mt = segs.map((s) => s.mtimeMs).filter((t) => Number.isFinite(t));
   const state = { joinedAt: null, browserTotal: {} };
+  if (mt.length > 1 && Math.max(...mt) > Math.min(...mt))
+    state.wallClockEstimateS = (Math.max(...mt) - Math.min(...mt)) / 1000;
   try {
     const res = await finalize(jobId, segs, webmPath, wavPath, mp3Path,
       state, { reason: "salvaged" }, onEvent);

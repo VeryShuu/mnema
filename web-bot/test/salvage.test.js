@@ -86,3 +86,34 @@ test("salvage: pusty katalog job — no_raw_segments", async () => {
   assert.equal(res.ok, false);
   assert.equal(res.fail_reason, "no_raw_segments");
 });
+
+test("salvage: itog-tishina pri bol'shih syryh fragmentah — suspect, syryye SOHRANYAYUTSYA (regressiya job 24)", { skip: !haveFfmpeg() }, async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "salv-"));
+  const jobDir = path.join(d, "jobs", "24");
+  fs.mkdirSync(jobDir, { recursive: true });
+  // molchal'nyy chitaemyy segmet + big neschitaemyy fragment s real'nym audio
+  streamedWebm(path.join(jobDir, "raw.0_w1.webm"), 2);
+  fs.writeFileSync(path.join(jobDir, "raw.1_w1.webm"), Buffer.alloc(2_000_000, 0x41));
+  const events = [];
+  const res = await salvageFromDisk(24, { dataDir: d }, (e, det) => events.push([e, det]));
+  assert.equal(res.ok, true);
+  assert.ok(fs.existsSync(path.join(jobDir, "raw.webm")), "final'nyy webm na meste");
+  assert.ok(fs.existsSync(path.join(jobDir, "raw.1_w1.webm")),
+    "podozritel'nyy syroys segment ne udalen");
+  assert.ok(fs.existsSync(path.join(jobDir, "raw.0_w1.webm")),
+    "molchal'nyy syroys segment ne udalen");
+  assert.ok(events.some(([e, det]) => e === "error" && /под вопросом/.test(det)),
+    `events: ${JSON.stringify(events)}`);
+});
+
+test("salvage: dva chitaemyh segmenta — mikš zhiv, syryye udalyayutsya", { skip: !haveFfmpeg() }, async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "salv-"));
+  const jobDir = path.join(d, "jobs", "43");
+  fs.mkdirSync(jobDir, { recursive: true });
+  streamedWebm(path.join(jobDir, "raw.0_w1.webm"), 2);
+  streamedWebm(path.join(jobDir, "raw.1_w1.webm"), 2);
+  const res = await salvageFromDisk(43, { dataDir: d });
+  assert.equal(res.ok, true);
+  assert.ok(fs.existsSync(path.join(jobDir, "raw.webm")));
+  assert.ok(!fs.existsSync(path.join(jobDir, "raw.0_w1.webm")), "syryye posle uspeshnogo miksa udaleny");
+});

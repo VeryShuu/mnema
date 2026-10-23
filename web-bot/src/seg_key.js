@@ -56,6 +56,46 @@ export function pickBestDecoded(cands, slackS = 60) {
   return best;
 }
 
+// Diagnostika «chitaemoy pustoty» (job 24): posle crash-a web-bot single
+// molchal'nyy segment (polnost'yu dekodiruetsya, Opus CNG ~3.7 kbps) pobedil
+// neschitaemye fragmenty s 38 MB real'nogo audio — output tiishina, syryye
+// udaleny. Proveryaem itog: slishkom nizkiy bitrate itoga (≈CNG-tishina pri
+// normal'nom 64k ≈ 8000 B/s) ILI malyy pokrytie bajtov syryh vkladov.
+// Vozvrat: prichina (stroka) yesli itog podozritel'nyy, иначе null.
+export function silentOutputReason(sizeBytes, decodedS, totalInputsBytes,
+  { rateMinBps = 600, covMin = 0.2, minLongS = 120, minTotalBytes = 1_000_000 } = {}) {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) return "итоговый файл пуст";
+  if (Number.isFinite(decodedS) && decodedS >= minLongS) {
+    const bps = sizeBytes / decodedS;
+    if (bps < rateMinBps)
+      return `битрейт итога ~${(bps * 8 / 1000).toFixed(1)} kbps — тишина (CNG), не запись`;
+  }
+  if (Number.isFinite(totalInputsBytes) && totalInputsBytes >= minTotalBytes
+    && sizeBytes < totalInputsBytes * covMin)
+    return `итог ${sizeBytes} б из ${totalInputsBytes} б сырых сегментов`;
+  return null;
+}
+
+// Vybor fragmenta-donora pri umerchem mikse (job 24): ran'she bralsya prosto
+// maksimal'nyy po polnomu dekovu — i molchal'nyy CNG-segment (~4 B/s) pobezhdal
+// 38 MB real'nogo audio, dekoder kotoryy umer na shkve. Sredi fragmentov s
+// primerno ravnym dekovom (v predelah slackS) predpochitaemsya tot, v kutom
+// bolshe bajt: tiishina CNG zanimaet v desyatki raz menshe mesta.
+// items: [{ s, decodedS }] (decodedS<=0 ne chiotsya). Vozvrat item ili null.
+export function pickFallbackSeg(items, slackS = 60) {
+  const ok = (items || []).filter((it) => it && Number.isFinite(it.decodedS) && it.decodedS > 0);
+  if (!ok.length) return null;
+  let longest = null;
+  for (const it of ok) if (!longest || it.decodedS > longest.decodedS) longest = it;
+  let win = longest;
+  for (const it of ok) {
+    if (it === longest) continue;
+    if (longest.decodedS - it.decodedS <= slackS && (it.bytes || 0) > (win.bytes || 0) * 1.2)
+      win = it;
+  }
+  return win;
+}
+
 // Offsety vseh EBML-zagolovkov v bufer. >1 = v odnom fayle skleeny
 // neskolko MediaRecorder-potokov (shva bez shkly, dekor teryayet chtenie
 // za pervym potokom — pattern job 16). Tajly takogo fayla rezhemsya po
