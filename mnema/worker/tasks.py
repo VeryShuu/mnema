@@ -574,6 +574,8 @@ def _run_speaker(job_id: int) -> None:
     with get_session() as s:
         s.add(SessionEvent(job_id=job_id, event="voiceprint_start"))
         s.commit()
+    centroids: dict[str, list[float] | None] = {}
+    locked_labels: set[str] = set()
     with get_session() as s:
         job = s.get(Job, job_id)
         turns = job.diar_turns if job is not None else None
@@ -600,7 +602,10 @@ def _run_speaker(job_id: int) -> None:
                                and existing.answered_by not in (None, "voiceprint"))
             clean = [x for x in cl if x.speaker_source != "multi_voice"]
             embedding = _cluster_embedding(wav, clean, turns=turns)
+            centroids[label] = embedding
             verdict, profile, sim = match_cluster(embedding) if embedding else ("unresolved", None, 0.0)
+            if operator_locked:
+                locked_labels.add(label)
             for seg in cl:
                 if operator_locked:
                     continue  # otvet cheloveka vertnee lyubogo novogo verdicta
@@ -649,11 +654,233 @@ def _run_speaker(job_id: int) -> None:
             s.commit()
     from ..core.db import get_session as _gs
     with _gs() as s:
+        try:
+            n = _phrase_resort(s, job_id, wav, list(s.scalars(select(Segment).where(
+                Segment.job_id == job_id).order_by(Segment.t_start)).all()),
+                centroids, locked_labels)
+            if n:
+                s.add(SessionEvent(job_id=job_id, event="phrase_resort",
+                                   detail=f"фраз перенесено в другие кластеры: {n}"))
+                # klaster bez fragmentov (vse frazy utohli) ne dolzhen vechno
+                # derzhat' job v awaiting_review
+                _supersede_empty_reviews(s, job_id)
+        except Exception as e:  # noqa: BLE001 — resort ne lonit speaker-etap
+            log.warning("phrase_resort failed (%r) — skip", e)
         s.add(SessionEvent(job_id=job_id, event="voiceprint_done"))
         s.commit()
 
 
-EMBED_MIN_S = 1.5          # fragmenta korotse — v embedding ne idut
+def _supersede_empty_reviews(s, job_id: int) -> int:
+    """Zakryvaet pending review-request klasterey bez segmentov (posle resort).
+
+    Tylko sinteticskie podklastera (metka s defizom: -x<id>/< -p<id>):
+    obychnye pyannote-metki ne dolzny ischezat' bez operatora."""
+    n = 0
+    for rv in s.scalars(select(ReviewRequest).where(
+            ReviewRequest.job_id == job_id,
+            ReviewRequest.status == "pending")).all():
+        if not rv.cluster_label or "-" not in rv.cluster_label:
+            continue
+        left = s.scalars(select(Segment.id).where(
+            Segment.job_id == job_id,
+            Segment.speaker_id == rv.cluster_label)).first()
+        if left is None:
+            rv.status = "superseded"
+            rv.answered_by = "voiceprint"
+            rv.answered_ts = dt.datetime.now(dt.timezone.utc)
+            n += 1
+    return n
+
+
+def _phrase_verify_min_s() -> float:
+    try:
+        return float(os.environ.get("PHRASE_VERIFY_MIN_S", "1.0") or 1.0)
+    except ValueError:
+        return 1.0
+
+
+def _phrase_keep_cos() -> float:
+    try:
+        return float(os.environ.get("PHRASE_KEEP_COS", "0.30") or 0.30)
+    except ValueError:
+        return 0.30
+
+
+def _phrase_match_cos() -> float:
+    try:
+        return float(os.environ.get("PHRASE_MATCH_COS", "0.45") or 0.45)
+    except ValueError:
+        return 0.45
+
+
+def _phrase_resort(s, job_id: int, wav: Path, segs: list,
+                   centroids: dict, locked: set[str]) -> int:
+    """A: frazy (chasti asr_json), zvuchashchie ne kak govoryashchiy klastera,
+    perenodyatsya v sobstvennyy/podoshedshiy klaster.
+
+    Pyannote proteaet korotkie vstavki (1-2 c) vnlitri okna 10 s i cladet vsyu
+    VAD-stroku na odin klaster (job 22: '... Dobrogo dnya' vtorogo cheloveka
+    pod imenem dokladchika). Timeshampy ASR-chastey dayut vozmozhnost'
+    'doslushat' kazhduyu frazu otdel'no: emgedding frazy i sravnenie s
+    centrodamı vseh klasterev. Kosterly bez vstroennyh emedgeydzhov:
+    no-op pri otsutstvii pyannote (compute_embedding_for_file -> None).
+
+    Vozvraschaet chiso sozdannykh dopolnitel'nykh strok. Zamochennye
+    operatorom klastery (locked) i multi_voice ne trogaem."""
+    if os.environ.get("PHRASE_VERIFY", "1").strip() == "0":
+        return 0
+    import tempfile
+    from ..core.speaker import cosine, match_cluster, compute_embedding_for_file
+    from ..core.vad import extract_wav_slice
+
+    keep, match_min = _phrase_keep_cos(), _phrase_match_cos()
+    min_s = _phrase_verify_min_s()
+    known_labels = set(centroids)
+
+    def phrase_emb(t0: float, t1: float):
+        with tempfile.NamedTemporaryFile(suffix=".wav") as tf:
+            extract_wav_slice(wav, t0, t1, Path(tf.name))
+            return compute_embedding_for_file(Path(tf.name))
+
+    def classify(part_emb: list[float], base: str) -> str | None:
+        """Klaster frazy: svoy pri cs>=keep; inache — podoshedshiy chuzhoy
+        (cs>=match_min i s otryvom ot svoego); None esli ni na kogo ne pohozha."""
+        cs = cosine(part_emb, centroids[base])
+        if cs >= keep:
+            return base
+        best, best_cs = None, cs
+        for lbl, cen in centroids.items():
+            if lbl == base or not cen:
+                continue
+            sim = cosine(part_emb, cen)
+            if sim >= match_min and sim > best_cs + 0.10:
+                best, best_cs = lbl, sim
+        return best
+
+    def name_for(label: str) -> tuple[str | None, str]:
+        """Imya klastera: uzhe prislvoennoe (matsching/main cikl/otvet operatora),
+        inache — matsching centroda novogo klastera."""
+        if label in name_map:
+            return name_map[label]
+        if centroids.get(label):
+            verdict, profile, _sim = match_cluster(centroids[label])
+            if profile and verdict in ("auto", "hint"):
+                return profile.employee_name, "voiceprint"
+        return None, "unresolved"
+
+    def ensure_review(label: str) -> None:
+        """Review-request dla novogo klastera, kak dlya nraspoznannyh golosov;
+        klastery iz main cikla svoi uzhe poluchili."""
+        if label in known_labels:
+            return
+        dup = s.scalars(select(ReviewRequest).where(
+            ReviewRequest.job_id == job_id,
+            ReviewRequest.cluster_label == label)).first()
+        if dup is not None:
+            return
+        profile, sim, auto = None, 0.0, False
+        if centroids.get(label):
+            verdict, profile, sim = match_cluster(centroids[label])
+            auto = verdict == "auto" and profile is not None
+        s.add(ReviewRequest(
+            job_id=job_id, cluster_label=label,
+            candidate_profile_id=(profile.id if profile else None),
+            similarity=sim,
+            status="confirmed" if auto else "pending",
+            answered_by="voiceprint" if auto else None,
+            answered_ts=dt.datetime.now(dt.timezone.utc) if auto else None))
+
+    def join_parts(grp: list[dict]) -> str:
+        return " ".join((p.get("t") or "").strip() for p in grp).strip()
+
+    name_map: dict[str, tuple[str | None, str]] = {}
+    for seg in segs:
+        lbl = seg.diar_label or seg.speaker_id
+        if lbl and seg.speaker_name and lbl not in name_map:
+            name_map[lbl] = (seg.speaker_name,
+                             seg.speaker_source or "voiceprint")
+
+    created = 0
+    for seg in segs:
+        if seg.excluded or seg.speaker_source == "multi_voice":
+            continue
+        base = seg.diar_label or seg.speaker_id
+        if not base or base in locked or not centroids.get(base):
+            continue
+        parts = [p for p in (seg.asr_json or [])
+                 if (p.get("t") or "").strip()
+                 and p.get("s") is not None and p.get("e") is not None]
+        if len(parts) < 2:
+            continue
+        emb_cache = {}
+        for p in parts:
+            if float(p["e"]) - float(p["s"]) >= min_s:
+                emb_cache[id(p)] = phrase_emb(float(p["s"]), float(p["e"]))
+        labels: list[str] = []
+        for p in parts:
+            e = emb_cache.get(id(p))
+            if e is None:
+                labels.append(base)  # ochen' korotkuyu frazu ne doslushaem
+                continue
+            labels.append(classify(e, base) or f"{base}-p{seg.id}")
+        if len(set(labels)) <= 1:
+            continue
+        grouped: list[tuple[str, list[dict]]] = []
+        cur_lbl, cur = None, []
+        for p, lbl in zip(parts, labels):
+            if cur_lbl is None:
+                cur_lbl = lbl
+            if lbl == cur_lbl:
+                cur.append(p)
+            else:
+                grouped.append((cur_lbl, cur))
+                cur_lbl, cur = lbl, [p]
+        if cur:
+            grouped.append((cur_lbl, cur))
+        for lbl, grp in grouped:
+            if lbl not in centroids:
+                vecs = [emb_cache[id(p)] for p in grp if emb_cache.get(id(p))]
+                if vecs:
+                    centroids[lbl] = [sum(v[i] for v in vecs) / len(vecs)
+                                      for i in range(len(vecs[0]))]
+        # segment sohanyaet pervuyu gruppirovku (nachalo stroke), ostal'nyye
+        # idut novymi segmenty; pri smene golosa v nachale i segment menyaet
+        # klaster na pervoy gruppy
+        anchor_lbl, anchor_grp = grouped[0]
+        rest = grouped[1:]
+        if anchor_lbl != base:
+            name, source = name_for(anchor_lbl)
+            seg.speaker_id = anchor_lbl
+            seg.diar_label = anchor_lbl
+            seg.speaker_name = name
+            seg.speaker_source = source
+            seg.needs_review = (source != "voiceprint")
+            ensure_review(anchor_lbl)
+        seg.text = join_parts(anchor_grp)
+        seg.asr_json = anchor_grp
+        seg.t_start = float(anchor_grp[0]["s"])
+        seg.t_end = float(anchor_grp[-1]["e"])
+        for lbl, grp in rest:
+            name, source = name_for(lbl)
+            s.add(Segment(job_id=job_id, speaker_id=lbl, diar_label=lbl,
+                          speaker_name=name, speaker_source=source,
+                          needs_review=(source != "voiceprint"),
+                          t_start=float(grp[0]["s"]), t_end=float(grp[-1]["e"]),
+                          text=join_parts(grp),
+                          lang=seg.lang, asr_json=grp))
+            created += 1
+            ensure_review(lbl)
+    return created
+
+
+def _embed_min_s() -> float:
+    """EMBED_MIN_S: minimal'naya dlitel'nost' fragmenta dlya embeddinga (s)."""
+    try:
+        return float(os.environ.get("EMBED_MIN_S", "1.5") or 1.5)
+    except ValueError:
+        return 1.5
+
+
 EMBED_MAX_SEGS = 10        # luchshih fragmentov na klaster (kachestvo > skorost')
 
 
@@ -683,7 +910,7 @@ def _cluster_embedding(wav: Path, segs: list, turns: list | None = None
                 t0, t1 = clean
             else:
                 continue  # na lozhenie / metka ne yasna — v noysnye etalony ne idyot
-        if t1 - t0 >= EMBED_MIN_S:
+        if t1 - t0 >= _embed_min_s():
             cands.append((t1 - t0, t0, t1))
     cands.sort(reverse=True)
     cands = cands[:EMBED_MAX_SEGS]

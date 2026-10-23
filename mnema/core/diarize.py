@@ -103,6 +103,21 @@ def _get_pyannote():
             pipe.embedding_batch_size = batch
         except Exception:  # noqa: BLE001
             pass
+        step = _seg_step()
+        if step:
+            # chunk segmentation-3.0 фиксирован (10 с), но шаг скольжения можно
+            # уменьшить (Inference.step читается в slide() в момент прогона):
+            # мельче смена говорящего ловится точнее ценой ~dur/step чанков.
+            try:
+                dur = getattr(pipe._segmentation, "duration", 0.0) or 0.0
+                if 0 < step < dur:
+                    pipe._segmentation.step = step
+                    log.info("pyannote: segmentation step %.2f s (was default)", step)
+                else:
+                    log.warning("DIAR_SEG_STEP=%s vnediapazona (0; %.1f) — ignoruetsya",
+                                step, dur)
+            except Exception as e:  # noqa: BLE001
+                log.warning("DIAR_SEG_STEP ne primeneno: %r", e)
         if use_gpu:
             device = torch.device(os.environ.get("ASR_DEVICE", "cuda:0"))
             pipe.to(device)
@@ -117,6 +132,15 @@ def _get_pyannote():
         _pipe = False
         _failed_ts = time.monotonic()
         return None
+
+
+def _seg_step() -> float:
+    """DIAR_SEG_STEP — shag slizheniya segmentation (s); 0/pusto = defolt (1.0 s).
+    Men'she — chuvstvitel'nee k korotkim smenam golosa, bolshe vychisleniy."""
+    try:
+        return max(0.0, float(os.environ.get("DIAR_SEG_STEP", "0") or 0))
+    except ValueError:
+        return 0.0
 
 
 def _fp16_enabled() -> bool:
