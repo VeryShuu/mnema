@@ -713,6 +713,34 @@ def _phrase_match_cos() -> float:
         return 0.45
 
 
+def _apply_turn_edits(turns: list, edits: list[tuple[float, float, str, str]]) -> list:
+    """Frazy, perenesenyye resortom, otpechatayutsya v turns: v okne [w0,w1)
+    chast' turna s metkoy from_lbl zamenyaetsya na new_lbl, ostal'nyye turny i
+    chuzhiye (ne from_lbl) pereksrytiya ne trogayutsya. Vozvrat novyy spiso
+    [t0, t1, label] bez nul-evyh kuschkov."""
+    out: list = []
+    for t in turns or []:
+        try:
+            pieces = [(float(t[0]), float(t[1]), t[2])]
+        except (TypeError, ValueError, IndexError):
+            out.append(t if isinstance(t, list) else list(t))
+            continue
+        for w0, w1, new_lbl, from_lbl in edits:
+            nxt: list[tuple[float, float, str]] = []
+            for a, b, l in pieces:
+                if l != from_lbl or b <= w0 or a >= w1:
+                    nxt.append((a, b, l))
+                    continue
+                if a < w0:
+                    nxt.append((a, w0, l))
+                nxt.append((max(a, w0), min(b, w1), new_lbl))
+                if b > w1:
+                    nxt.append((w1, b, l))
+            pieces = nxt
+        out.extend([[a, b, l] for a, b, l in pieces if b - a > 1e-9])
+    return out
+
+
 def _phrase_resort(s, job_id: int, wav: Path, segs: list,
                    centroids: dict, locked: set[str]) -> int:
     """A: frazy (chasti asr_json), zvuchashchie ne kak govoryashchiy klastera,
@@ -801,6 +829,7 @@ def _phrase_resort(s, job_id: int, wav: Path, segs: list,
                              seg.speaker_source or "voiceprint")
 
     created = 0
+    turn_edits: list[tuple[float, float, str, str]] = []
     for seg in segs:
         if seg.excluded or seg.speaker_source == "multi_voice":
             continue
@@ -812,37 +841,46 @@ def _phrase_resort(s, job_id: int, wav: Path, segs: list,
                  and p.get("s") is not None and p.get("e") is not None]
         if len(parts) < 2:
             continue
-        emb_cache = {}
-        for p in parts:
+        # klyuch — indeks chasti, ne id(p): CPython mojet перeисpol'zovat'
+        # address osvobodivshihsya dictov v drukh strokakh (hrupkiy kontrakt)
+        emb_cache: dict[int, list[float] | None] = {}
+        for i, p in enumerate(parts):
             if float(p["e"]) - float(p["s"]) >= min_s:
-                emb_cache[id(p)] = phrase_emb(float(p["s"]), float(p["e"]))
+                emb_cache[i] = phrase_emb(float(p["s"]), float(p["e"]))
         labels: list[str] = []
-        for p in parts:
-            e = emb_cache.get(id(p))
+        for i, p in enumerate(parts):
+            e = emb_cache.get(i)
             if e is None:
                 labels.append(base)  # ochen' korotkuyu frazu ne doslushaem
                 continue
             labels.append(classify(e, base) or f"{base}-p{seg.id}")
         if len(set(labels)) <= 1:
             continue
-        grouped: list[tuple[str, list[dict]]] = []
-        cur_lbl, cur = None, []
-        for p, lbl in zip(parts, labels):
+        grouped: list[tuple[str, list[tuple[int, dict]]]] = []
+        cur_lbl = None
+        cur: list[tuple[int, dict]] = []
+        for i, (p, lbl) in enumerate(zip(parts, labels)):
             if cur_lbl is None:
                 cur_lbl = lbl
             if lbl == cur_lbl:
-                cur.append(p)
+                cur.append((i, p))
             else:
                 grouped.append((cur_lbl, cur))
-                cur_lbl, cur = lbl, [p]
+                cur_lbl, cur = lbl, [(i, p)]
         if cur:
             grouped.append((cur_lbl, cur))
+        # perenesenyye frazy: okno v turns, gde base-klaster zamenyaetsya
+        # novoy metkoy — inache expand_segments pri rendere razrezebyu stroku
+        # po starey diagramme i vyyvod rassoglasuetsya s resortom
+        for i, (p, lbl) in enumerate(zip(parts, labels)):
+            if lbl != base and emb_cache.get(i):
+                turn_edits.append((float(p["s"]), float(p["e"]), lbl, base))
         for lbl, grp in grouped:
             if lbl not in centroids:
-                vecs = [emb_cache[id(p)] for p in grp if emb_cache.get(id(p))]
+                vecs = [emb_cache[i] for i, _p in grp if emb_cache.get(i)]
                 if vecs:
-                    centroids[lbl] = [sum(v[i] for v in vecs) / len(vecs)
-                                      for i in range(len(vecs[0]))]
+                    centroids[lbl] = [sum(v[k] for v in vecs) / len(vecs)
+                                      for k in range(len(vecs[0]))]
         # segment sohanyaet pervuyu gruppirovku (nachalo stroke), ostal'nyye
         # idut novymi segmenty; pri smene golosa v nachale i segment menyaet
         # klaster na pervoy gruppy
@@ -856,20 +894,30 @@ def _phrase_resort(s, job_id: int, wav: Path, segs: list,
             seg.speaker_source = source
             seg.needs_review = (source != "voiceprint")
             ensure_review(anchor_lbl)
-        seg.text = join_parts(anchor_grp)
-        seg.asr_json = anchor_grp
-        seg.t_start = float(anchor_grp[0]["s"])
-        seg.t_end = float(anchor_grp[-1]["e"])
+        seg.text = join_parts([p for _i, p in anchor_grp])
+        seg.asr_json = [p for _i, p in anchor_grp]
+        seg.t_start = float(anchor_grp[0][1]["s"])
+        seg.t_end = float(anchor_grp[-1][1]["e"])
         for lbl, grp in rest:
             name, source = name_for(lbl)
             s.add(Segment(job_id=job_id, speaker_id=lbl, diar_label=lbl,
                           speaker_name=name, speaker_source=source,
                           needs_review=(source != "voiceprint"),
-                          t_start=float(grp[0]["s"]), t_end=float(grp[-1]["e"]),
-                          text=join_parts(grp),
-                          lang=seg.lang, asr_json=grp))
+                          t_start=float(grp[0][1]["s"]),
+                          t_end=float(grp[-1][1]["e"]),
+                          text=join_parts([p for _i, p in grp]),
+                          lang=seg.lang, engine=seg.engine,
+                          confidence=seg.confidence,
+                          asr_json=[p for _i, p in grp]))
             created += 1
             ensure_review(lbl)
+    if turn_edits:
+        # turns — obstvennost' job (shkaly vsey zapisi): pechatayem perenosy,
+        # chtoby stenogramma/protokol (expand_segments) reshli po utochnennoy
+        # diagramme, a ne po ishodnoy
+        job = s.get(Job, job_id)
+        if job is not None and job.diar_turns:
+            job.diar_turns = _apply_turn_edits(job.diar_turns, turn_edits)
     return created
 
 

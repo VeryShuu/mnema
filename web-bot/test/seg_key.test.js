@@ -2,7 +2,7 @@
 // Zapusk: node --test web-bot/test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { segKey, shortMixWarningS, ebmlHeaderOffsets, EBML_MAGIC, filterUsableSegs, mixWorseThanInput, pickBestDecoded, silentOutputReason, pickFallbackSeg } from "../src/seg_key.js";
+import { segKey, shortMixWarningS, ebmlHeaderOffsets, EBML_MAGIC, filterUsableSegs, mixWorseThanInput, pickBestDecoded, silentOutputReason, pickFallbackSeg, coverageBaseBytes, currentRunSegs } from "../src/seg_key.js";
 
 const U = "https://corp.vip/w/my/join";
 
@@ -212,4 +212,67 @@ test("nichego ne chitaetsya / pustoy vhod — null", () => {
   assert.equal(pickFallbackSeg([{ s: "a", decodedS: 0, bytes: 10 }, { s: "b", bytes: 999 }]), null);
   assert.equal(pickFallbackSeg([]), null);
   assert.equal(pickFallbackSeg(null), null);
+});
+
+// --- coverageBaseBytes: znamenatel pokrytiya po paralel'nym oknam (audit 28ac08e) ---
+
+test("odno okno — znamenatel' raven summe fragmentov", () => {
+  assert.equal(coverageBaseBytes([
+    { p: "/j/raw.0_w1.webm", bytes: 100 },
+    { p: "/j/raw.1_w1.webm", bytes: 250 },
+  ]), 350);
+});
+
+test("dva parallel'nykh okna — max po oknu, ne summa vseh", () => {
+  assert.equal(coverageBaseBytes([
+    { p: "/j/raw.0_w1.webm", bytes: 1000 },
+    { p: "/j/raw.1_w1.webm", bytes: 1000 },
+    { p: "/j/raw.2_w2.webm", bytes: 3000 },   // vetka w2 d'sche
+  ]), 3000);
+});
+
+test("chasti razrezki (partOf `<.p<k>`) — v toche okna i summiruyutsya s nim", () => {
+  assert.equal(coverageBaseBytes([
+    { p: "/j/raw.0_w1.webm.p0.webm", bytes: 400 },
+    { p: "/j/raw.0_w1.webm.p1.webm", bytes: 600 },
+  ]), 1000);
+});
+
+test("imya bez okna (ne raw_*) — otsudel'nyy key, ne teryaetsya", () => {
+  assert.equal(coverageBaseBytes([{ p: "whatever.bin", bytes: 42 }]), 42);
+});
+
+test("pustoy/null vhod — 0", () => {
+  assert.equal(coverageBaseBytes([]), 0);
+  assert.equal(coverageBaseBytes(null), 0);
+});
+
+// --- currentRunSegs: otrezanie starykh leftover-ov (audit 28ac08e) ---
+
+const MIN = 60_000;
+
+test("splot mtime bez razryva — vse segmenty tekushchego protsa", () => {
+  const segs = [0, 1, 2].map((i) => ({ p: `raw.${i}_w1.webm`, mtimeMs: 1000 + i * MIN }));
+  assert.deepEqual(currentRunSegs(segs).map((s, _i) => s.p), segs.map((s) => s.p));
+});
+
+test("staryy leftover (razryv > gap) — otrezaetsya, beretsya posledniy splot", () => {
+  const old = { p: "raw.0_w1.webm", mtimeMs: 0 };                 // dva dnya nazad
+  const now = [1, 2, 3].map((i) => ({ p: `raw.${i}_w1.webm`, mtimeMs: 86400_000 + i * MIN }));
+  const run = currentRunSegs([old, ...now.map((s) => ({ ...s }))]);
+  assert.deepEqual(run.map((s) => s.p), now.map((s) => s.p));
+});
+
+test("dva razryva — tol'ko posledniy (krachnyy) prots", () => {
+  const s1 = { p: "a", mtimeMs: 0 };
+  const s2 = { p: "b", mtimeMs: 86400_000 };
+  const s3 = { p: "c", mtimeMs: 86400_000 + MIN };
+  assert.deepEqual(currentRunSegs([s1, s2, s3]).map((s) => s.p), ["b", "c"]);
+});
+
+test("odin segment / net mtime — bez otrezki; pustoy — []", () => {
+  assert.deepEqual(currentRunSegs([{ p: "x", mtimeMs: 5 }]), [{ p: "x", mtimeMs: 5 }]);
+  assert.deepEqual(currentRunSegs([{ p: "x", mtimeMs: 5 }, { p: "y" }]), [{ p: "x", mtimeMs: 5 }]);
+  assert.deepEqual(currentRunSegs([]), []);
+  assert.deepEqual(currentRunSegs(null), []);
 });

@@ -117,3 +117,23 @@ test("salvage: dva chitaemyh segmenta — mikš zhiv, syryye udalyayutsya", { sk
   assert.ok(fs.existsSync(path.join(jobDir, "raw.webm")));
   assert.ok(!fs.existsSync(path.join(jobDir, "raw.0_w1.webm")), "syryye posle uspeshnogo miksa udaleny");
 });
+
+test("salvage: staryye leftover-y proshlogo protsa ne vklyuchayutsya v sborku (audit 28ac08e)", { skip: !haveFfmpeg() }, async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "salv-"));
+  const jobDir = path.join(d, "jobs", "44");
+  fs.mkdirSync(jobDir, { recursive: true });
+  // leftover suspect-protsa dvukhdnevnoy davnosti (30 c chitaemogo audio)
+  const oldP = path.join(jobDir, "raw.0_w1.webm");
+  streamedWebm(oldP, 30);
+  const OLD = (Date.now() - 2 * 86_400_000) / 1000;
+  fs.utimesSync(oldP, OLD, OLD);
+  // tekushchiy prots: 2 s
+  const fresh = path.join(jobDir, "raw.1_w1.webm");
+  streamedWebm(fresh, 2);
+  const res = await salvageFromDisk(44, { dataDir: d }, () => {});
+  assert.equal(res.ok, true, `fail=${res.fail_reason}`);
+  assert.ok(fs.existsSync(oldP), "staryy leftover ostalsya na diske netronutym");
+  assert.ok(!fs.existsSync(fresh), "syryye tekushchego protsa udaleny posle uspeshnogo miksa");
+  assert.ok(res.duration_s >= 1.5 && res.duration_s < 5,
+    `v miksh tol'ko tekushchiy prots (2 c), a ne 32: ${res.duration_s}`);
+});

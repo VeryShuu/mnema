@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { shortMixWarningS, filterUsableSegs, ebmlHeaderOffsets, mixWorseThanInput, pickBestDecoded, MIN_SEGMENT_BYTES, silentOutputReason, pickFallbackSeg } from "./seg_key.js";
+import { shortMixWarningS, filterUsableSegs, ebmlHeaderOffsets, mixWorseThanInput, pickBestDecoded, MIN_SEGMENT_BYTES, silentOutputReason, pickFallbackSeg, coverageBaseBytes, currentRunSegs } from "./seg_key.js";
 import { decodedAudioSeconds, reencodeWebm } from "./webm_fix.js";
 import { parseRawSegName } from "./record_guard.js";
 
@@ -174,7 +174,11 @@ export async function finalize(jobId, segs, webmPath, wavPath, mp3Path, state, e
   // neschitaemyh fragmentah byly udaleny kak «otrabotannyye». Proverka po
   // bajtam/bitreytu itoga otnositel'no syryh vkladov — edinstvennaya, kotoraya
   // lovit eto esli wall-clock i probe v poryadke.
-  const totalInputsBytes = (inputs || []).reduce((a, s) => a + (s.bytes || 0), 0);
+  // Znamenatel' — ozhidaemyy ob'yom odnoy paralel'noy vetki (max po oknam), ne
+  // summa vseh: N parallel'nyh oken (freym x okno) pishut odno vremya, a amix
+  // daet odin itogovyy paket; summa iz N vetok lozhet podozrenie na legitmnoy
+  // multi-okonnoy zapisi (audit 28ac08e).
+  const totalInputsBytes = coverageBaseBytes(inputs);
   const outSize = fs.existsSync(webmPath) ? fs.statSync(webmPath).size : 0;
   const outDecodedS = durationS || await decodedAudioSeconds(webmPath);
   const silentReason = silentOutputReason(outSize, outDecodedS || 0, totalInputsBytes);
@@ -329,13 +333,32 @@ export async function salvageFromDisk(jobId, cfg, onEvent = () => {}) {
       end_reason: "already_finalized",
     };
   }
-  const segs = rawSegsFromDisk(jobDir);
-  if (!segs.some((s) => s.bytes >= MIN_SEGMENT_BYTES)) {
+  const allSegs = rawSegsFromDisk(jobDir);
+  if (!allSegs.some((s) => s.bytes >= MIN_SEGMENT_BYTES)) {
     return { ok: false, fail_reason: "no_raw_segments" };
   }
   // Pri crash-e joinedAt/browserTotal teryayutsya i obe proveryki poter (wall-clock
   // i bajty brauzera) mолчат. Vosstanavlivаем orientir po mtime syryh segmentov:
   // razbros mtime ≈ dlitelnost' zapisi na diske.
+  //
+  // Sobiraem i otsenivaem tol'ko tekushchiy prots zapisy (posledniy splot mtime,
+  // audit 28ac08e): suspect-zapisi SOHRANYAYUT raw.* nanadolgo, i pri povtornoy
+  // zapisi v tot ze katalog staryye leftover-y (a) razduvayut wall-clock otsenku
+  // do lozhnogo defitsita — syryye togda nikogda ne udalyalis by kak
+  // «otrabotannyye», i (b) kleilis by v amix s novym protsom (epoch po bajtam
+  // schitaetsya s 0, dva proghona nalozhilis by drug na druga). Staryye faily
+  // ostayutsya na diske netronutymi dlya ruchnoy sborki.
+  const segs = currentRunSegs(allSegs).filter((s) => s.bytes >= MIN_SEGMENT_BYTES);
+  if (!segs.length)
+    return { ok: false, fail_reason: "no_raw_segments" };
+  // epoha pereschityvaetsya zanovo po otsfiльтrovannomu nagoru: akcumulyaciya
+  // rawSegsFromDisk schitala sdvig ot staryh leftover-ov, a mezhu proghonami
+  // epohi ne soyedineny.
+  let acc = 0;
+  for (const s of segs.sort((a, b) => a.n - b.n)) {
+    s.epochMs = acc;
+    acc += Math.round(s.bytes / 8);
+  }
   const mt = segs.map((s) => s.mtimeMs).filter((t) => Number.isFinite(t));
   const state = { joinedAt: null, browserTotal: {} };
   if (mt.length > 1 && Math.max(...mt) > Math.min(...mt))

@@ -386,6 +386,125 @@ def test_phrase_threshold_env(monkeypatch):
     assert _phrase_keep_cos() == 0.30
 
 
+# ---- perenos frazy v sinteticheskiy podklaster ------------------------------
+
+def _mk_job_full(job_id, segs_spec, turns=None):
+    """kak _mk_job, no s engine/confidence i diar_turns dlya proverka
+    nasledovaniya i sinkhronizatsii s turns."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Job, Segment
+    with get_session() as s:
+        s.add(Job(id=job_id, topic="t", status="processing", source="upload",
+                  diar_turns=turns))
+        ids = []
+        for t0, t1, parts, label in segs_spec:
+            seg = Segment(job_id=job_id, t_start=t0, t_end=t1,
+                          speaker_id=label, diar_label=label,
+                          text=" ".join(p["t"] for p in (parts or [])),
+                          asr_json=parts, engine="test-engine", confidence=0.77)
+            s.add(seg)
+            s.flush()
+            ids.append(seg.id)
+        s.commit()
+        return ids
+
+
+def test_new_segments_inherit_engine_and_confidence(db, monkeypatch):
+    _script_embeddings(monkeypatch, {(1.0, 3.0): [1.0, 0.0],
+                                     (4.0, 6.0): [0.0, 1.0]})
+    _mk_job_full(140, [(0.0, 6.0, [{"s": 1.0, "e": 3.0, "t": "a"},
+                                   {"s": 4.0, "e": 6.0, "t": "b"}], "SPEAKER_00")])
+    _resort(140, {"SPEAKER_00": [1.0, 0.0]})
+    segs = _all_segs(140)
+    assert len(segs) == 2
+    for sx in segs:
+        assert sx.engine == "test-engine"
+        assert sx.confidence == 0.77
+
+
+def test_resort_updates_diar_turns(db, monkeypatch):
+    """Perenesennaya fraza otpechatana v turns: okno chuzhoy frazy s metkoy
+    bazy zameneno; vnedi okna turns ne izmenilos (regressiya rassoglasovaniya
+    s expand_segments pri rendere)."""
+    _script_embeddings(monkeypatch, {(1.0, 3.0): [1.0, 0.0],
+                                     (4.0, 6.0): [0.0, 1.0]})
+    turns = [[0.0, 6.0, "SPEAKER_00"]]
+    _mk_job_full(141, [(0.0, 6.0, [{"s": 1.0, "e": 3.0, "t": "a"},
+                                   {"s": 4.0, "e": 6.0, "t": "b"}], "SPEAKER_00")],
+                 turns=turns)
+    _resort(141, {"SPEAKER_00": [1.0, 0.0]})
+    from mnema.core.db import get_session
+    from mnema.core.models import Job, Segment
+    with get_session() as s:
+        new_label = s.scalars(select(Segment.speaker_id).where(
+            Segment.job_id == 141,
+            Segment.speaker_id.like("SPEAKER_00-p%"))).first()
+        jt = s.get(Job, 141).diar_turns
+    assert [list(t) for t in jt] == [[0.0, 4.0, "SPEAKER_00"],
+                                     [4.0, 6.0, new_label]]
+
+
+def test_apply_turn_edits_shape():
+    from mnema.worker.tasks import _apply_turn_edits
+    turns = [[0.0, 10.0, "SPEAKER_00"],
+             [12.0, 20.0, "SPEAKER_01"]]
+    # perenos [2,4) v B: razrez + vstavka; chuzhoy turn (SPEAKER_01) netronut;
+    # perenos na chuzhoy turn (from=SPEAKER_00, vneshnee pokrytie) ne menyaet ego
+    out = _apply_turn_edits(turns, [(2.0, 4.0, "B", "SPEAKER_00"),
+                                    (15.0, 16.0, "B", "SPEAKER_00")])
+    assert out == [[0.0, 2.0, "SPEAKER_00"], [2.0, 4.0, "B"],
+                   [4.0, 10.0, "SPEAKER_00"],
+                   [12.0, 20.0, "SPEAKER_01"]]
+
+
+def test_apply_turn_edits_empty_and_garbage():
+    from mnema.worker.tasks import _apply_turn_edits
+    assert _apply_turn_edits(None, [(1, 2, "B", "A")]) == []
+    assert _apply_turn_edits([[0.0, 1.0, "A"]], []) == [[0.0, 1.0, "A"]]
+
+
+# ---- in-protsessny fast path extract_wav_slice -------------------------------
+
+def test_wav_slice_inproc_fast_path(tmp_path, monkeypatch):
+    """PCM16 mono 16k rezhetsya bez subprotsessa ffmpeg."""
+    import struct
+    import wave as wv
+    from mnema.core.vad import extract_wav_slice
+    src = tmp_path / "a.wav"
+    with wv.open(str(src), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.writeframes(struct.pack(f"<{16000 * 10}h",
+                                  *[(i % 700) - 350 for i in range(16000 * 10)]))
+    monkeypatch.setattr("mnema.core.audio.run",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("ffmpeg vyvany na PCM16 16k mono")))
+    dst = tmp_path / "b.wav"
+    extract_wav_slice(src, 2.0, 4.0, dst)
+    with wv.open(str(dst)) as w:
+        assert w.getnframes() == 16000 * 2
+        data = w.readframes(w.getnframes())
+    # sootvetstvuyushchiy kusok istochnika
+    with wv.open(str(src)) as w:
+        w.setpos(2 * 16000)
+        want = w.readframes(2 * 16000)
+    assert data == want
+
+
+def test_wav_slice_falls_back_for_foreign_format(tmp_path):
+    """Ne 16k/mono/PCM16 — fast path otpuskanet (vozvrat False), layout prochie
+    idut cherez ffmpeg-vetku: proveryaet lish' chto on nichego ne pishet lozh'yu
+    i ne padayet na proveryke formata."""
+    import wave as wv
+    from mnema.core.vad import _wav_slice_inproc
+    src = tmp_path / "a.wav"
+    with wv.open(str(src), "wb") as w:
+        w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100)
+        w.writeframes(b"\0" * 1000)
+    assert _wav_slice_inproc(src, 0.0, 0.5, tmp_path / "b.wav") is False
+    assert _wav_slice_inproc(tmp_path / "net.wav", 0.0, 0.5,
+                             tmp_path / "b.wav") is False
+
+
 # ---- vyzy `_phrase_resort` iz inside `_run_speaker` ------------------------
 
 def test_run_speaker_invokes_resort(db, monkeypatch):

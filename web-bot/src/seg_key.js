@@ -96,6 +96,41 @@ export function pickFallbackSeg(items, slackS = 60) {
   return win;
 }
 
+// Otbrosh staryye syryye segmenty pri salvage: podozritel'nyye zapisi (suspect)
+// SOHRANYAYUT raw.* nanadolgo; posle retry v tom zhe kataloge razbros mtime
+// {staryy run + novyy} razduvaetsya i wall-clock otsenka, i epoch-po-bajtam
+// lgut (hrvost startuet s pozicii startogo faila). Tekushchiy prots —
+// posledniy splot mtime, gde razryv mezhdu sosednimi failami ne boleye gapS.
+// segs [{mtimeMs, ...}]; vozvrat podmnozhestvo v poryadke mtime.
+export function currentRunSegs(segs, gapS = 30 * 60) {
+  const withM = (segs || []).filter((s) => s && Number.isFinite(s.mtimeMs));
+  if (withM.length < 2) return withM;
+  const byM = [...withM].sort((a, b) => a.mtimeMs - b.mtimeMs);
+  let start = byM.length - 1;
+  while (start > 0 && (byM[start].mtimeMs - byM[start - 1].mtimeMs) / 1000 <= gapS)
+    start--;
+  return byM.slice(start);
+}
+
+// Znamenatel' pokrytiya bajtov dlya silentOutputReason: parallel'nye okna W
+// (kadr x okno, amix na odnoy shkale vremeni) pishut odno i to ze vremya —
+// summa po vsem naduvayet ozhidaniye v N raz i lozhet podozrenie na legitmnoy
+// zapisi. Summiruem fragmenty po oknu (imya raw.<n>_w<W>.webm), berem maksimum:
+// dlinneyshaya paralel'naya vetka i est' ozhidaemyy ob'yom itoga.
+export function coverageBaseBytes(segs) {
+  const sums = new Map();
+  let any = false;
+  for (const s of segs || []) {
+    const b = Number((s && s.bytes) || 0);
+    any = true;
+    const m = /raw\.\d+_w(\d+)/.exec((s && s.p) || "");
+    const k = m ? m[1] : "?";
+    sums.set(k, (sums.get(k) || 0) + b);
+  }
+  if (!any) return 0;
+  return Math.max(...sums.values());
+}
+
 // Offsety vseh EBML-zagolovkov v bufer. >1 = v odnom fayle skleeny
 // neskolko MediaRecorder-potokov (shva bez shkly, dekor teryayet chtenie
 // za pervym potokom — pattern job 16). Tajly takogo fayla rezhemsya po

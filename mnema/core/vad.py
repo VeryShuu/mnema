@@ -155,10 +155,39 @@ def _postprocess(segs: list[dict]) -> list[dict]:
     return [s for s in segs if s["t_end"] - s["t_start"] >= MIN_SPEECH_S]
 
 
+def _wav_slice_inproc(src: Path, t0: float, dur: float, dst: Path) -> bool:
+    """Fast path dlja extract_wav_slice: PCM16 mono 16 kHz chitaetsya napryamyu
+    cherez wave — bez subprotsessa ffmpeg na kazhduyu frazu. Meeting.wav vseghda
+    imeno takoy (-ar 16000 -ac 1 v finalize); frazovykh emeddingerov tyisyachi
+    na vstrechu, i každyy subprotsess — glavnyy proigrysh speaker-etapa."""
+    try:
+        with wave.open(str(src), "rb") as w:
+            if (w.getnchannels() != 1 or w.getsampwidth() != 2
+                    or w.getframerate() != 16000):
+                return False
+            i0 = max(0, min(int(t0 * 16000), w.getnframes()))
+            n = max(1, min(int(dur * 16000), w.getnframes() - i0))
+            if n < 1:
+                return False
+            w.setpos(i0)
+            frames = w.readframes(n)
+        with wave.open(str(dst), "wb") as o:
+            o.setnchannels(1)
+            o.setsampwidth(2)
+            o.setframerate(16000)
+            o.writeframes(frames)
+        return True
+    except Exception:  # noqa: BLE001 — ne waw/PCM → puskay ffmpeg
+        return False
+
+
 def extract_wav_slice(src: Path, t0: float, t1: float, dst: Path) -> None:
-    """Vyrezaet fragment WAV (dlя emgeddingov) cherez ffmpeg (tochnye shkaly)."""
+    """Vyrezaet fragment WAV (dlя emgeddingov): PCM16 mono 16k — v protsesse,
+    inache cherez ffmpeg (tochnye shkaly dlya prochiekh formatach)."""
     from .audio import run
     dur = max(0.1, t1 - t0)
+    if _wav_slice_inproc(src, t0, dur, dst):
+        return
     r = run(["ffmpeg", "-y", "-ss", f"{t0:.3f}", "-t", f"{dur:.3f}",
              "-i", str(src), "-ar", "16000", "-ac", "1", str(dst)])
     if r.returncode != 0:
