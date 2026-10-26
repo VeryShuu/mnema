@@ -15,11 +15,26 @@ SYSTEM_PROMPT = (
     "po skHEME bez kakih-lib poyasneniy. Ne vydumyivay tovo, cheg nie bylo v stenogramme. "
     "Otvetstvennykh beri IZ IMEN stenogrammy; esli ne opredelen — null. Dlya kazhdoi "
     "zadachi ukazyvai source_ts — vremyanoy meetka isodnoy repliki (CHCH:MM:SS). "
+    "Sroki (due): YESLI v message est' DATA SOVESHCHEANIYA, otnositel'nye sroki iz "
+    "stenogrammy ('zavtra', 'v pyatnicu', 'do konceledi', 'na sledushchey nedele') "
+    "VYCHISLYI ot etoy daty i zapishi due REALNOY DATEY v formate DD.MM.YYYY; "
+    "esli srok vovsche nie nazvan — null. V pole date vsegda stavi datu vstrechi "
+    "iz DATA SOVESHCHEANIYA (esli ona ukazana). "
     "SkHEMA: {\"topic\": str, \"date\": str, \"duration\": float, "
     "\"attendees\": [{\"name\",\"first_seen\",\"last_seen\"}], \"agenda\": [str], "
     "\"decisions\": [str], \"action_items\": [{\"task\",\"owner\",\"due\",\"source_ts\"}], "
     "\"open_questions\": [str]}"
 )
+
+
+def _meeting_date_block(meeting_date: str) -> str:
+    meeting_date = (meeting_date or "").strip()
+    if not meeting_date or meeting_date.lower() in ("null", "none"):
+        return ""
+    return (f"DATA SOVESHCHEANIYA: {meeting_date} (DD.MM.YYYY). "
+            f"Otnositel'nye sroki iz stenogrammy ischislyay ot noy i stav v due "
+            f"kak real'nyye daty DD.MM.YYYY.\n\n")
+
 
 PROTOCOL_JSON_KEYS = {"topic", "date", "duration", "attendees", "agenda",
                       "decisions", "action_items", "open_questions"}
@@ -123,26 +138,34 @@ def validate_protocol(data: dict) -> dict:
     return data
 
 
-def structure_transcript(transcript: str, topic: str = "", roster: str = "") -> dict:
+def structure_transcript(transcript: str, topic: str = "", roster: str = "",
+                         meeting_date: str = "") -> dict:
     """Polnaya stenogramma -> protocol JSON. Kosol'sl'zye okna esli > konteksta.
 
     roster — spravka 'FIО — dolzhnost' uchastnikov (dlya disambiguacii, v
-    protokole ne otrazhaetsya)."""
+    protokole ne otrazhaetsya). meeting_date — data sovieshchaniya DD.MM.YYYY
+    (ot noy LLM ischislyayet otnositel'nyye sroki porucheniy)."""
     roster = (roster or "").strip()
+    date_block = _meeting_date_block(meeting_date)
     max_chars = int(os.environ.get("LLM_WINDOW_CHARS", "24000"))
     if len(transcript) <= max_chars:
-        user = f"TEMA: {topic}\n\nSTENOGRAMMA:\n{transcript}"
+        user = f"{date_block}TEMA: {topic}\n\nSTENOGRAMMA:\n{transcript}"
         if roster:
             user += (f"\n\nSPRAVOCHNIK UCHASTNIKOV (FIО — dolzhnost, dlya poni"
                      f"maniya, kto chto skazal; v protokole dolzhnosti ne "
                      f"ukazyvai):\n{roster}")
         reply = _chat([{"role": "system", "content": SYSTEM_PROMPT},
                        {"role": "user", "content": user}])
-        return validate_protocol(_extract_json(reply))
-    return _map_reduce(transcript, topic, max_chars, roster)
+        data = validate_protocol(_extract_json(reply))
+        if meeting_date.strip() and not (data.get("date") or "").strip():
+            data["date"] = meeting_date.strip()
+        return data
+    return _map_reduce(transcript, topic, max_chars, roster, meeting_date)
 
 
-def _map_reduce(transcript: str, topic: str, max_chars: int, roster: str = "") -> dict:
+def _map_reduce(transcript: str, topic: str, max_chars: int, roster: str = "",
+                meeting_date: str = "") -> dict:
+    date_block = _meeting_date_block(meeting_date)
     windows = []
     roster_block = (f"\n\nSPRAVOCHNIK UCHASTNIKOV (FIО — dolzhnost):\n{roster}"
                     if roster else "")
@@ -153,7 +176,7 @@ def _map_reduce(transcript: str, topic: str, max_chars: int, roster: str = "") -
         i += step
     partials: list[dict] = []
     for idx, w in enumerate(windows):
-        user = (f"OKNO {idx + 1} iz {len(windows)}. Vytashi iz eta fragmanta "
+        user = (f"{date_block}OKNO {idx + 1} iz {len(windows)}. Vytashi iz eta fragmanta "
                 f"po skHEME (chastichno): resheniya, zadachi, otkrytye voprosy, "
                 f"upomyanutykh lyudey.\n\n{w}" + roster_block)
         try:
@@ -181,10 +204,14 @@ def _map_reduce(transcript: str, topic: str, max_chars: int, roster: str = "") -
     reduce_input = json.dumps(merged, ensure_ascii=False)[:max_chars]
     reply = _chat([
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": ("Soberi EDINY protokola po skHEME iz etih "
-                                     "chastichnyh rezultatov. Dedup ciranykh. Bez vydumok:\n\n"
+        {"role": "user", "content": (date_block
+                                     + "Soberi EDINY protokola po skHEME iz etih "
+                                       "chastichnyh rezultatov. Dedup ciranykh. Bez vydumok:\n\n"
                                      + reduce_input)}])
-    return validate_protocol(_extract_json(reply))
+    data = validate_protocol(_extract_json(reply))
+    if meeting_date.strip() and not (data.get("date") or "").strip():
+        data["date"] = meeting_date.strip()
+    return data
 
 
 SPLIT_SYSTEM_PROMPT = (

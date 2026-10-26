@@ -1106,11 +1106,16 @@ def _build_protocol(job_id: int) -> None:
         job = s.get(Job, job_id)
         roster = _llm_roster(s, segs)
     transcript = _transcript_lines(segs, job.diar_turns if job else None)
+    from ..core.tz import to_local
+    meeting_when = job.ended_ts or job.start_at if job else None
+    meeting_date = (to_local(meeting_when).strftime("%d.%m.%Y")
+                    if meeting_when else "")
     with get_session() as s:
         s.add(SessionEvent(job_id=job_id, event="llm_start",
                            detail=f"сегментов: {len(segs)}"))
         s.commit()
-    data = structure_transcript(transcript, topic=job.topic, roster=roster)
+    data = structure_transcript(transcript, topic=job.topic, roster=roster,
+                                meeting_date=meeting_date)
     archive_dir = Path(os.environ.get("ARCHIVE_DIR", "/data/archive"))
     day = _archive_day(job.ended_ts or job.start_at)
     slug = "".join(c if c.isalnum() else "-" for c in (job.topic or f"job{job_id}"))[:40] or f"job{job_id}"
