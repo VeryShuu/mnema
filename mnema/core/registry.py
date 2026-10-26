@@ -159,9 +159,11 @@ REGISTRY: tuple[Block, ...] = (
             readers="scheduler", when="FT-35v", if_empty="09:00"),
         Key("NOTIFY_EVENTS", DEFAULTED,
             "job_failed=email,session_relogin_due=email,protocol_ready=email,"
-            "awaiting_llm=email,job_export_failed=email",
-            readers="notifier", when="FT-36; v kljade otkaza vygruzki v sampu",
-            if_empty="defolt iz FT-36 + job_export_failed"),
+            "awaiting_llm=email,job_export_failed=email,confirm_end=email,"
+            "alert=email",
+            readers="notifier", when="FT-36; v kljade otkaza vygruzki v sampu; "
+            "alert — pisma ot web-bot (/api/alert: reCAPTCHA, зависший вход)",
+            if_empty="defolt iz FT-36 + job_export_failed, confirm_end, alert"),
     )),
     Block("asr (capability:asr; worker kak klient)", (
         Key("ASR_ENGINE", DEFAULTED, "gigastt",

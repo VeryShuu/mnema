@@ -479,7 +479,7 @@ async function joinMeeting(page, cfg, state, onEvent, jobId) {
     }
     if (verdict === "prejoin") {
       onEvent(EVENT.PREJOIN, "имя + Join");
-      await fillNameAndJoin(page, cfg, onEvent);
+      await fillNameAndJoin(page, cfg, onEvent, state);
       // reCAPTCHA: reshaet tol'ko chelovek (§12). Zhdём vruchnuyu prokhod
       // cherez noVNC (MAX CAPTCHA_WAIT_MIN), bez avtomatiki.
       if (await waitForLeaveOrCaptcha(page, deadlineMs, cfg, onEvent, state.vnc)) {
@@ -732,7 +732,7 @@ async function ensureAudioRoute(page, onEvent) {
   return false;
 }
 
-async function fillNameAndJoin(page, cfg, onEvent) {
+async function fillNameAndJoin(page, cfg, onEvent, state = {}) {
   try {
     await clickAnyFrame(page, /accept cookies/i, 2500);
     // ekran «Join meeting» -> «Join from browser»
@@ -752,6 +752,18 @@ async function fillNameAndJoin(page, cfg, onEvent) {
       await page.waitForTimeout(3000);
     } else {
       onEvent(EVENT.ERROR, "кнопка Join не найдена/перкрыта — ждём VNC");
+      if (!state.joinStuckAlerted) {
+        state.joinStuckAlerted = true;
+        alertOperator(
+          "Автоподключение зависло: кнопка Join перекрыта",
+          `Встреча ${state.jobId ?? "?"}: кнопка Join на пред-join экране не найдена ` +
+          "или перекрыта слоем reCAPTCHA — автоматический вход невозможен, " +
+          (state.vnc
+            ? `нужен ручной проход через noVNC :${publicVncPort(cfg, state.vnc.slot)} ` +
+              "(или завершить встречу вручную). Автоматизация капчи запрещена (§12)."
+            : "индивидуальный VNC-экран недоступен — запись пойдёт headless без входа."),
+          `join_stuck:${state.jobId}`);
+      }
     }
     // vybor audiomarshruta (esli wyskakhyvaet okno)
     if (await clickAnyFrame(page, /join( with)?( computer)? audio|войти с компьютер/i, 8000)) {
@@ -1013,11 +1025,11 @@ async function muteMicrophone(page, onEvent) {
 
 // Pryamoy SMTP signal cherez api (ne blokuyushchiy): proshu otdeliti v pish'mo
 // cherez vnutrenniy endpoint, esli yest'; inache — console/notify ostanovitsya.
-function alertOperator(subject, body) {
+function alertOperator(subject, body, dedupKey = "captcha") {
   const API = process.env.API_URL || "http://api:8000";
   fetch(`${API}/api/alert`, {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ subject, body, dedup_key: "captcha" }),
+    body: JSON.stringify({ subject, body, dedup_key: dedupKey }),
   }).catch((e) => log.error("alert post failed:", e.message));
 }
 

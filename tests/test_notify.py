@@ -41,6 +41,23 @@ def test_parse_notify_events_default():
     assert ev["job_failed"] == "email" and ev["protocol_ready"] == "email"
 
 
+def test_default_events_include_alert(monkeypatch):
+    monkeypatch.delenv("NOTIFY_EVENTS", raising=False)
+    assert should_notify("alert")
+
+
+def test_enqueue_alert_with_default_events(monkeypatch, session):
+    monkeypatch.delenv("NOTIFY_EVENTS", raising=False)
+    monkeypatch.setenv("NOTIFY_EMAIL_TO", "ops@example.ru")
+    sent = []
+    ns = NotifyService(sender=lambda m: sent.append(m))
+    n = ns.enqueue("alert", "[Mnema] Автоподключение зависло", "текст",
+                   dedup_key="join_stuck:25")
+    assert n is not None and n.status == "pending"
+    assert ns.dispatch_pending() == 1
+    assert sent and "Автоподключение зависло" in sent[0]["Subject"]
+
+
 def test_should_notify_respects_events(monkeypatch, env_base):
     assert should_notify("job_failed")
     monkeypatch.setenv("NOTIFY_EVENTS", "protocol_ready=email")
