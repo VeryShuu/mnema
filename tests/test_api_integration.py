@@ -562,6 +562,23 @@ def _make_review_fixture(client):
         return jid, rid_row.id
 
 
+def test_reviews_profile_dropdown_sorted(client):
+    """Сотрудники в выпадающем списке очереди уточнений идут по ФИО."""
+    import re
+    from mnema.core.db import get_session
+    from mnema.core.models import ReviewRequest, VoiceProfile
+    jid = client.post("/api/jobs", json={"meeting_id": "700700700"}).json()["id"]
+    with get_session() as s:
+        s.add(ReviewRequest(job_id=jid, cluster_label="SPEAKER_X"))
+        for name in ["Яковлев П. П.", "иванов И. И.", "Сидоров А. Б."]:
+            s.add(VoiceProfile(employee_name=name))
+        s.commit()
+    html = client.get("/reviews").text
+    names = re.findall(r'<option value="\d+">([^<]+)</option>', html)
+    assert names == ["иванов И. И.", "Сидоров А. Б.", "Яковлев П. П."]
+    assert html.index('— создать нового') < html.index('иванов')
+
+
 def test_review_create_new_makes_voice_profile(client):
     """Regres: 'Создать нового' v /reviews bez flaga create_new ne sozdaval profil'."""
     from sqlalchemy import select

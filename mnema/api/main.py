@@ -1491,7 +1491,8 @@ def web_reviews(request: Request, job_id: int | None = None):
             crit.append(ReviewRequest.job_id == job_id)
         pending = s.scalars(select(ReviewRequest).where(*crit)
                             .order_by(ReviewRequest.id.desc())).all()
-        profiles = s.scalars(select(VoiceProfile)).all()
+        profiles = sorted(s.scalars(select(VoiceProfile)).all(),
+                          key=lambda v: (v.employee_name or "").lower())
         jobs = {j.id: j for j in s.scalars(select(Job)).all()}
         # etalonnie fragmenty: po segmentu na klastery
         refsegs = {}
