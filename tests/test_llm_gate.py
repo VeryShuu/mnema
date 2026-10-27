@@ -186,6 +186,7 @@ def test_turn_release_on_exception(gate_env):
 def _think_flag_clean(monkeypatch):
     import mnema.core.llm_client as lc
     monkeypatch.setattr(lc, "_THINK_REJECTED", False)
+    monkeypatch.setattr(lc, "_OLLAMA_NATIVE", None)
 
 
 class _Resp:
@@ -258,8 +259,8 @@ def test_max_tokens_in_payload_and_zero_off(monkeypatch):
     monkeypatch.setattr("mnema.core.llm_client._post_chat", fake_post)
     from mnema.core.llm_client import _chat
     _chat([{"role": "user", "content": "x"}], retries=0)
-    assert sent[0]["max_tokens"] == 6000
-    assert sent[0]["num_predict"] == 6000
+    assert sent[0]["max_tokens"] == 8000
+    assert sent[0]["num_predict"] == 8000
     monkeypatch.setenv("LLM_MAX_TOKENS", "0")  # 0 = poly ne peredautsya
     _chat([{"role": "user", "content": "y"}], retries=0)
     assert "max_tokens" not in sent[-1] and "num_predict" not in sent[-1]
@@ -273,6 +274,81 @@ def test_http_error_still_raises(monkeypatch):
     from mnema.core.llm_client import LLMError, _chat
     with pytest.raises(LLMError, match="500"):
         _chat([{"role": "user", "content": "x"}], retries=0)
+
+
+def test_native_ollama_route_and_unwrap(monkeypatch):
+    """Ollama (otvechayet /api/tags) -> rodnoy /api/chat s think/options;
+    otvet razvertyvaetsya v OpenAI-formu; /v1 ne trogaetsya."""
+    import mnema.core.llm_client as lc
+
+    calls = []
+
+    def fake_get(url, **kw):
+        calls.append(("GET", url))
+
+        class R:
+            status_code = 200
+        return R()
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(("POST", url, json))
+
+        class R:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"message": {"role": "assistant", "content": "{}"},
+                        "done_reason": "stop"}
+        return R()
+
+    monkeypatch.setenv("LLM_BASE_URL", "http://ollama.test:11434/v1")
+    monkeypatch.setattr(lc.httpx, "get", fake_get)
+    monkeypatch.setattr(lc.httpx, "post", fake_post)
+    r = lc._post_chat({"model": "m", "messages": [{"role": "user", "content": "x"}],
+                       "temperature": 0.1, "max_tokens": 8000, "num_predict": 8000,
+                       "think": False, "thinking": {"type": "disabled"}})
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "{}"
+    posts = [c for c in calls if c[0] == "POST"]
+    assert len(posts) == 1
+    assert posts[0][1] == "http://ollama.test:11434/api/chat"
+    body = posts[0][2]
+    assert body["think"] is False and "thinking" not in body
+    assert "num_predict" not in body and "max_tokens" not in body
+    assert body["options"] == {"temperature": 0.1, "num_predict": 8000}
+    assert body["stream"] is False
+
+
+def test_non_ollama_server_uses_openai_endpoint(monkeypatch):
+    import mnema.core.llm_client as lc
+
+    calls = []
+
+    def fake_get(url, **kw):
+        calls.append(("GET", url))
+
+        class R:
+            status_code = 404
+        return R()
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(("POST", url, json))
+
+        class R:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"choices": [{"message": {"content": "ok"}}]}
+        return R()
+
+    monkeypatch.setenv("LLM_BASE_URL", "http://openai.test/v1")
+    monkeypatch.setattr(lc.httpx, "get", fake_get)
+    monkeypatch.setattr(lc.httpx, "post", fake_post)
+    r = lc._post_chat({"model": "m", "messages": []})
+    assert r.json()["choices"][0]["message"]["content"] == "ok"
+    assert [c for c in calls if c[0] == "POST"][0][1] == "http://openai.test/v1/chat/completions"
 
 
 def test_post_chat_wraps_gate(monkeypatch):

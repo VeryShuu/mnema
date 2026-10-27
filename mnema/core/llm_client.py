@@ -73,26 +73,92 @@ def _max_tokens() -> int:
     bez polya model' vykladyvaet 10k+ (na medlennoy modeli >10 min — HTTP-timeout
     rvyot zapros, retay nagromazhdaet zadayu na GPU po krugu)."""
     try:
-        return max(0, int(os.environ.get("LLM_MAX_TOKENS", "6000") or 0))
+        return max(0, int(os.environ.get("LLM_MAX_TOKENS", "8000") or 0))
     except ValueError:
-        return 6000
+        return 8000
+
+
+_OLLAMA_NATIVE: bool | None = None  # None = eshche ne.proverili
+
+
+def _ollama_base() -> str | None:
+    """Koren' Ollama (bez /v1): esli /api/tags otvechayet — eto Ollama.
+
+    Rezul'tat keshiruetsya na process. Sootvetstvuyushchiy /v1 chat completions
+    na myslyashchikh modelyakh ne otdayot flag think kak nalozhienny na shablon:
+    razmyshleniya kushayut max_tokens i protocolla prihodit pustym/obrezzannym
+    (izmereno: /v1 think=false -> 8000 tokov razmyshleniy, pusty content;
+    rodnoy /api/chat think=false -> chisty JSON bez mysley, ~6x bystree)."""
+    global _OLLAMA_NATIVE
+    base = os.environ.get("LLM_BASE_URL", "").rstrip("/")
+    if not base:
+        return None
+    origin = base[:-3].rstrip("/") if base.endswith("/v1") else base
+    if _OLLAMA_NATIVE is False:
+        return None
+    if _OLLAMA_NATIVE is True:
+        return origin
+    try:
+        r = httpx.get(f"{origin}/api/tags", timeout=3.0)
+        _OLLAMA_NATIVE = r.status_code == 200
+    except httpx.HTTPError:
+        _OLLAMA_NATIVE = False
+    return origin if _OLLAMA_NATIVE else None
 
 
 def _post_chat(payload: dict):
     """Odin POST /chat/completions v exklyuzivnom LLM-zamke (odin analiz za
-    raz; ozhidanie — FIFO-ochered'yu). Bez redis zamyok — no-op."""
+    raz; ozhidanie — FIFO-ochered'yu). Bez redis zamyok — no-op.
+
+    Dlya Ollama payload perekladyvaetsya v rodnoy /api/chat (sm. _ollama_base)
+    i otvet unwrappaetsya v form OpenAI, chto by vyzvashchiye kody ne menyalis'.
+    """
     from .llm_gate import LLMGateTimeout, llm_turn
     base = os.environ.get("LLM_BASE_URL", "").rstrip("/")
     key = os.environ.get("LLM_API_KEY", "").strip()
     headers = {"Authorization": f"Bearer {key}"} if key else {}
+    native = _ollama_base()
     try:
         with llm_turn():
+            if native:
+                p = dict(payload)
+                options: dict = {}
+                for src, dst in (("temperature", "temperature"),
+                                 ("max_tokens", "num_predict")):
+                    if src in p:
+                        options[dst] = p.pop(src)
+                p.pop("num_predict", None)
+                p.pop("thinking", None)  # rodnomu /api/chat enough `think` bool
+                p["options"] = options
+                p.setdefault("stream", False)
+                # myslitepol'zovatelskiy format: think=False uzhe v payload
+                return _native_to_openai(httpx.post(
+                    f"{native}/api/chat", headers=headers, json=p,
+                    timeout=_request_timeout_s()))
             return httpx.post(f"{base}/chat/completions", headers=headers,
                               json=payload, timeout=_request_timeout_s())
     except LLMGateTimeout as e:
         # zhdali ocheredi slishkom dolgo: eto oshibka LLM, a ne konveyera
         # (awaiting_llm / split_skipped, mozhno rerunut')
         raise LLMError(str(e)) from e
+
+
+class _NativeResp:
+    """Oborotka otveta /api/chat v interface otveta OpenAI (status_code/json/text)."""
+
+    def __init__(self, r: httpx.Response):
+        self.status_code = r.status_code
+        self.text = r.text
+        self._r = r
+
+    def json(self) -> dict:
+        d = self._r.json()
+        msg = d.get("message") or {}
+        return {"choices": [{"message": {"content": msg.get("content", "")}}]}
+
+
+def _native_to_openai(r: httpx.Response) -> _NativeResp:
+    return _NativeResp(r)
 
 
 def _chat(messages: list[dict], retries: int = 2) -> str:

@@ -256,9 +256,9 @@ REGISTRY: tuple[Block, ...] = (
             if_empty="900 s (vsegda >= 30)",
             comment="podnyat s 600: bol'shaya stenogramma na medlennoy modeli "
                     "generiruet protokoly shtatno >10 min"),
-        Key("LLM_MAX_TOKENS", DEFAULTED, "6000",
+        Key("LLM_MAX_TOKENS", DEFAULTED, "8000",
             readers="worker:structure", when="potolok generacii protokola",
-            if_empty="6000; 0 — bez polya max_tokens",
+            if_empty="8000; 0 — bez polya max_tokens",
             comment="protokol retskaya pomeshaeetsya v 6k tokenov; bez polya "
                     "model' vykladyvaet 10k+ i zapros vykhodit za taymaut"),
         Key("LLM_LOCK_WAIT_TIMEOUT_S", DEFAULTED, "3600",
