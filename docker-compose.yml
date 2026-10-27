@@ -11,6 +11,11 @@ services:
       - TZ=Europe/Moscow
       - APP_TZ=Europe/Moscow
       - EXPORT_DIR=${EXPORT_DIR:-}
+      # vygruzka: obrezka tishiny po krayam kopii sharomy (0 - vykluchit')
+      - EXPORT_TRIM_SILENCE=${EXPORT_TRIM_SILENCE:-1}
+      - EXPORT_TRIM_PAD_S=${EXPORT_TRIM_PAD_S:-0.5}
+      - EXPORT_TRIM_NOISE_DB=${EXPORT_TRIM_NOISE_DB:--30}
+      - EXPORT_TRIM_MIN_S=${EXPORT_TRIM_MIN_S:-0.5}
     volumes:
       - data:/data
       - ./templates:/app/templates:ro
@@ -40,6 +45,11 @@ services:
       - TZ=Europe/Moscow
       - APP_TZ=Europe/Moscow
       - EXPORT_DIR=${EXPORT_DIR:-}
+      # vygruzka: obrezka tishiny po krayam kopii sharomy (0 - vykluchit')
+      - EXPORT_TRIM_SILENCE=${EXPORT_TRIM_SILENCE:-1}
+      - EXPORT_TRIM_PAD_S=${EXPORT_TRIM_PAD_S:-0.5}
+      - EXPORT_TRIM_NOISE_DB=${EXPORT_TRIM_NOISE_DB:--30}
+      - EXPORT_TRIM_MIN_S=${EXPORT_TRIM_MIN_S:-0.5}
       # razdelenie vstrech (etap split): kill-switch 0, porogi, okno detekcii
       - SPLIT_MEETINGS=${SPLIT_MEETINGS:-1}
       - SPLIT_MIN_MINUTES=${SPLIT_MIN_MINUTES:-20}
@@ -49,7 +59,7 @@ services:
       - LLM_WINDOW_CHARS=${LLM_WINDOW_CHARS:-60000}
       - LLM_LOCK_WAIT_TIMEOUT_S=${LLM_LOCK_WAIT_TIMEOUT_S:-7200}
       - LLM_REQUEST_TIMEOUT_S=${LLM_REQUEST_TIMEOUT_S:-900}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-6000}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-16000}
     volumes:
       - data:/data
       - hf-cache:/root/.cache/huggingface

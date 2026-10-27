@@ -34,6 +34,19 @@ def export_dir() -> Path | None:
     return Path(raw) if raw else None
 
 
+def trim_silence_enabled() -> bool:
+    """kill-switch EXPORT_TRIM_SILENCE (по умолчанию включён): обрезка ведущей
+    и хвостовой тишины в копии шарами (оригиналы в /data не трогаются)."""
+    return os.environ.get("EXPORT_TRIM_SILENCE", "1").strip() != "0"
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
 def export_configured() -> bool:
     """EXPORT_DIR задан, каталог существует и доступен на запись."""
     d = export_dir()
@@ -188,8 +201,35 @@ def _find_source_audio(job_id: int) -> Path | None:
     return None
 
 
+def _trimmed_payload(src: Path, job_id: int) -> Path | None:
+    """Локальная (в каталоге job'а) копия src с обрезанной ведущей/хвостовой
+    тишиной; None — резать нечего либо ffmpeg не смог (тогда выгружаем
+    оригинал как есть). Писать ffmpeg сразу на шару нельзя: читатели увидят
+    полфайла, а _atomic_copy гарантирует целый только при copy-in."""
+    if not trim_silence_enabled():
+        return None
+    from .audio import trim_silence
+    tmp = src.parent / f".trim.{job_id}{src.suffix.lower()}"
+    try:
+        ok = trim_silence(src, tmp,
+                          pad_s=max(0.0, _env_float("EXPORT_TRIM_PAD_S", 0.5)),
+                          noise_db=_env_float("EXPORT_TRIM_NOISE_DB", -30.0),
+                          min_dur_s=max(0.05, _env_float("EXPORT_TRIM_MIN_S", 0.5)))
+    except Exception:  # noqa: BLE001 — обрезка не должна ломать выгрузку
+        ok = False
+    if not ok:
+        tmp.unlink(missing_ok=True)
+        return None
+    return tmp
+
+
 def export_recording(job_id: int) -> bool:
     """Копия meeting.mp3 (fallback meeting.wav) в <шара>/дд.мм.гг/<stem>.<ext>.
+
+    Копия — с обрезкой тишины по краям (оригинал в /data не трогаем); при
+    недоступности ffmpeg/отсутствии тишины — обычный copy. Идемпотентность ПО
+    РАЗМЕРУ ИСТОЧНИКА (export_json.src_size), не копии: обрезанная копия
+    заведомо меньше источника, а split-перезапись усечённым меняет источник.
 
     Никак не бросает наружу: True/False; при ошибке — событие export_error
     и инкремент export_json.attempts."""
@@ -205,9 +245,13 @@ def export_recording(job_id: int) -> bool:
             return False
         ej = job.export_json or {}
         old = str(ej.get("audio") or "")
-        if old and Path(old).is_file() and \
-                Path(old).stat().st_size == src.stat().st_size:
-            return True  # уже выгружено, идемпотентно
+        src_size = src.stat().st_size
+        try:
+            done_size = int(ej.get("src_size") or 0)
+        except (TypeError, ValueError):
+            done_size = -1
+        if old and Path(old).is_file() and done_size == src_size:
+            return True  # уже выгружено, идемпотентно (источник не менялся)
         day_dir = export_day_dir(_day_dt(job))
         stem = _ensure_day_and_stem(job, day_dir)
         dst = day_dir / f"{stem}{src.suffix.lower()}"
@@ -216,9 +260,18 @@ def export_recording(job_id: int) -> bool:
             stem = unique_stem(job, day_dir, sanitize_topic(job.topic, job.id))
             _update_export_json(job_id, stem=stem)
             dst = day_dir / f"{stem}{src.suffix.lower()}"
-        _atomic_copy(src, dst, job_id)
-        _update_export_json(job_id, audio=str(dst))
-        _event(job_id, "audio_exported", str(dst))
+        payload = _trimmed_payload(src, job_id)
+        try:
+            _atomic_copy(payload or src, dst, job_id)
+        finally:
+            if payload is not None:
+                try:
+                    payload.unlink()
+                except OSError:
+                    pass
+        _update_export_json(job_id, audio=str(dst), src_size=str(src_size))
+        _event(job_id, "audio_exported",
+               f"{dst} (тишина по краям обрезана)" if payload else str(dst))
         return True
     except Exception as e:  # noqa: BLE001 — зеркало не должно ронять конвейер
         _fail(job_id, e)

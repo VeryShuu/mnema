@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import struct
 import subprocess
@@ -192,6 +193,78 @@ def media_to_mp3(src: Path, mp3: Path, bitrate: str = "64k") -> bool:
     if not ok:
         mp3.unlink(missing_ok=True)
     return ok
+
+
+_SILENCE_RE = re.compile(r"silence_(start|end):\s*([0-9]+\.?[0-9]*)")
+
+
+def speech_bounds_silencedetect(path: Path, noise_db: float = -30.0,
+                                min_dur_s: float = 0.5) -> tuple[float, float, float] | None:
+    """Границы речи (start, end, dur) по ffmpeg silencedetect, None если не читается.
+
+    start — где заканчивается тишина, начавшаяся с 0 (только лидирующая);
+    end — где начинается хвостовая тишина, дотянувшая до конца. Файл из одной
+    тишины даёт start >= end. min_dur_s отсекает паузы короче порога, чтобы
+    не откусить вдох между словами. Краткие паузы внутри ffmpeg не помечает —
+    внутренние они и есть.
+    """
+    if shutil.which("ffmpeg") is None:
+        return None
+    r = run(["ffmpeg", "-nostdin", "-hide_banner", "-nostats", "-i", str(path),
+             "-af", f"silencedetect=noise={noise_db}dB:d={min_dur_s}",
+             "-f", "null", "-"])
+    dur = ffprobe_duration(path)
+    if dur <= 0:
+        dur = decoded_duration_s(path)
+    if dur <= 0:
+        return None
+    events: list[tuple[str, float]] = [
+        (kind, float(val)) for kind, val in _SILENCE_RE.findall(r.stderr or "")]
+    tol = 0.25   # допуск «у самого края»: квантование silencedetect и шкала
+                 # ffprobe расходятся на единицы миллисекунд
+    start = 0.0
+    for kind, val in events:
+        if kind == "start" and val > tol:
+            break                      # первая пауза не с нуля — речи до неё нет
+        start = val if kind == "end" else 0.0
+    end = dur
+    for kind, val in reversed(events):
+        if kind == "end" and val < dur - tol:
+            break                      # последняя пауза не до конца — хвоста нет
+        end = val if kind == "start" else dur
+    return start, end, dur
+
+
+def trim_silence(src: Path, dst: Path, pad_s: float = 0.5,
+                 noise_db: float = -30.0, min_dur_s: float = 0.5) -> bool:
+    """Обрезка ведущей и хвостовой тишины с перекодированием в формат dst.
+
+    Внутренние паузы не трогаются. pad_s — буфер тишины, оставляемый у речи
+    с каждого края (речь не «прилипает» к началу файла). False — резать
+    нечего (тишины на краях нет, весь файл тишина, не читается) или ffmpeg
+    ошибся; dst при этом не оставляем — вызывающий копирует оригинал как есть.
+    """
+    bounds = speech_bounds_silencedetect(src, noise_db=noise_db, min_dur_s=min_dur_s)
+    if bounds is None:
+        dst.unlink(missing_ok=True)
+        return False
+    start, end, dur = bounds
+    t0 = max(0.0, start - pad_s)
+    t1 = min(dur, end + pad_s)
+    if not (t0 > 0.0 or t1 < dur) or t1 - t0 < 1.0:
+        dst.unlink(missing_ok=True)
+        return False
+    if dst.suffix.lower() == ".wav":
+        out_args = ["-ar", "16000", "-ac", "1", "-sample_fmt", "s16"]
+    else:
+        out_args = ["-ar", "44100", "-ac", "1", "-b:a", "64k"]
+    r = run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(src),
+             "-ss", f"{t0:.3f}", "-t", f"{t1 - t0:.3f}",
+             *out_args, str(dst)])
+    if r.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+        dst.unlink(missing_ok=True)
+        return False
+    return True
 
 
 def media_slice(src: Path, t0: float, t1: float, dst: Path) -> None:

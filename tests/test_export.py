@@ -5,7 +5,13 @@ Real'noy seti net: obychnaya zapisi v lokal'nyy katalog (transport — hostovyy
 CIFS-maunt, ne predmet etikh testov).
 """
 import datetime as dt
+import math
 import os
+import shutil
+import struct
+import subprocess
+import wave
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select, StaticPool
@@ -13,6 +19,10 @@ from sqlalchemy import create_engine, select, StaticPool
 os.environ.setdefault("ZOOM_PROFILE_DIR", "/tmp/test-zp")
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6399/0")
 os.environ.setdefault("APP_TZ", "Europe/Moscow")
+
+needs_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="nuzhen ffmpeg/ffprobe")
 
 
 @pytest.fixture()
@@ -305,3 +315,205 @@ def test_retry_noop_when_disabled(env, monkeypatch, tmp_path):
     jid = _mkjob(ended_ts=DAY_UTC)
     _mk_audio(jid)
     assert export.retry_pending_exports() == 0
+
+
+# ------------------------------------------------------------------_trim_silence
+def _mk_real_audio(job_id: int, seconds: float = 8.0, lead_s: float = 2.0,
+                   tail_s: float = 2.0, kind: str = "wav") -> Path:
+    """Real'nyy audio: lead/tail tishina + ton poseredine (dlya ffmpeg)."""
+    from pathlib import Path as P
+    from mnema.worker.tasks import _job_paths
+    p = _job_paths(job_id)[kind]
+    p.parent.mkdir(parents=True, exist_ok=True)
+    sr = 16000
+
+    def sil(n):
+        return [0] * int(sr * max(0.0, n))
+
+    def tone(n):
+        amp, f = 12000, 440.0
+        m = int(sr * max(0.0, n))
+        return [int(amp * math.sin(2 * math.pi * f * i / sr)) for i in range(m)]
+
+    data = sil(lead_s) + tone(max(0.0, seconds - lead_s - tail_s)) + sil(tail_s)
+    raw = P(str(p) + ".wav")
+    with wave.open(str(raw), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(struct.pack(f"<{len(data)}h", *data))
+    if kind == "wav":
+        raw.rename(p)
+    else:
+        r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error",
+                            "-i", str(raw), "-ar", "44100", "-ac", "1",
+                            "-b:a", "64k", str(p)], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        raw.unlink(missing_ok=True)
+    return p
+
+
+def _dur(path) -> float:
+    from pathlib import Path
+    from mnema.core.audio import ffprobe_duration
+    return ffprobe_duration(Path(str(path)))
+
+
+@needs_ffmpeg
+def test_audio_trim_silence_trims_head_and_tail(env, tmp_path):
+    from pathlib import Path
+    from mnema.core.audio import trim_silence
+    src = tmp_path / "src.wav"
+    sr = 16000
+    data = [0] * (sr * 2)
+    amp, f = 12000, 440.0
+    data += [int(amp * math.sin(2 * math.pi * f * i / sr)) for i in range(sr * 4)]
+    data += [0] * (sr * 2)
+    with wave.open(str(src), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(struct.pack(f"<{len(data)}h", *data))
+    dst = tmp_path / "dst.wav"
+    assert trim_silence(src, dst, pad_s=0.0) is True
+    d = _dur(dst)
+    assert 3.8 <= d <= 4.4  # 4 s rechi, ±kadr
+
+
+@needs_ffmpeg
+def test_audio_trim_silence_no_silence_returns_false(env, tmp_path):
+    from pathlib import Path
+    from mnema.core.audio import trim_silence
+    src = tmp_path / "src.wav"
+    sr = 16000
+    amp, f = 12000, 440.0
+    data = [int(amp * math.sin(2 * math.pi * f * i / sr)) for i in range(sr * 6)]
+    with wave.open(str(src), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(struct.pack(f"<{len(data)}h", *data))
+    dst = tmp_path / "dst.wav"
+    assert trim_silence(src, dst, pad_s=0.0) is False
+    assert not dst.exists()
+
+
+@needs_ffmpeg
+def test_audio_trim_silence_all_silence_returns_false(env, tmp_path):
+    from pathlib import Path
+    from mnema.core.audio import trim_silence
+    src = tmp_path / "src.wav"
+    sr = 16000
+    data = [0] * (sr * 5)
+    with wave.open(str(src), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(struct.pack(f"<{len(data)}h", *data))
+    dst = tmp_path / "dst.wav"
+    assert trim_silence(src, dst) is False
+    assert not dst.exists()
+
+
+@needs_ffmpeg
+def test_export_recording_trims_silence(env, monkeypatch, tmp_path):
+    from mnema.core import export
+    monkeypatch.setenv("EXPORT_DIR", str(tmp_path / "share"))
+    (tmp_path / "share").mkdir()
+    monkeypatch.setenv("EXPORT_TRIM_PAD_S", "0")
+    jid = _mkjob(topic="Tishina", ended_ts=DAY_UTC)
+    _mk_real_audio(jid, seconds=8.0, lead_s=2.0, tail_s=2.0, kind="wav")
+    assert export.export_recording(jid) is True
+    dst = tmp_path / "share" / "30.09.26" / "Tishina.wav"
+    assert dst.is_file()
+    assert 3.8 <= _dur(dst) <= 4.4
+    assert any(e.event == "audio_exported" and "обрезана" in (e.detail or "")
+               for e in _events(jid))
+
+
+@needs_ffmpeg
+def test_export_recording_trims_silence_mp3(env, monkeypatch, tmp_path):
+    """To zhe dlya mp3 (osnovnoy vygoznyy format): proverka mp3-etapov ffmpeg."""
+    from mnema.core import export
+    monkeypatch.setenv("EXPORT_DIR", str(tmp_path / "share"))
+    (tmp_path / "share").mkdir()
+    monkeypatch.setenv("EXPORT_TRIM_PAD_S", "0")
+    jid = _mkjob(topic="Mp3 tishina", ended_ts=DAY_UTC)
+    _mk_real_audio(jid, seconds=8.0, lead_s=2.0, tail_s=2.0, kind="mp3")
+    assert export.export_recording(jid) is True
+    dst = tmp_path / "share" / "30.09.26" / "Mp3 tishina.mp3"
+    assert dst.is_file()
+    assert 3.8 <= _dur(dst) <= 4.8
+
+
+@needs_ffmpeg
+def test_export_recording_no_silence_copies_bytes(env, monkeypatch, tmp_path):
+    from mnema.core import export
+    monkeypatch.setenv("EXPORT_DIR", str(tmp_path / "share"))
+    (tmp_path / "share").mkdir()
+    jid = _mkjob(topic="Bez tishiny", ended_ts=DAY_UTC)
+    src = _mk_real_audio(jid, seconds=6.0, lead_s=0.0, tail_s=0.0, kind="wav")
+    assert export.export_recording(jid) is True
+    dst = tmp_path / "share" / "30.09.26" / "Bez tishiny.wav"
+    assert dst.read_bytes() == src.read_bytes()
+    assert any(e.event == "audio_exported"
+               and "обрезана" not in (e.detail or "")
+               for e in _events(jid))
+
+
+@needs_ffmpeg
+def test_export_trim_killswitch(env, monkeypatch, tmp_path):
+    from mnema.core import export
+    monkeypatch.setenv("EXPORT_DIR", str(tmp_path / "share"))
+    (tmp_path / "share").mkdir()
+    monkeypatch.setenv("EXPORT_TRIM_SILENCE", "0")
+    jid = _mkjob(topic="Ne rezh'", ended_ts=DAY_UTC)
+    src = _mk_real_audio(jid, seconds=8.0, lead_s=2.0, tail_s=2.0, kind="wav")
+    assert export.export_recording(jid) is True
+    dst = tmp_path / "share" / "30.09.26" / "Ne rezh'.wav"
+    assert dst.read_bytes() == src.read_bytes()
+    assert abs(_dur(dst) - 8.0) < 0.3
+
+
+@needs_ffmpeg
+def test_export_trim_failure_falls_back_to_copy(env, monkeypatch, tmp_path):
+    """Trim daet isklyucheniye → vygruzhaem orignal kak yest', bez errora."""
+    from mnema.core import export
+    monkeypatch.setenv("EXPORT_DIR", str(tmp_path / "share"))
+    (tmp_path / "share").mkdir()
+    jid = _mkjob(topic="Oshibka trim", ended_ts=DAY_UTC)
+    src = _mk_real_audio(jid, seconds=8.0, kind="wav")
+
+    def boom(*a, **kw):
+        raise RuntimeError("ffmpeg upal")
+    monkeypatch.setattr("mnema.core.audio.trim_silence", boom)
+    assert export.export_recording(jid) is True
+    dst = tmp_path / "share" / "30.09.26" / "Oshibka trim.wav"
+    assert dst.read_bytes() == src.read_bytes()
+    assert not any(e.event == "export_error" for e in _events(jid))
+
+
+@needs_ffmpeg
+def test_export_trimmpotent_and_retrims_on_source_change(env, monkeypatch,
+                                                         tmp_path):
+    """Povtor bez izmeneniya istochnika — tot zhe put' i faily; novyy istochnik
+    (split-perepisa) — perevygruzka s novym razmerom."""
+    from mnema.core import export
+    monkeypatch.setenv("EXPORT_DIR", str(tmp_path / "share"))
+    (tmp_path / "share").mkdir()
+    monkeypatch.setenv("EXPORT_TRIM_PAD_S", "0")
+    jid = _mkjob(topic="Repriz", ended_ts=DAY_UTC)
+    src = _mk_real_audio(jid, seconds=8.0, kind="wav")
+    assert export.export_recording(jid) is True
+    first = _job_export(jid)["audio"]
+    assert export.export_recording(jid) is True
+    assert _job_export(jid)["audio"] == first
+    d = tmp_path / "share" / "30.09.26"
+    assert sorted(f.name for f in d.iterdir()) == ["Repriz.wav"]
+    src.write_bytes(b"")  # idem novyy (pustoy) istochnik → ne vygruzhaemsya
+    assert export.export_recording(jid) is False
+    _mk_real_audio(jid, seconds=12.0, lead_s=3.0, tail_s=3.0, kind="wav")
+    assert export.export_recording(jid) is True
+    assert _job_export(jid)["audio"] == first  # tot zhe stem/perepisa
+    assert 5.8 <= _dur(d / "Repriz.wav") <= 6.4
+

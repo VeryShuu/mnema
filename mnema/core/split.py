@@ -407,7 +407,7 @@ def split_job(job_id: int) -> list[int]:
     from . import export
     for cid in child_ids:
         export.export_recording(cid)
-    export.export_recording(job_id)  # перезапись усечённым (idempotency по размеру)
+    export.export_recording(job_id)  # перезапись усечённым (идемпотентность по export_json.src_size)
     _event(job_id, "split_done",
            "границы: " + "; ".join(f"{_fmt(b['t'])} (c={b['confidence']:.2f})"
                                    for b in accepted)
