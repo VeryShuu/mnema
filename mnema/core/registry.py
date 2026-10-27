@@ -246,9 +246,15 @@ REGISTRY: tuple[Block, ...] = (
             comment="on = razreshit' glubokie razmyshleniya modeley (medlennee; "
                     "esli server ne znaet flag think — on avtomaticheski "
                     "otmershaetsya i bolshe ne peredaetsya)"),
+        Key("LLM_WINDOW_CHARS", DEFAULTED, "24000",
+            readers="worker:structure", when="okno stenogrammy na 1 zaprosov LLM",
+            if_empty="24000 simptomovol; svyyshe — map-reduce po oknam",
+            comment="v docker-compose zadano 60000 (context 131k, predpochtit' "
+                    "odin zaprosov neskol'kim posledovatel'nykh)"),
         Key("LLM_LOCK_WAIT_TIMEOUT_S", DEFAULTED, "3600",
             readers="worker:structure", when="ozhidanie svoy ocheredi k LLM",
-            if_empty="3600 s; svyyshe — LLMError (awaiting_llm / split_skipped)"),
+            if_empty="3600 s; svyyshe — LLMError (awaiting_llm / split_skipped)",
+            comment="v docker-compose zadano 7200 (ochered' na odin LLM)"),
         Key("LLM_LOCK_LEASE_S", DEFAULTED, "720",
             readers="worker:structure", when="arenda LLM-tokena (redis zamyok)",
             if_empty="720 s (vsegda >= 660); umershiy process otpustit ne dolshe",

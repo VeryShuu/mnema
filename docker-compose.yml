@@ -45,6 +45,9 @@ services:
       - SPLIT_MIN_MINUTES=${SPLIT_MIN_MINUTES:-20}
       - SPLIT_MIN_CONFIDENCE=${SPLIT_MIN_CONFIDENCE:-0.7}
       - SPLIT_WINDOW_CHARS=${SPLIT_WINDOW_CHARS:-40000}
+      # analiz LLM: okno stenogrammy na 1 zaprosov (context 131k) i ozhidanie ocheredi
+      - LLM_WINDOW_CHARS=${LLM_WINDOW_CHARS:-60000}
+      - LLM_LOCK_WAIT_TIMEOUT_S=${LLM_LOCK_WAIT_TIMEOUT_S:-7200}
     volumes:
       - data:/data
       - hf-cache:/root/.cache/huggingface
