@@ -46,6 +46,16 @@ def test_default_events_include_alert(monkeypatch):
     assert should_notify("alert")
 
 
+def test_fallback_default_matches_registry(monkeypatch):
+    """Defolty-zaas v parse_notify_events ne dolzhen rashoditsya s reestrom:
+    pri pustom NOTIFY_EVENTS pis'ma ne trebom droptsya (sm. job_export_failed)."""
+    from mnema.core.registry import KEY_INDEX
+    monkeypatch.delenv("NOTIFY_EVENTS", raising=False)
+    registry_default = parse_notify_events(KEY_INDEX["NOTIFY_EVENTS"].default)
+    fallback = parse_notify_events(None)
+    assert fallback == registry_default
+
+
 def test_enqueue_alert_with_default_events(monkeypatch, session):
     monkeypatch.delenv("NOTIFY_EVENTS", raising=False)
     monkeypatch.setenv("NOTIFY_EMAIL_TO", "ops@example.ru")

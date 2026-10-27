@@ -59,7 +59,8 @@ def parse_notify_events(spec: str | None = None) -> dict[str, str]:
     """FT-36: 'job_failed=email,protocol_ready=email' -> dict kind->channel."""
     raw = (spec if spec is not None else env("NOTIFY_EVENTS",
            "job_failed=email,session_relogin_due=email,protocol_ready=email,"
-           "awaiting_llm=email,confirm_end=email,alert=email"))
+           "awaiting_llm=email,job_export_failed=email,confirm_end=email,"
+           "alert=email"))
     out: dict[str, str] = {}
     for part in raw.split(","):
         part = part.strip()
