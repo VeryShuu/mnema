@@ -400,7 +400,7 @@ def _run_split_and_structure(job_id: int) -> None:
         from ..core.queue import enqueue_job
         for cid in child_ids:
             if enqueue_job("structure", "mnema.worker.tasks.run_structure",
-                           cid) is None:
+                           cid, dedupe=True) is None:
                 try:
                     run_structure(cid)  # direct-режим: inline
                 except Exception:  # noqa: BLE001 — падение потомка не трогает родителя
@@ -1060,6 +1060,7 @@ def _run_structure(job_id: int) -> None:
             transition(job_id, "failed", fail_reason="llm_invalid_json",
                        error=str(e)[:1000], event="structure_error")
             raise
+        _log_event(job_id, "llm_error", f"LLM не вернул протокол: {str(e)[:300]}")
         with get_session() as s:
             proto = s.scalars(select(Protocol).where(Protocol.job_id == job_id)).first()
             if proto is None:

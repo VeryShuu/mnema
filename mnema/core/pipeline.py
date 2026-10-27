@@ -133,7 +133,8 @@ def resume_after_reviews(job_id: int) -> bool:
             return False
     transition(job_id, "processing", event="reviews_done")
     from .queue import enqueue_job
-    enqueue_job("structure", "mnema.worker.tasks.run_structure", job_id)
+    enqueue_job("structure", "mnema.worker.tasks.run_structure", job_id,
+                dedupe=True)
     return True
 
 
@@ -260,5 +261,8 @@ def rerun_llm_analysis(job_id: int) -> bool:
         return False
     transition(job_id, "processing", event="llm_rerun")
     from .queue import enqueue_job
-    enqueue_job("structure", "mnema.worker.tasks.run_structure", job_id)
+    # dedupe: pendaushchayasya staraya popytka tova zhe joba zhdyot swoey
+    # ocheredi k LLM — vtoraya tushhe stavit nelzya (derzhalaby zamyok dvoyne)
+    enqueue_job("structure", "mnema.worker.tasks.run_structure", job_id,
+                dedupe=True)
     return True

@@ -27,11 +27,43 @@ def get_queue(name: str):
     return _queues[name]
 
 
-def enqueue_job(name: str, func, *args, depends_on=None, **kwargs):
+def _find_queued(r, name: str, func_name: str, args):
+    """Pending/RDP-задача той же func+args в очереди name -> RQ Job, else None.
+
+    Перебираем deferred+queued (маленькие): заstarted job здесь не найдётся,
+    что верно — убивать работающий анализ нельзя."""
+    from rq import Queue
+    from rq.job import Job
+    q = Queue(name, connection=r)
+    for jid in list(q.get_job_ids()):
+        try:
+            j = Job.fetch(jid, connection=r)
+        except Exception:  # noqa: BLE001 — гонка с RQ: считаем что нет
+            continue
+        if j.func_name == func_name and list(j.args or []) == list(args) \
+                and not (j.kwargs or {}):
+            return j
+    return None
+
+
+def enqueue_job(name: str, func, *args, depends_on=None, dedupe=False, **kwargs):
     """Enqueue v RQ (mozhno depends_on=Job|list); v direct mode — None.
+
+    dedupe=True: esli v ocheredi uzhe stoit zadacha func+args (ne vypolnyaetsya,
+    a zhdyot), nayavlennaya STARYM progonom — novaya prosto perenaznachaet eyo
+    `dedupe`-meanovoy (zadacha vypolnitsya odin raz, ktogda dooydyot ochered',
+    a ne nakanlivayet duplicates, kotoryye derzhat LLM-zamyok). Starting/started
+    ne trogaem.
 
     Vozvrat: RQ Job v rq-rezhime, inache None (vyzyvatel' reshayet' sam)."""
     q, mode = get_queue(name)
-    if mode == "rq":
-        return q.enqueue(func, *args, depends_on=depends_on, **kwargs)
-    return None
+    if mode != "rq":
+        return None
+    if dedupe:
+        try:
+            existing = _find_queued(q.connection, name, func, args)
+            if existing is not None:
+                return existing
+        except Exception:  # noqa: BLE001 — dedup best-effort: ne lochat' enqueue
+            pass
+    return q.enqueue(func, *args, depends_on=depends_on, **kwargs)
