@@ -61,6 +61,23 @@ def llm_model() -> str:
     return m or "llama3-saiga:32b"
 
 
+def _request_timeout_s() -> float:
+    try:
+        return max(30.0, float(os.environ.get("LLM_REQUEST_TIMEOUT_S", "900") or 900))
+    except ValueError:
+        return 900.0
+
+
+def _max_tokens() -> int:
+    """Potolok generacii: protokol vstrechi retskaya pomeshaeetsya v 6k tokenov;
+    bez polya model' vykladyvaet 10k+ (na medlennoy modeli >10 min — HTTP-timeout
+    rvyot zapros, retay nagromazhdaet zadayu na GPU po krugu)."""
+    try:
+        return max(0, int(os.environ.get("LLM_MAX_TOKENS", "6000") or 0))
+    except ValueError:
+        return 6000
+
+
 def _post_chat(payload: dict):
     """Odin POST /chat/completions v exklyuzivnom LLM-zamke (odin analiz za
     raz; ozhidanie — FIFO-ochered'yu). Bez redis zamyok — no-op."""
@@ -71,7 +88,7 @@ def _post_chat(payload: dict):
     try:
         with llm_turn():
             return httpx.post(f"{base}/chat/completions", headers=headers,
-                              json=payload, timeout=600.0)
+                              json=payload, timeout=_request_timeout_s())
     except LLMGateTimeout as e:
         # zhdali ocheredi slishkom dolgo: eto oshibka LLM, a ne konveyera
         # (awaiting_llm / split_skipped, mozhno rerunut')
@@ -84,6 +101,10 @@ def _chat(messages: list[dict], retries: int = 2) -> str:
     thinking_on = _thinking_enabled()
     payload: dict = {"model": llm_model(), "messages": messages,
                      "temperature": 0.1}
+    mt = _max_tokens()
+    if mt:
+        payload["max_tokens"] = mt
+        payload["num_predict"] = mt  # ollama-native alias; neznakomye poly ignoryatsya
     if not _THINK_REJECTED:
         # dva formata odnovremenno: ollama (`think`) i OpenAI-style
         # (`thinking.type`); neznakomye poly servery ignoriiruyut, a strogiy

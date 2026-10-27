@@ -64,12 +64,16 @@ def _wait_timeout_s() -> float:
 
 
 def _lease_s() -> int:
-    """Arenda tokena: bol'she maksimal'nogo zaprosa (timeout 600 s) s zapasom —
-    zhivoy derzhatel' uspeyayet zakonchit' zapol do istecheniya."""
+    """Arenda tokena: bol'she maksimal'nogo zaprosa (LLM_REQUEST_TIMEOUT_S)
+    s zapasom — zhivoy derzhatel' uspeyayet zakonchit' zapol do istecheniya."""
     try:
-        return max(660, int(os.environ.get("LLM_LOCK_LEASE_S", "720") or 720))
+        req = float(os.environ.get("LLM_REQUEST_TIMEOUT_S", "900") or 900)
     except ValueError:
-        return 720
+        req = 900.0
+    try:
+        return max(int(req) + 60, int(os.environ.get("LLM_LOCK_LEASE_S", "720") or 720))
+    except ValueError:
+        return 960
 
 
 def _poll_s() -> float:

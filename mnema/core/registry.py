@@ -251,13 +251,24 @@ REGISTRY: tuple[Block, ...] = (
             if_empty="24000 simptomovol; svyyshe — map-reduce po oknam",
             comment="v docker-compose zadano 60000 (context 131k, predpochtit' "
                     "odin zaprosov neskol'kim posledovatel'nykh)"),
+        Key("LLM_REQUEST_TIMEOUT_S", DEFAULTED, "900",
+            readers="worker:structure", when="taymaut 1 HTTP-zaprosov k LLM",
+            if_empty="900 s (vsegda >= 30)",
+            comment="podnyat s 600: bol'shaya stenogramma na medlennoy modeli "
+                    "generiruet protokoly shtatno >10 min"),
+        Key("LLM_MAX_TOKENS", DEFAULTED, "6000",
+            readers="worker:structure", when="potolok generacii protokola",
+            if_empty="6000; 0 — bez polya max_tokens",
+            comment="protokol retskaya pomeshaeetsya v 6k tokenov; bez polya "
+                    "model' vykladyvaet 10k+ i zapros vykhodit za taymaut"),
         Key("LLM_LOCK_WAIT_TIMEOUT_S", DEFAULTED, "3600",
             readers="worker:structure", when="ozhidanie svoy ocheredi k LLM",
             if_empty="3600 s; svyyshe — LLMError (awaiting_llm / split_skipped)",
             comment="v docker-compose zadano 7200 (ochered' na odin LLM)"),
         Key("LLM_LOCK_LEASE_S", DEFAULTED, "720",
             readers="worker:structure", when="arenda LLM-tokena (redis zamyok)",
-            if_empty="720 s (vsegda >= 660); umershiy process otpustit ne dolshe",
+            if_empty="vsegda >= LLM_REQUEST_TIMEOUT_S+60; umershiy process "
+                     "otpustit ne dolshe",
             comment="odnovremenno k LLM — rovno odin zaprosov (FIFO-ochered')"),
     )),
     Block("storage", (

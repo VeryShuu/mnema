@@ -248,6 +248,23 @@ def test_think_rejected_fallback_once(monkeypatch):
     assert "think" not in sent[-1]
 
 
+def test_max_tokens_in_payload_and_zero_off(monkeypatch):
+    sent = []
+
+    def fake_post(payload):
+        sent.append(dict(payload))
+        return _Resp()
+
+    monkeypatch.setattr("mnema.core.llm_client._post_chat", fake_post)
+    from mnema.core.llm_client import _chat
+    _chat([{"role": "user", "content": "x"}], retries=0)
+    assert sent[0]["max_tokens"] == 6000
+    assert sent[0]["num_predict"] == 6000
+    monkeypatch.setenv("LLM_MAX_TOKENS", "0")  # 0 = poly ne peredautsya
+    _chat([{"role": "user", "content": "y"}], retries=0)
+    assert "max_tokens" not in sent[-1] and "num_predict" not in sent[-1]
+
+
 def test_http_error_still_raises(monkeypatch):
     def fake_post(payload):
         return _Resp(500, text="boom")
