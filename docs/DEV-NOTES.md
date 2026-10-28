@@ -1,3 +1,5 @@
+<!-- Копия локального AGENTS.md (untracked): правки вносить здесь, в AGENTS.md попадать не должны. -->
+
 # Project Notes: Mnema
 
 ## Особенности тестов (pytest)

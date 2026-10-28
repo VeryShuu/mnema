@@ -22,3 +22,4 @@ node_modules/
 *.bundle
 docker-compose.override.yml
 scripts/deploy-gpu.local.env
+AGENTS.md

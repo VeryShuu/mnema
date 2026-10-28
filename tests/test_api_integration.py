@@ -494,11 +494,11 @@ def test_web_jobs_shows_link_error_banner(client):
 
 def test_web_job_create_plain_meeting_id_accepted(client):
     r = client.post("/jobs/create", data={
-        "meeting_link": "4383506695", "start_now": "1", "topic": "OnlyId"},
+        "meeting_link": "123456789", "start_now": "1", "topic": "OnlyId"},
         follow_redirects=False)
     assert r.status_code == 303
     jobs = client.get("/api/jobs").json()
-    assert any(x["zoom_meeting_id"] == "4383506695" for x in jobs)
+    assert any(x["zoom_meeting_id"] == "123456789" for x in jobs)
 
 
 def test_reviews_page_with_pending(client):

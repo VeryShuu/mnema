@@ -56,7 +56,7 @@ from mnema.core.zoom_link import link_valid
 
 
 def test_link_valid_accepts_examples():
-    assert link_valid("https://us06web.zoom.us/j/4383506695?pwd=bJvhKUiTAtZqxKmcrkq2UltXepH7Ya.1")
+    assert link_valid("https://us06web.zoom.us/j/123456789?pwd=abc.1")
     assert link_valid("9814832357")
     assert link_valid("zoom.us/my/john.doe-1")
 

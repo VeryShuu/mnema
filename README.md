@@ -190,7 +190,7 @@ git pull && docker compose up -d --build   # миграции: alembic upgrade h
 `scripts/deploy-gpu.sh` — эталонный деплой‑скрипт (git‑bundle на сервер +
 compose с тремя `-f`: base + gpu + override). Реальные адрес сервера и каталог
 задаются в untracked `scripts/deploy-gpu.local.env` (`DEST_SSH`, `DEST_DIR`)
-или через переменные окружения. Подробности эксплуатации — `AGENTS.md`.
+или через переменные окружения. Подробности эксплуатации — `docs/DEV-NOTES.md`.
 
 Персистентное (не в git): `db.sqlite`, `/data/archive`, `/data/zoom-profile`.
 Регламент перелогина Zoom‑сессии — `RELOGIN_DUE_DAYS` (напоминание +
@@ -209,7 +209,7 @@ compose с тремя `-f`: base + gpu + override). Реальные адрес 
 ## Документация
 
 - `docs/api.md` — REST API
-- `AGENTS.md` — заметки по разработке и эксплуатации
+- `docs/DEV-NOTES.md` — заметки по разработке и эксплуатации (локально зеркалируется в `AGENTS.md`)
 
 ## Лицензия
 

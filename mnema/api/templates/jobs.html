@@ -114,7 +114,7 @@ function validateZoomLink(form){
       || /app\.zoom\.us\/wc\/\d{9,11}/i.test(v)
       || /zoom\.us\/my\/[\w.\-]+/i.test(v);
   if(!ok){
-    toast("Некорректная ссылка Zoom. Пример: https://us06web.zoom.us/j/4383506695?pwd=... или номер встречи (9–11 цифр)","warn");
+    toast("Некорректная ссылка Zoom. Пример: https://us06web.zoom.us/j/123456789?pwd=... или номер встречи (9–11 цифр)","warn");
     form.meeting_link.focus();
     return false;
   }

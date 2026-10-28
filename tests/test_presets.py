@@ -33,7 +33,7 @@ def client(tmp_path, monkeypatch):
 def test_add_preset_appears_in_list(client):
     r = client.post("/presets/add", data={
         "title": "Planerka",
-        "meeting_link": "https://us06web.zoom.us/j/4383506695?pwd=secret1"},
+        "meeting_link": "https://us06web.zoom.us/j/123456789?pwd=secret1"},
         follow_redirects=False)
     assert r.status_code == 303
     page = client.get("/jobs")
@@ -47,7 +47,7 @@ def test_add_preset_rejects_invalid_link(client):
 
 
 def test_add_preset_rejects_empty_title(client):
-    r = client.post("/presets/add", data={"title": " ", "meeting_link": "4383506695"})
+    r = client.post("/presets/add", data={"title": " ", "meeting_link": "123456789"})
     assert r.status_code == 422
 
 
