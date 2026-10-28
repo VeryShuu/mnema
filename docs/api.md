@@ -101,6 +101,9 @@ REST API сервиса `api` (FastAPI). Реализация: `mnema/api/main.p
 в БД при этом остаётся в силе), `split_error` (сбой применения границ,
 частичное разделение).
 
+Событие `llm_error` — LLM не вернул протокол; причина в `detail`, после него
+job переходит в `awaiting_llm` (этап LLM показывается как `failed`).
+
 ### `DELETE /api/jobs/{jid}`
 
 Отмена встречи → `{"id", "status"}`.
@@ -308,6 +311,8 @@ maintenance по истечении `REVIEW_TIMEOUT_HOURS`.
 
 После ответа кластер переобучается (enroll в workere) и, если все уточнения
 закрыты, анализ возобновляется (переход `awaiting_review → processing`).
+Постановка анализа в очередь дедуплицируется: если для встречи уже стоит
+незапущенная попытка, вторая не добавляется.
 Ответ: `{"ok": true, "name": "...", "job_done": bool}`
 
 ### `DELETE /api/reviews/{rid}/segments/{seg_id}`
@@ -454,7 +459,10 @@ maintenance по истечении `REVIEW_TIMEOUT_HOURS`.
 
 ### `POST /api/alert`
 
-Служебный сигнал от web-bot (например reCAPTCHA, §12) → e-mail.
+Служебный сигнал от web-bot → e-mail: reCAPTCHA (§12) или зависший автовход
+в Zoom (`join_stuck:<job_id>` — кнопка входа недоступна, один раз на встречу,
+в письме порт noVNC). Отправка только если `alert` входит в `NOTIFY_EVENTS`
+(входит по умолчанию, как и `confirm_end`).
 Тело: `{"subject": "...", "body": "...", "dedup_key": "alert"}`
 Ответ: `{"queued": <notification_id|null>}`
 
@@ -495,7 +503,7 @@ maintenance по истечении `REVIEW_TIMEOUT_HOURS`.
 | `POST /jobs/{jid}/delete` | Удаление (для `launching/recording` — `409`) |
 | `POST /jobs/{jid}/leave` | Выход из созвона (как `POST /api/jobs/{jid}/leave`) |
 | `POST /jobs/{jid}/vnc` | Экран встречи (как `POST /api/jobs/{jid}/vnc`) |
-| `POST /jobs/{jid}/rerun-llm` | Перезапуск LLM-анализа (только `done`/`awaiting_llm`, иначе `409`) |
+| `POST /jobs/{jid}/rerun-llm` | Перезапуск LLM-анализа (только `done`/`awaiting_llm`, иначе `409`); повторный rerun не копит дубликаты в очереди — ждущая попытка переиспользуется |
 | `POST /jobs/import-ics` | Импорт встреч из ICS-файла (multipart `file`) → `{"imported": N}` |
 | `GET /jobs/upload` | Страница загрузки архива (`?job_id=`) |
 | `GET /jobs/{jid}` | Карточка встречи (стадии, события, протокол, reviews) |
