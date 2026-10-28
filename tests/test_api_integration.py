@@ -1012,7 +1012,7 @@ def test_protocol_detail_page_has_source_links_and_playat(client):
     _jid, pid, _md = _make_done_protocol(client, "840840841")
     r = client.get(f"/protocols/{pid}")
     assert r.status_code == 200
-    assert "Источник" in r.text          # kolonka Source v tablice zadach
+    assert "Основание" in r.text          # kolonka Source v tablice zadach
     assert "playAt(1,2,5)" in r.text     # ssylka source_ts 01:02:05
     assert "playAt(0,2,5)" in r.text     # ssylka na segment 125 s
     assert "playAt(1,2,5)" in r.text and "pervaya replika" in r.text

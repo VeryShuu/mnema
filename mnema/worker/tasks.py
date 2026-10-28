@@ -1094,6 +1094,60 @@ def _llm_roster(s, segs: list) -> str:
                      if v.position)
 
 
+def _prev_protocol_digest(s, job_id: int, topic: str) -> tuple[str, str]:
+    """Kratkoe soderzhanie protokola predydushchey vstrechi s tey zhe temoy.
+
+    Vozvraschaet (digest, data_ DD.MM.YYYY); ('', '') esli predka net.
+    Digest: data + reshenniya + zadachi + otkrytyye voprosy + temy svodok
+    predydushchego protokola — bazy LLM dlya bloka changes."""
+    from ..core.models import Protocol
+    from ..core.tz import to_local
+    from sqlalchemy import func
+    like = (topic or "").strip()
+    if not like:
+        return "", ""
+    cur = s.get(Job, job_id)
+    cur_when = func.coalesce(cur.ended_ts, cur.start_at, cur.created_ts) if cur \
+        else None
+    q = (select(Protocol)
+         .join(Job, Protocol.job_id == Job.id)
+         .where(Job.id != job_id, Job.topic == like))
+    if cur_when is not None:
+        q = q.where(func.coalesce(Job.ended_ts, Job.start_at, Job.created_ts)
+                    < cur_when)
+    prev = s.execute(q.order_by(
+        func.coalesce(Job.ended_ts, Job.start_at, Job.created_ts).desc()
+    ).limit(1)).scalar_one_or_none()
+    if prev is None or not prev.json_data:
+        return "", ""
+    d = prev.json_data
+    prev_job = s.get(Job, prev.job_id)
+    when = (prev_job.ended_ts or prev_job.start_at) if prev_job else None
+    prev_date = to_local(when).strftime("%d.%m.%Y") if when else (d.get("date") or "")
+    parts: list[str] = []
+    for x in (d.get("decisions") or [])[:20]:
+        parts.append(f"RESHENO: {x}")
+    for ai in (d.get("action_items") or [])[:30]:
+        if isinstance(ai, dict):
+            owner = ai.get("owner") or "—"
+            due = ai.get("due") or "—"
+            parts.append(f"ZADACHA: {ai.get('task', '')} ({owner}, {due})")
+    for q in (d.get("open_questions") or [])[:20]:
+        parts.append(f"OTKRYTY VOPROS: {q}")
+    digest = "\n".join(parts)
+    return digest[:6000], prev_date
+
+
+def _real_duration(segs: list) -> float:
+    """Dlitel'nost' po fakticheskim segmentam (konets posledney repliki).
+
+    LLM periodicheski vozvrashchaet duration v minutah ('36') vmesto sekund —
+    fakticheskie dannye stochnye."""
+    if not segs:
+        return 0.0
+    return round(max(float(getattr(s, "t_end", 0) or 0) for s in segs))
+
+
 def _build_protocol(job_id: int) -> None:
     from ..core.llm_client import structure_transcript, llm_model
     from ..core.protocol_md import assemble_protocol
@@ -1106,6 +1160,7 @@ def _build_protocol(job_id: int) -> None:
         ).order_by(Segment.t_start)).all()
         job = s.get(Job, job_id)
         roster = _llm_roster(s, segs)
+        prev_digest, prev_date = _prev_protocol_digest(s, job_id, job.topic)
     transcript = _transcript_lines(segs, job.diar_turns if job else None)
     from ..core.tz import to_local
     meeting_when = job.ended_ts or job.start_at if job else None
@@ -1116,7 +1171,17 @@ def _build_protocol(job_id: int) -> None:
                            detail=f"сегментов: {len(segs)}"))
         s.commit()
     data = structure_transcript(transcript, topic=job.topic, roster=roster,
-                                meeting_date=meeting_date)
+                                meeting_date=meeting_date,
+                                prev_digest=prev_digest)
+    if prev_digest and prev_date:
+        ch = data.setdefault("changes", {"relative_to": "", "continuing": [],
+                                         "progress": [], "new": [],
+                                         "unconfirmed": []})
+        if not (ch.get("relative_to") or "").strip():
+            ch["relative_to"] = prev_date
+    real_dur = _real_duration(list(segs))
+    if real_dur:
+        data["duration"] = real_dur
     archive_dir = Path(os.environ.get("ARCHIVE_DIR", "/data/archive"))
     day = _archive_day(job.ended_ts or job.start_at)
     slug = "".join(c if c.isalnum() else "-" for c in (job.topic or f"job{job_id}"))[:40] or f"job{job_id}"

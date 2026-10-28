@@ -20,10 +20,35 @@ SYSTEM_PROMPT = (
     "VYCHISLYI ot etoy daty i zapishi due REALNOY DATEY v formate DD.MM.YYYY; "
     "esli srok vovsche nie nazvan — null. V pole date vsegda stavi datu vstrechi "
     "iz DATA SOVESHCHEANIYA (esli ona ukazana). "
+    "Duration — dlitel'nost' vstrechi v sekundakh tselym chislom (36 minut = 2160). "
+    "topic_summaries — GLAVNYY, SAMYI PODROBNYY razdel protokola: po kazhdoi teme povestki "
+    "napishi svyazny abzac 3-6 predlozheniy. SOHRANYAI v svodke VSE soderzhanie obsuzhdeniya: "
+    "chisla, summy (mln rub., tys. rub., %, kratnost'), daty, nazvaniya proektov i kontragentov, "
+    "varianty i diapazony otsenok ('ot plus 20% do pochti udvoeniya', 'mart ili noyabr') — "
+    "NE sklejki varianty v odin i NE vybirai za lyudey. Obyazatel'no otmechai status kazhdogo "
+    "fakta markerami: 'ne podtverzhdeno', 'podtverzhdeniya net', 'soglasovano predvaritel'no', "
+    "'ozhidaetsya, no poka ne sostoialos', 'eto risk, a ne garantirovannaya data', "
+    "'otsenka, finel'noy tseny net', 'eti raschety nel'zya smeshivat''. Esli v svodke est' "
+    "neskol'ko nesvyazannykh raschetov/tsifr — perechisli ikh otdel'no s tochnymi znacheniyami. "
+    "V source_ts svodki — diapazon teki vstreti 'CHCH:MM:SS-CHCH:MM:SS'. "
+    "decisions — tol'ko fakicheski prinyatye resheniya i zaprety; esli pri reshenii nazvali "
+    "usloviya, tsify ili sroki — vklyuchi ikh v formulyrovku resheniya. "
+    "action_items: ODNO poruchenie = ODNA stroka; porucheniya raznym lyudyam ili raznym "
+    "deystviyam NE ob\"edinyay v odnu; v teke kazhdoi zadachi SOHRANYAI vse podrobnosti, "
+    "tsify, summy i usloviya, proiznesennye pri poruchenii. "
+    "changes: YESLI v zaprose prilojen PROTOKOL PREDYDUSHCHEGO SOVESHCHEANIYA — sravni tekyshuyu "
+    "vstrechu s nim i zapolni: continuing — prodolzheniya (temy, chto byli v poveske i eshcho ne "
+    "zakryty), progress — prodvizhenie (shto sdvinulos s merta), new — polnost'yu novye temy, "
+    "unconfirmed — punkty iz togo protokola, ispolnenie kotoryh na etoy vstreche NE podtverzhdeno. "
+    "V relative_to — data predydushchego sovieshchaniya. Esli predydushchego protokola net — "
+    "spiski v changes pusty, relative_to pustaya stroka. "
     "SkHEMA: {\"topic\": str, \"date\": str, \"duration\": float, "
     "\"attendees\": [{\"name\",\"first_seen\",\"last_seen\"}], \"agenda\": [str], "
-    "\"decisions\": [str], \"action_items\": [{\"task\",\"owner\",\"due\",\"source_ts\"}], "
-    "\"open_questions\": [str]}"
+    "\"topic_summaries\": [{\"topic\",\"summary\",\"source_ts\"}], \"decisions\": [str], "
+    "\"action_items\": [{\"task\",\"owner\",\"due\",\"source_ts\"}], "
+    "\"open_questions\": [str], "
+    "\"changes\": {\"relative_to\": str, \"continuing\": [str], \"progress\": [str], "
+    "\"new\": [str], \"unconfirmed\": [str]}}"
 )
 
 
@@ -38,6 +63,8 @@ def _meeting_date_block(meeting_date: str) -> str:
 
 PROTOCOL_JSON_KEYS = {"topic", "date", "duration", "attendees", "agenda",
                       "decisions", "action_items", "open_questions"}
+
+CHANGES_KEYS = ("relative_to", "continuing", "progress", "new", "unconfirmed")
 
 
 class LLMError(Exception):
@@ -69,13 +96,14 @@ def _request_timeout_s() -> float:
 
 
 def _max_tokens() -> int:
-    """Potolok generacii: protokol vstrechi retskaya pomeshaeetsya v 6k tokenov;
-    bez polya model' vykladyvaet 10k+ (na medlennoy modeli >10 min — HTTP-timeout
-    rvyot zapros, retay nagromazhdaet zadayu na GPU po krugu)."""
+    """Potolok generacii: razvyornyy protokol (svodki po temam so vsemi tsiframi,
+    blok changes) ne pomeshaetsya v 6-8k tokenov iobrezaltsya posereine JSON;
+    bez polya model' vykladyvaet shtop-potolok (na medlennoy modeli >10 min —
+    HTTP-timeout rvyot zapros, retay nagromazhdaet zadayu na GPU po krugu)."""
     try:
-        return max(0, int(os.environ.get("LLM_MAX_TOKENS", "8000") or 0))
+        return max(0, int(os.environ.get("LLM_MAX_TOKENS", "16000") or 0))
     except ValueError:
-        return 8000
+        return 16000
 
 
 _OLLAMA_NATIVE: bool | None = None  # None = eshche ne.proverili
@@ -222,36 +250,58 @@ def validate_protocol(data: dict) -> dict:
     missing = PROTOCOL_JSON_KEYS - set(data)
     if missing:
         raise LLMError(f"v JSON niet klyuchey: {missing}")
+    if not isinstance(data.get("topic_summaries"), list):
+        data["topic_summaries"] = []
+    ch = data.get("changes")
+    if not isinstance(ch, dict):
+        ch = {}
+    norm_ch: dict = {"relative_to": str(ch.get("relative_to") or "")}
+    for k in CHANGES_KEYS[1:]:
+        vals = ch.get(k)
+        norm_ch[k] = [str(x) for x in vals if str(x).strip()] if isinstance(vals, list) else []
+    data["changes"] = norm_ch
     return data
 
 
+def _prev_block(prev_digest: str) -> str:
+    prev_digest = (prev_digest or "").strip()
+    if not prev_digest:
+        return ""
+    return (f"PROTOKOL PREDYDUSHCHEGO SOVESHCHEANIYA (dlya sravneniya v pole "
+            f"changes, ego soderzhanie v svodki ne perenosy):\n{prev_digest}\n\n")
+
+
 def structure_transcript(transcript: str, topic: str = "", roster: str = "",
-                         meeting_date: str = "") -> dict:
+                         meeting_date: str = "",
+                         prev_digest: str = "") -> dict:
     """Polnaya stenogramma -> protocol JSON. Kosol'sl'zye okna esli > konteksta.
 
     roster — spravka 'FIО — dolzhnost' uchastnikov (dlya disambiguacii, v
     protokole ne otrazhaetsya). meeting_date — data sovieshchaniya DD.MM.YYYY
-    (ot noy LLM ischislyayet otnositel'nyye sroki porucheniy)."""
+    (ot noy LLM ischislyayet otnositel'nyye sroki porucheniy). prev_digest —
+    kratkoe soderzhanie protokola predydushchey vstrechi (dlya bloka changes)."""
     roster = (roster or "").strip()
     date_block = _meeting_date_block(meeting_date)
     max_chars = int(os.environ.get("LLM_WINDOW_CHARS", "24000"))
     if len(transcript) <= max_chars:
-        user = f"{date_block}TEMA: {topic}\n\nSTENOGRAMMA:\n{transcript}"
+        user = (f"{date_block}TEMA: {topic}\n\nSTENOGRAMMA:\n{transcript}")
         if roster:
             user += (f"\n\nSPRAVOCHNIK UCHASTNIKOV (FIО — dolzhnost, dlya poni"
                      f"maniya, kto chto skazal; v protokole dolzhnosti ne "
                      f"ukazyvai):\n{roster}")
+        user += f"\n\n{_prev_block(prev_digest)}" if prev_digest else ""
         reply = _chat([{"role": "system", "content": SYSTEM_PROMPT},
                        {"role": "user", "content": user}])
         data = validate_protocol(_extract_json(reply))
         if meeting_date.strip() and not (data.get("date") or "").strip():
             data["date"] = meeting_date.strip()
         return data
-    return _map_reduce(transcript, topic, max_chars, roster, meeting_date)
+    return _map_reduce(transcript, topic, max_chars, roster, meeting_date,
+                       prev_digest)
 
 
 def _map_reduce(transcript: str, topic: str, max_chars: int, roster: str = "",
-                meeting_date: str = "") -> dict:
+                meeting_date: str = "", prev_digest: str = "") -> dict:
     date_block = _meeting_date_block(meeting_date)
     windows = []
     roster_block = (f"\n\nSPRAVOCHNIK UCHASTNIKOV (FIО — dolzhnost):\n{roster}"
@@ -264,7 +314,8 @@ def _map_reduce(transcript: str, topic: str, max_chars: int, roster: str = "",
     partials: list[dict] = []
     for idx, w in enumerate(windows):
         user = (f"{date_block}OKNO {idx + 1} iz {len(windows)}. Vytashi iz eta fragmanta "
-                f"po skHEME (chastichno): resheniya, zadachi, otkrytye voprosy, "
+                f"po skHEME (chastichno): podrobnye svodki po temam (topic_summaries, "
+                f"se so vsemi tsiframi i markeramy), resheniya, zadachi, otkrytye voprosy, "
                 f"upomyanutykh lyudey.\n\n{w}" + roster_block)
         try:
             reply = _chat([{"role": "system", "content": SYSTEM_PROMPT},
@@ -275,7 +326,10 @@ def _map_reduce(transcript: str, topic: str, max_chars: int, roster: str = "",
     if not partials:
         raise LLMError("map-reduce: ni odno okno nie dalo valid JSON")
     merged = {"topic": topic, "date": "", "duration": 0, "attendees": [],
-              "agenda": [], "decisions": [], "action_items": [], "open_questions": []}
+              "agenda": [], "topic_summaries": [], "decisions": [],
+              "action_items": [], "open_questions": [],
+              "changes": {"relative_to": "", "continuing": [], "progress": [],
+                          "new": [], "unconfirmed": []}}
     for p in partials:
         merged["date"] = merged["date"] or p.get("date", "")
         merged["duration"] = merged["duration"] or p.get("duration", 0)
@@ -283,6 +337,9 @@ def _map_reduce(transcript: str, topic: str, max_chars: int, roster: str = "",
             for item in p.get(key) or []:
                 if item not in merged[key]:
                     merged[key].append(item)
+        for ts_item in p.get("topic_summaries") or []:
+            if isinstance(ts_item, dict) and ts_item not in merged["topic_summaries"]:
+                merged["topic_summaries"].append(ts_item)
         for a in p.get("attendees") or []:
             if a.get("name") and a["name"] not in [x.get("name") for x in merged["attendees"]]:
                 merged["attendees"].append(a)
@@ -292,10 +349,14 @@ def _map_reduce(transcript: str, topic: str, max_chars: int, roster: str = "",
     reply = _chat([
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": (date_block
+                                     + _prev_block(prev_digest)
                                      + "Soberi EDINY protokola po skHEME iz etih "
                                        "chastichnyh rezultatov. Dedup ciranykh. Bez vydumok:\n\n"
                                      + reduce_input)}])
     data = validate_protocol(_extract_json(reply))
+    if not data.get("topic_summaries"):
+        # reduce zatrubil svodki — brat' to, chto sobralos iz okon
+        data["topic_summaries"] = merged["topic_summaries"]
     if meeting_date.strip() and not (data.get("date") or "").strip():
         data["date"] = meeting_date.strip()
     return data

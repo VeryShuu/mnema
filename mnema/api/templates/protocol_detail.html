@@ -17,9 +17,20 @@ function playAt(h, m, s) {
   <table>
   <tr><th>Тема</th><td>{{ protocol.json_data.topic if protocol.json_data else '' }}</td></tr>
   <tr><th>Повестка</th><td>{% for a in (protocol.json_data.agenda or []) %}{{ a }}<br>{% endfor %}</td></tr>
-  <tr><th>Решения</th><td>{% for d in (protocol.json_data.decisions or []) %}{{ d }}<br>{% endfor %}</td></tr>
-  <tr><th>Задачи</th><td>
-    <table><tr><th>Задача</th><th>Ответственный</th><th>Срок</th><th>Источник</th></tr>
+  {% set tsums = (protocol.json_data.topic_summaries or []) if protocol.json_data else [] %}
+  {% if tsums %}
+  <tr><th>Сводка по темам</th><td>
+    {% for ts in tsums %}
+      {% if ts is mapping %}
+        <p>{% if ts.topic %}<b>{{ ts.topic }}.</b> {% endif %}{{ ts.summary }}
+        {% if ts.source_ts %}<span class="muted"> [{{ ts.source_ts }}]</span>{% endif %}</p>
+      {% else %}<p>{{ ts }}</p>{% endif %}
+    {% endfor %}
+  </td></tr>
+  {% endif %}
+  <tr><th>Принятые решения</th><td>{% for d in (protocol.json_data.decisions or []) %}{{ d }}<br>{% endfor %}</td></tr>
+  <tr><th>Поручения</th><td>
+    <table><tr><th>Поручение</th><th>Ответственный</th><th>Срок</th><th>Основание</th></tr>
     {% for ai in (protocol.json_data.action_items or []) %}<tr><td>{{ ai.task }}</td><td>{{ ai.owner or '—' }}</td><td>{{ ai.due or '—' }}</td><td>
       {% set st = ai.source_ts or '' %}
       {% set parts = st.split(':') %}
@@ -28,6 +39,15 @@ function playAt(h, m, s) {
       {% else %}{{ st or '—' }}{% endif %}
     </td></tr>{% endfor %}
     </table></td></tr>
+  <tr><th>Требует решения / уточнения</th><td>{% for q in (protocol.json_data.open_questions or []) %}{{ q }}<br>{% endfor %}</td></tr>
+  {% set ch = (protocol.json_data.changes or {}) if protocol.json_data else {} %}
+  {% if ch and (ch.continuing or ch.progress or ch.new or ch.unconfirmed) %}
+  <tr><th>Изменения относительно{% if ch.relative_to %} {{ ch.relative_to }}{% else %} предыдущей встречи{% endif %}</th><td>
+    {% for title, key in [('Продвижение', 'progress'), ('Новое', 'new'), ('Продолжение', 'continuing'), ('Не подтверждено', 'unconfirmed')] %}
+      {% if ch.get(key) %}<p><b>{{ title }}.</b></p>{% for it in ch.get(key) %}— {{ it }}<br>{% endfor %}{% endif %}
+    {% endfor %}
+  </td></tr>
+  {% endif %}
   </table>
   </div>
 </div>

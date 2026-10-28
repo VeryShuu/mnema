@@ -259,8 +259,8 @@ def test_max_tokens_in_payload_and_zero_off(monkeypatch):
     monkeypatch.setattr("mnema.core.llm_client._post_chat", fake_post)
     from mnema.core.llm_client import _chat
     _chat([{"role": "user", "content": "x"}], retries=0)
-    assert sent[0]["max_tokens"] == 8000
-    assert sent[0]["num_predict"] == 8000
+    assert sent[0]["max_tokens"] == 16000
+    assert sent[0]["num_predict"] == 16000
     monkeypatch.setenv("LLM_MAX_TOKENS", "0")  # 0 = poly ne peredautsya
     _chat([{"role": "user", "content": "y"}], retries=0)
     assert "max_tokens" not in sent[-1] and "num_predict" not in sent[-1]
