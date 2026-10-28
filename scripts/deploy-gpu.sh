@@ -12,9 +12,12 @@
 # Peremenkie:    DEST_SSH=user@mnema-gpu.internal  DEST_DIR=/data_local/docker/mnema
 set -euo pipefail
 
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Real'nyy adres serve (dev-mashina): scripts/deploy-gpu.local.env (untracked, v git ne pishetsya)
+[ -f "$REPO_DIR/scripts/deploy-gpu.local.env" ] && . "$REPO_DIR/scripts/deploy-gpu.local.env"
+
 DEST_SSH="${DEST_SSH:-user@mnema-gpu.internal}"
 DEST_DIR="${DEST_DIR:-/data_local/docker/mnema}"
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if ! git -C "$REPO_DIR" diff --quiet -- || ! git -C "$REPO_DIR" diff --cached --quiet --; then
     echo "ERROR: v $REPO_DIR est nekommitnutyje izmenenija otkhyzhdyonnykh faylov." >&2

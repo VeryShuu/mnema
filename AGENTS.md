@@ -29,7 +29,9 @@
 
 ## Деплой на GPU-сервер (удалённый ИИ-сервер)
 
-- Сервер: `user@mnema-gpu.internal` (`gpu-ssh-alias`), каталог: `/data_local/docker/mnema`.
+- Сервер: задать в `scripts/deploy-gpu.local.env` (untracked; `DEST_SSH=user@host`,
+  `DEST_DIR=...`) или через переменные окружения; в git — только плейсхолдер
+  `user@mnema-gpu.internal`. Каталог на сервере: `/data_local/docker/mnema`.
 - Деплой из репо: `./scripts/deploy-gpu.sh` — пуш ветки в origin, на сервере
   `git fetch origin + git reset --hard origin/<branch>`, затем
   `docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.override.yml build` +
