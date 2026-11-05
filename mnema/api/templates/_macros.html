@@ -16,7 +16,8 @@
   'configured': 'Настроено',
   'misconfigured': 'Ошибка настройки',
   'not_configured': 'Не настроено',
-  'needs_review': 'Нужно уточнение'
+  'needs_review': 'Нужно уточнение',
+  'two_voices': 'Два голоса в фрагменте'
 } -%}
 <span class="badge {{ status }}">{% if status == 'recording' %}<span class="rec-dot" aria-hidden="true"></span>{% endif %}{{ labels.get(status, status) }}</span>
 {%- endmacro %}

@@ -29,6 +29,7 @@ class DisplaySegment:
     t_end: float
     text: str
     needs_review: bool
+    two_voices: bool = False
 
     @property
     def display_name(self) -> str:
@@ -128,13 +129,15 @@ def expand_segments(segments: list, turns: list | None = None) -> list:
                 cur_lbl, cur = lbl, [p]
         if cur:
             grouped.append((cur_lbl, cur))
+        multi = bool(getattr(seg, "two_voices", False)) or \
+            getattr(seg, "speaker_source", None) == "multi_voice"
         for lbl, grp in grouped:
-            out.append(_piece(seg, grp, lbl, base, names))
+            out.append(_piece(seg, grp, lbl, base, names, multi))
     return out
 
 
 def _piece(seg, parts: list[dict], label: str | None, base: str | None,
-           names: dict[str, str | None]):
+           names: dict[str, str | None], multi: bool = False):
     """Одна реплика из части VAD-строки: своё время, текст, говорящий."""
     from types import SimpleNamespace
     text = " ".join((p.get("t") or "").strip() for p in parts).strip()
@@ -150,7 +153,14 @@ def _piece(seg, parts: list[dict], label: str | None, base: str | None,
         t_end=float(parts[-1].get("e", seg.t_end)),
         text=text,
         needs_review=bool(seg.needs_review) if is_base else not bool(name),
+        two_voices=multi if is_base else False,
     )
+
+
+def _two_voices(seg) -> bool:
+    """Фрагмент с наложением двух голосов (multi_voice) либо часть такой VAD-строки."""
+    return bool(getattr(seg, "two_voices", False)) or \
+        getattr(seg, "speaker_source", None) == "multi_voice"
 
 
 def coalesce_segments(segments: list) -> list[DisplaySegment]:
@@ -176,6 +186,7 @@ def coalesce_segments(segments: list) -> list[DisplaySegment]:
             prev.text = f"{prev.text} {text}"
             prev.t_end = max(prev.t_end, seg.t_end or 0.0)
             prev.needs_review = prev.needs_review or bool(seg.needs_review)
+            prev.two_voices = prev.two_voices or _two_voices(seg)
         else:
             out.append(DisplaySegment(
                 speaker_id=seg.speaker_id,
@@ -184,6 +195,7 @@ def coalesce_segments(segments: list) -> list[DisplaySegment]:
                 t_end=seg.t_end if seg.t_end is not None else seg.t_start,
                 text=text,
                 needs_review=bool(seg.needs_review),
+                two_voices=_two_voices(seg),
             ))
         last_end = seg.t_end if seg.t_end is not None else seg.t_start
     return out

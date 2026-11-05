@@ -1080,6 +1080,45 @@ def test_protocol_page_drops_empty_and_merges_same_speaker(client):
     assert "slovo eshcho slovo" in r.text
 
 
+# ---- multi_voice: 'dva golosa' vmesto 'nuzhno utochnenie' ------------------
+
+def _make_two_voices_protocol(client, meeting_id):
+    """Protocol s podtverzhdannym klasterom + multi_voice fragment (kak job 31:
+    otvet operatora est', no fragment s nalozheniem dvuh golosov ostayotsya)."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Protocol, Segment
+    jid = client.post("/api/jobs", json={"meeting_id": meeting_id,
+                                         "topic": "Planerka"}).json()["id"]
+    _to_status(client, jid, ["launching", "recording", "processing", "done"])
+    with get_session() as s:
+        s.add(Segment(job_id=jid, speaker_id="SPEAKER_01", diar_label="SPEAKER_01",
+                      t_start=0.0, t_end=10.0, text="fragment s dvumya golosami",
+                      speaker_source="multi_voice", needs_review=True))
+        proto = Protocol(job_id=jid, json_data={"topic": "Planerka"})
+        s.add(proto)
+        s.flush()
+        pid = proto.id
+        md_path = Path(tempfile.mkdtemp()) / "protocol.md"
+        proto.md_path = str(md_path)
+        s.commit()
+    return jid, pid
+
+
+def test_protocol_page_two_voices_badge_not_needs_review(client):
+    _jid, pid = _make_two_voices_protocol(client, "880880880")
+    r = client.get(f"/protocols/{pid}")
+    assert r.status_code == 200
+    assert "Два голоса в фрагменте" in r.text
+    assert "Нужно уточнение" not in r.text
+
+
+def test_protocol_md_two_voices_flag_not_trebuetsya_utochneniya(client):
+    _jid, pid = _make_two_voices_protocol(client, "890890890")
+    text = client.get(f"/api/protocols/{pid}?format=md").text
+    assert "[два голоса]" in text
+    assert "[треб.уточнения]" not in text
+
+
 def _touch(path):
     Path(path).write_bytes(b"\x1a\x45\xdf\xa3" + b"webm-fake" * 10)
     return str(path)

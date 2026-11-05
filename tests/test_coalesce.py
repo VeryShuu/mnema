@@ -5,9 +5,11 @@ from mnema.core.coalesce import (DisplaySegment, coalesce_segments,
                                  expand_segments, speaker_display)
 
 
-def _seg(t0, t1, text, speaker_id="SPEAKER_00", speaker_name=None, needs_review=False):
+def _seg(t0, t1, text, speaker_id="SPEAKER_00", speaker_name=None, needs_review=False,
+         speaker_source=None):
     return SimpleNamespace(t_start=t0, t_end=t1, text=text, speaker_id=speaker_id,
-                           speaker_name=speaker_name, needs_review=needs_review)
+                           speaker_name=speaker_name, needs_review=needs_review,
+                           speaker_source=speaker_source)
 
 
 # ---- pustye reperiki ------------------------------------------------------
@@ -90,6 +92,25 @@ def test_merge_propagates_needs_review():
             _seg(5, 10, "somnitel'no", "S0", needs_review=True)]
     out = coalesce_segments(segs)
     assert out[0].needs_review is True
+
+
+def test_two_voices_flag_from_multi_voice_source():
+    """multi_voice segmenny (dva golosa v fragmente) — dvukhgolosy, ne 'utochnenie'."""
+    out = coalesce_segments([_seg(0, 5, "a", "S0", speaker_source="multi_voice",
+                                  needs_review=True)])
+    assert out[0].two_voices is True
+
+
+def test_two_voices_propagates_on_merge():
+    segs = [_seg(0, 5, "a", "S0", speaker_source="multi_voice"),
+            _seg(5, 10, "b", "S0")]
+    out = coalesce_segments(segs)
+    assert len(out) == 1 and out[0].two_voices is True
+
+
+def test_two_voices_default_false_for_plain_segments():
+    out = coalesce_segments([_seg(0, 5, "a", "S0", needs_review=True)])
+    assert out[0].two_voices is False and out[0].needs_review is True
 
 
 def test_display_name_fallback_and_priority():
