@@ -250,7 +250,7 @@ def test_run_speaker_does_not_reopen_mixed_review(db, monkeypatch):
         s.add(ReviewRequest(job_id=25, cluster_label="S0", status="mixed",
                             answered_by="web"))
         s.commit()
-    _speaker_cluster_env(monkeypatch, "unresolved", None, 0.1)
+    _speaker_cluster_env(monkeypatch, "unresolved", 0, 0.1)
     from mnema.worker.tasks import _run_speaker
     _run_speaker(25)
     with get_session() as s:
