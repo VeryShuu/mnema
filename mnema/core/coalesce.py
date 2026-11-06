@@ -30,6 +30,7 @@ class DisplaySegment:
     text: str
     needs_review: bool
     two_voices: bool = False
+    pending_review: bool = False
 
     @property
     def display_name(self) -> str:
@@ -83,6 +84,18 @@ def _part_label(turns: list, s: float, e: float, fallback: str | None,
     return fallback
 
 
+def _two_voices(seg) -> bool:
+    """Фрагмент с наложением двух голосов (multi_voice) либо часть такой VAD-строки."""
+    return bool(getattr(seg, "two_voices", False)) or \
+        getattr(seg, "speaker_source", None) == "multi_voice"
+
+
+def _pending_review(seg) -> bool:
+    """Нужно уточнение НЕ из-за наложения голосов: multi_voice needs_review
+    ложится на весь фрагмент и уточняется не оператором, а диаризацией."""
+    return bool(seg.needs_review) and not _two_voices(seg)
+
+
 def expand_segments(segments: list, turns: list | None = None) -> list:
     """Резать VAD-строки, в которых два голоса, на отдельные реплики.
 
@@ -129,15 +142,13 @@ def expand_segments(segments: list, turns: list | None = None) -> list:
                 cur_lbl, cur = lbl, [p]
         if cur:
             grouped.append((cur_lbl, cur))
-        multi = bool(getattr(seg, "two_voices", False)) or \
-            getattr(seg, "speaker_source", None) == "multi_voice"
         for lbl, grp in grouped:
-            out.append(_piece(seg, grp, lbl, base, names, multi))
+            out.append(_piece(seg, grp, lbl, base, names))
     return out
 
 
 def _piece(seg, parts: list[dict], label: str | None, base: str | None,
-           names: dict[str, str | None], multi: bool = False):
+           names: dict[str, str | None]):
     """Одна реплика из части VAD-строки: своё время, текст, говорящий."""
     from types import SimpleNamespace
     text = " ".join((p.get("t") or "").strip() for p in parts).strip()
@@ -153,14 +164,8 @@ def _piece(seg, parts: list[dict], label: str | None, base: str | None,
         t_end=float(parts[-1].get("e", seg.t_end)),
         text=text,
         needs_review=bool(seg.needs_review) if is_base else not bool(name),
-        two_voices=multi if is_base else False,
+        two_voices=_two_voices(seg) if is_base else False,
     )
-
-
-def _two_voices(seg) -> bool:
-    """Фрагмент с наложением двух голосов (multi_voice) либо часть такой VAD-строки."""
-    return bool(getattr(seg, "two_voices", False)) or \
-        getattr(seg, "speaker_source", None) == "multi_voice"
 
 
 def coalesce_segments(segments: list) -> list[DisplaySegment]:
@@ -187,6 +192,7 @@ def coalesce_segments(segments: list) -> list[DisplaySegment]:
             prev.t_end = max(prev.t_end, seg.t_end or 0.0)
             prev.needs_review = prev.needs_review or bool(seg.needs_review)
             prev.two_voices = prev.two_voices or _two_voices(seg)
+            prev.pending_review = prev.pending_review or _pending_review(seg)
         else:
             out.append(DisplaySegment(
                 speaker_id=seg.speaker_id,
@@ -196,6 +202,7 @@ def coalesce_segments(segments: list) -> list[DisplaySegment]:
                 text=text,
                 needs_review=bool(seg.needs_review),
                 two_voices=_two_voices(seg),
+                pending_review=_pending_review(seg),
             ))
         last_end = seg.t_end if seg.t_end is not None else seg.t_start
     return out

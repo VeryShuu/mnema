@@ -1006,8 +1006,11 @@ def _write_steno(job_id: int, p: dict) -> Path:
     from ..core.coalesce import coalesce_segments, expand_segments, speaker_display
     for seg in coalesce_segments(expand_segments(list(segs),
                                                  job.diar_turns if job else None)):
-        tag = (" (dva golosa v fragmente)" if getattr(seg, "two_voices", False)
-               else " (trebuetsya utochnenie)" if seg.needs_review else "")
+        tag = (" (dva golosa v fragmente)" if getattr(seg, "two_voices", False) else "") + \
+            (" (trebuetsya utochnenie)" if getattr(
+                seg, "pending_review",
+                bool(seg.needs_review) and not getattr(seg, "two_voices", False))
+             else "")
         lines.append(f"{_fmt(seg.t_start)} {speaker_display(seg)}{tag}: {seg.text}")
     p["steno"].write_text("\n".join(lines), encoding="utf-8")
     with get_session() as s:

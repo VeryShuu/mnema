@@ -99,6 +99,7 @@ def test_two_voices_flag_from_multi_voice_source():
     out = coalesce_segments([_seg(0, 5, "a", "S0", speaker_source="multi_voice",
                                   needs_review=True)])
     assert out[0].two_voices is True
+    assert out[0].pending_review is False
 
 
 def test_two_voices_propagates_on_merge():
@@ -111,6 +112,18 @@ def test_two_voices_propagates_on_merge():
 def test_two_voices_default_false_for_plain_segments():
     out = coalesce_segments([_seg(0, 5, "a", "S0", needs_review=True)])
     assert out[0].two_voices is False and out[0].needs_review is True
+    assert out[0].pending_review is True
+
+
+def test_merge_multi_voice_with_pending_keeps_pending():
+    """multi_voice + nastoyashchiy unresolved tovo zhe klastera: neutral'nyy
+    beydzh ne dolzhen zamaskirovat' 'nuzhno utochnenie'."""
+    segs = [_seg(0, 5, "nalozhenie", "S0", speaker_source="multi_voice",
+                 needs_review=True),
+            _seg(5, 10, " unresolved", "S0", needs_review=True)]
+    out = coalesce_segments(segs)
+    assert len(out) == 1
+    assert out[0].two_voices is True and out[0].pending_review is True
 
 
 def test_display_name_fallback_and_priority():

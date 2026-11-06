@@ -110,8 +110,11 @@ def render_markdown(job, data: dict, segments: list,
     lines.append("")
     for seg in segments:
         name = speaker_display(seg)
-        flag = (" [два голоса]" if getattr(seg, "two_voices", False)
-                else " [треб.уточнения]" if seg.needs_review else "")
+        flag = (" [два голоса]" if getattr(seg, "two_voices", False) else "") + \
+            (" [треб.уточнения]" if getattr(
+                seg, "pending_review",
+                bool(seg.needs_review) and not getattr(seg, "two_voices", False))
+             else "")
         lines.append(f"`{_fmt(seg.t_start)}` **{name}**{flag}: {seg.text}")
     lines.append("")
     return "\n".join(lines)

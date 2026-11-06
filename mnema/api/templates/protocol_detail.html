@@ -56,7 +56,7 @@ function playAt(h, m, s) {
   {% for s in segments %}
   <p><a href="#" onclick="playAt({{ (s.t_start // 3600)|int }},{{ ((s.t_start % 3600) // 60)|int }},{{ (s.t_start % 60)|int }});return false;">{{ '%02d:%02d:%02d'|format((s.t_start//3600)|int, (s.t_start%3600//60)|int, (s.t_start%60)|int) }}</a>
   <b>{{ s.display_name }}</b>: {{ s.text }}
-  {% if s.two_voices %}{{ badge('two_voices') }}{% elif s.needs_review %}{{ badge('needs_review') }}{% endif %}</p>
+  {% if s.two_voices %}{{ badge('two_voices') }}{% endif %}{% if s.pending_review %}{{ badge('needs_review') }}{% endif %}</p>
   {% endfor %}
 </div>
 <p>
