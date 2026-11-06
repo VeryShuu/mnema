@@ -77,3 +77,42 @@ def test_json_object_instead_of_list_returns_two():
 def test_non_dict_items_are_ignored():
     res = run_check('[1, null, "recording", %s]' % job(10, "done"))
     assert res.returncode == 0
+
+
+# --- politika blokirovki deploy-guard-lib.sh -------------------------------
+
+GUARD_LIB = Path(__file__).resolve().parent.parent / "scripts" / "deploy-guard-lib.sh"
+
+
+def should_stop(rc: str, force: str) -> bool:
+    res = subprocess.run(
+        ["bash", "-c",
+         '. "%s"; guard_should_stop "%s" "%s"; echo $?' % (GUARD_LIB, rc, force)],
+        capture_output=True, text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    return res.stdout.strip().endswith("0")
+
+
+def test_guard_no_active_allows_deploy():
+    assert should_stop("0", "0") is False
+    assert should_stop("0", "1") is False
+
+
+def test_guard_active_blocks_deploy():
+    assert should_stop("1", "0") is True
+
+
+def test_guard_active_allowed_with_force():
+    assert should_stop("1", "1") is False
+
+
+def test_guard_unknown_state_blocks_deploy():
+    # neizvestnoye sostojanie (net otveta / garbage / net pythona) — stop
+    for rc in ("2", "3", "127", "x"):
+        assert should_stop(rc, "0") is True, rc
+
+
+def test_guard_unknown_state_allowed_only_with_force():
+    for rc in ("2", "3", "127"):
+        assert should_stop(rc, "1") is False, rc

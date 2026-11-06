@@ -37,33 +37,44 @@ fi
 # web-bot perezhivayet `up -d --force-recreate` s umeršim brauzerom: zapis'
 # obryvayetsja poserede vstrechi. Sprashivaem API serve o tekushchikh jobakh;
 # zapisi v hodke (launching/recording/uploading) — ostanavlivajemsja.
-# Proverka idet DO kakih-libo izmeneniy na serve (fetch/reset ešhe nidne).
+# Proverka idet DO kakih-libo izmeneniy na serve (fetch/reset ešhe nidne) i
+# POVTORYAETSA na serve neposredstvenno pered force-recreate (nize v heredoc):
+# mezhdu etoy tochkoy i `up -d` lezhat build i alembic —minyuty, za kotorye
+# scheduler uspevayet podnjat' vstrechu.
+# Neizvestnoye sostojanie (API ne otvechal / garbage / net parserta) blokiruet
+# tak zhe, kak aktivnyye zapisi; politika — scripts/deploy-guard-lib.sh,
+# edinstvennyy escape-hatch FORCE_DEPLOY=1.
+. "$REPO_DIR/scripts/deploy-guard-lib.sh"
 JOBS_JSON="$(curl -sf --max-time 10 "$API_CHECK_URL/api/jobs" || true)"
 CHECK_SH="$REPO_DIR/scripts/check-active-jobs.sh"
+ACTIVE_LIST=""
+CHECK_RC=3
 if [ -z "$JOBS_JSON" ]; then
-    echo "VNI MANIE: API $API_CHECK_URL/api/jobs ne otvechal — aktivnyye zapisi NE provereny." >&2
+    echo "VNI MANIE: API $API_CHECK_URL/api/jobs ne otvechal — sostojanie zapisey NEIZVESTNO." >&2
 elif [ ! -f "$CHECK_SH" ]; then
-    echo "VNI MANIE: net $CHECK_SH — aktivnyye zapisi NE provereny." >&2
+    echo "VNI MANIE: net $CHECK_SH — sostojanie zapisey NEIZVESTNO." >&2
 else
     set +e
     ACTIVE_LIST="$(printf '%s' "$JOBS_JSON" | bash "$CHECK_SH" -)"
     CHECK_RC=$?
     set -e
-    case "$CHECK_RC" in
-        0) echo "==> Aktivnykh zapisey net — prodolzhajem." ;;
-        1)
-            if [ "${FORCE_DEPLOY:-0}" = "1" ]; then
-                echo "VNI MANIE: idut aktivnyye zapisi, no FORCE_DEPLOY=1 — prodolzhajem na svoy strakh:" >&2
-                printf '%s\n' "$ACTIVE_LIST" >&2
-            else
-                echo "ERROR: idut aktivnyye zapisi — deploy ostanovlen, chtoby ne ubit' zhivyy brauzer web-bot:" >&2
-                printf '%s\n' "$ACTIVE_LIST" >&2
-                echo "Dokanchivajte/otmenyte vstrechi ili povtorite s FORCE_DEPLOY=1." >&2
-                exit 1
-            fi
-            ;;
-        *) echo "VNI MANIE: ne razobral otvet API — aktivnyye zapisi NE provereny." >&2 ;;
-    esac
+fi
+if guard_should_stop "$CHECK_RC" "${FORCE_DEPLOY:-0}"; then
+    if [ "$CHECK_RC" = "1" ]; then
+        echo "ERROR: idut aktivnyye zapisi — deploy ostanovlen, chtoby ne ubit' zhivyy brauzer web-bot:" >&2
+    else
+        echo "ERROR: ne udalos' proverit' aktivnyye zapisi (rc=$CHECK_RC) — neizvestnoye" \
+             "sostojanie blokiruet deploj tak zhe, kak aktivnyye zapisi." >&2
+    fi
+    printf '%s\n' "$ACTIVE_LIST" >&2
+    echo "Dokanchivajte/otmenyte vstrechi (ili chinite API/parsheg), i povtorite s FORCE_DEPLOY=1." >&2
+    exit 1
+fi
+if [ "$CHECK_RC" != "0" ]; then
+    echo "VNI MANIE: rc=$CHECK_RC (aktivnyye/sostojanie ne podtverzhdeny), no FORCE_DEPLOY=1 — prodolzhajem na svoy strakh:" >&2
+    printf '%s\n' "$ACTIVE_LIST" >&2
+else
+    echo "==> Aktivnykh zapisey net — prodolzhajem."
 fi
 
 BRANCH="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)"
@@ -115,6 +126,33 @@ echo "    alembic upgrade head..."
 # kogda izmeneny tol'ko kod/sloi, a konfiguratsiya compose ne menyalas'
 # (proveryalos' na serve: obrazy peresobrany, a konteinery - 2-ndavney datchy).
 # redis ne recreationim — on trigger, nego SSOT; persozdanie sbrosit ochered'.
+
+# PVTORNAYA blokirovka: mezhdu lokal'noy proverkoy i etoy tochkoy lezhat
+# bundle/scp/build/alembic (minyuty) — scheduler za eto vremya mog podnjat'
+# vstrechu (prejoin 2 min). Sprashivaem API snaova, uze na serve; skripty
+# berem iz working tree posle `reset --hard`. Politika ta zhe: aktivnyye ili
+# neizvestnoye — stop; FORCE_DEPLOY raskryt zdes' lokal'no v tekst heredoc.
+. "$DEST_DIR/scripts/deploy-guard-lib.sh"
+SRV_JSON="\$(curl -sf --max-time 10 localhost:8000/api/jobs || true)"
+SRV_LIST=""
+SRV_RC=3
+if [ -n "\$SRV_JSON" ]; then
+    set +e
+    SRV_LIST="\$(printf '%s' "\$SRV_JSON" | bash "\$DEST_DIR/scripts/check-active-jobs.sh" -)"
+    SRV_RC=\$?
+    set -e
+fi
+if guard_should_stop "\$SRV_RC" "${FORCE_DEPLOY:-0}"; then
+    if [ "\$SRV_RC" = "1" ]; then
+        echo "ERROR: zapisi nachalis' vo vremja sborki — ostanavlivaemsja pered force-recreate:" >&2
+    else
+        echo "ERROR: pered force-recreate ne udalos' proverit' zapisi (rc=\$SRV_RC) — stop." >&2
+    fi
+    printf '%s\n' "\$SRV_LIST" >&2
+    echo "Povtorite s FORCE_DEPLOY=1 tol'ko esli uvareny, cto zhivykh zapisey net." >&2
+    exit 1
+fi
+
 \$COMPOSE up -d --force-recreate api worker web-bot
 
 echo "    proverka zapuska:"
