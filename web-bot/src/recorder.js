@@ -332,7 +332,12 @@ export async function launchAndRecord(jobId, cfg, holder, onEvent, vnc = null) {
     // Audio-obyavlenie (FT-10) sygraet DO zapisi: pre-arm okno 0 v kazhdom
     // freyme vytrasyvaetsya; posleokonchaniya frazy __mnemaArm otkryvaet
     // okno 1 (nastoyashchaya zapis') s tochnoy epohoy rec.start().
-    await playAnnouncement(page, cfg, onEvent);
+    // ANNOUNCE_ENABLED=0 — anons propuskaetsya (okno 0 vse ravno vytrasyvaetsya).
+    if (cfg.announceEnabled) {
+      await playAnnouncement(page, cfg, onEvent);
+    } else {
+      onEvent("announce", "анонс выключен (ANNOUNCE_ENABLED=0) — пропуск");
+    }
     // privetstviye sygrano — vyknuchayem mikrofon, chtoby feyk-mikrofona
     // ne shumel v konferentsii do kontsa zapisi.
     await muteMicrophone(page, onEvent);

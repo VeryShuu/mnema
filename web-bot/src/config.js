@@ -17,6 +17,7 @@ export function loadConfig() {
       ? parseFloat(process.env.SILENCE_LEVEL_DB) : -50,
     maxDurationMin: int(process.env.BOT_MAX_DURATION_MIN, 360),
     pageReloadRetries: int(process.env.PAGE_RELOAD_RETRIES, 2),
+    announceEnabled: isAnnounceEnabled(process.env),
     announceWav: process.env.ANNOUNCE_WAV || "templates/announce.wav",
     headful: process.env.HEADFUL === "1",
     captchaWaitMin: int(process.env.CAPTCHA_WAIT_MIN, 15),
@@ -42,6 +43,19 @@ export function loadConfig() {
 function int(v, d) {
   const n = parseInt(v, 10);
   return Number.isFinite(n) ? n : d;
+}
+
+// Vkl/vykl flag: pustoy/neraspoznnannoe -> default; 0/false/off/no -> vykl.
+export function boolFlag(v, d = true) {
+  const s = String(v ?? "").trim().toLowerCase();
+  if (!s) return d;
+  if (["0", "false", "off", "no"].includes(s)) return false;
+  if (["1", "true", "on", "yes"].includes(s)) return true;
+  return d;
+}
+
+export function isAnnounceEnabled(env = process.env) {
+  return boolFlag(env.ANNOUNCE_ENABLED, true);
 }
 
 // Normalizatsiya ssylki-priglasheniya (FT-1).

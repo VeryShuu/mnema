@@ -83,6 +83,7 @@ async function main() {
   log.info("start, poll", JSON.stringify({
     prejoin: cfg.prejoinSeconds, joinDeadlineMin: cfg.joinDeadlineMin,
     maxDurationMin: cfg.maxDurationMin, announce: cfg.announceWav,
+    announceEnabled: cfg.announceEnabled,
     vncMaxSlots: cfg.vncMaxSlots,
   }));
   const redis = createClient({ url: cfg.redisUrl });
