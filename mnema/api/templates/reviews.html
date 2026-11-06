@@ -35,7 +35,9 @@
     <p class="mt-sm"><button type="button" title="Убрать этот фрагмент из кластера"
             onclick="removeSegment({{ r.id }}, {{ seg.id }})">Удалить из кластера</button>
     <button type="button" class="ml-sm" title="Фрагмент с двумя голосами/посторонними звуками — не анализировать"
-            onclick="excludeSegment({{ r.id }}, {{ seg.id }})">Исключить из анализа</button></p>
+            onclick="excludeSegment({{ r.id }}, {{ seg.id }})">Исключить из анализа</button>
+    <button type="button" class="ml-sm" title="Два человека перебивают друг друга: не распознавать как отдельный голос, оставить в стенограмме с пометкой «два голоса»"
+            onclick="mixSegment({{ r.id }}, {{ seg.id }})">Микс голосов</button></p>
   {% endfor %}
   </div>
 </div>
@@ -88,6 +90,12 @@ async function excludeSegment(rid, segId){
   if(!confirm('Исключить этот фрагмент из анализа полностью? Он не попадёт в стенограмму и протокол.')) return;
   const r = await fetch('/api/reviews/'+rid+'/segments/'+segId+'/exclude', {method:'POST'});
   if(!r.ok){ toast('Не удалось исключить фрагмент: ' + r.status,'error'); return; }
+  location.reload();
+}
+async function mixSegment(rid, segId){
+  if(!confirm('Пометить фрагмент как микс двух голосов?\n\nОн больше не будет распознаваться как отдельный голос, но останется в стенограмме и протоколе с пометкой «Два голоса в фрагменте».')) return;
+  const r = await fetch('/api/reviews/'+rid+'/segments/'+segId+'/mix', {method:'POST'});
+  if(!r.ok){ toast('Не удалось пометить фрагмент: ' + r.status,'error'); return; }
   location.reload();
 }
 </script>

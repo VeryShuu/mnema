@@ -878,6 +878,79 @@ def test_excluded_segments_skip_steno_and_protocol(client):
     assert "чужой" not in lines and "остался" in lines
 
 
+# ---- mix-voices: 'mikss dvukh golosov' vmesto raspoznavaniya ----------------
+
+def test_mix_segment_marks_voice_mix_keeps_cluster_pending(client):
+    """POST .../mix: speaker_source=voice_mix, needs_review snyat, segment ne
+    excluded; v klastere eshchyo est' utochnyaemyy fragment — review zhiv."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Segment
+    jid, rid, _s1, s2 = _make_two_segment_cluster(client)
+    r = client.post(f"/api/reviews/{rid}/segments/{s2}/mix")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "cluster_closed": False, "job_done": False}
+    with get_session() as s:
+        seg = s.get(Segment, s2)
+        assert seg.speaker_source == "voice_mix"
+        assert seg.needs_review is False
+        assert seg.excluded is False
+
+
+def test_mix_last_pending_segment_closes_review_as_mixed_and_resumes(client,
+                                                                     monkeypatch):
+    """Posledniy utochnyaemyy fragment pomечён mikssom — review zakryvaetsya
+    (status=mixed), analiz vozobnovlyaetsya."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Job, ReviewRequest, Segment
+    calls = []
+    monkeypatch.setattr("mnema.core.queue.enqueue_job",
+                        lambda *a, **k: calls.append(a))
+    jid, rid, sid = _make_single_segment_cluster(client)
+    r = client.post(f"/api/reviews/{rid}/segments/{sid}/mix")
+    assert r.status_code == 200
+    assert r.json()["cluster_closed"] is True and r.json()["job_done"] is True
+    with get_session() as s:
+        seg = s.get(Segment, sid)
+        assert seg.speaker_source == "voice_mix" and seg.needs_review is False
+        assert s.get(ReviewRequest, rid).status == "mixed"
+        assert s.get(Job, jid).status == "processing"
+    assert ("structure", "mnema.worker.tasks.run_structure", jid) in calls
+
+
+def test_mix_segment_not_found_and_confirmed(client):
+    jid, rid, s1, _s2 = _make_two_segment_cluster(client)
+    assert client.post(f"/api/reviews/{rid}/segments/999999/mix").status_code == 404
+    client.post(f"/api/reviews/{rid}", json={"employee_name": "Sidorov S. S."})
+    assert client.post(f"/api/reviews/{rid}/segments/{s1}/mix").status_code == 409
+
+
+def test_mix_excluded_segment_rejected(client):
+    jid, rid, s1, _s2 = _make_two_segment_cluster(client)
+    client.post(f"/api/reviews/{rid}/segments/{s1}/exclude")
+    assert client.post(f"/api/reviews/{rid}/segments/{s1}/mix").status_code == 409
+
+
+def test_mixed_segment_stays_in_steno_with_two_voices_tag(client):
+    """Mikss-ne-golos ostyotsya v stenograme i vhode LLM s pometskoy dvukh
+    golosov (v otlichie ot excluded)."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Segment
+    from sqlalchemy import select
+    from mnema.worker import tasks
+    jid, rid, _s1, s2 = _make_two_segment_cluster(client)
+    client.post(f"/api/reviews/{rid}/segments/{s2}/mix")
+    p = tasks._job_paths(jid)
+    tasks._write_steno(jid, p)
+    steno = p["steno"].read_text(encoding="utf-8")
+    assert "чужой" in steno and "dva golosa v fragmente" in steno
+    with get_session() as s:
+        segs = s.scalars(select(Segment).where(
+            Segment.job_id == jid, Segment.excluded.is_(False)
+        ).order_by(Segment.t_start)).all()
+    lines = tasks._transcript_lines(segs)
+    assert "[два голоса]" in lines and "чужой" in lines
+
+
 def _to_status(client, jid, chain):
     for st in chain:
         assert client.post(f"/api/jobs/{jid}/status",

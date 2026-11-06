@@ -12,7 +12,7 @@ from .db import Base
 JOB_STATUSES = ("scheduled", "launching", "recording", "processing",
                 "awaiting_llm", "awaiting_review", "done", "failed",
                 "cancelled", "uploading")
-SPEAKER_SOURCES = ("voiceprint", "unresolved", "multi_voice")
+SPEAKER_SOURCES = ("voiceprint", "unresolved", "multi_voice", "voice_mix")
 JOB_SOURCES = ("zoom", "upload", "split")
 UPLOAD_STATUSES = ("pending", "uploading", "complete", "failed")
 

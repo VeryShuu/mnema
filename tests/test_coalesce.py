@@ -148,11 +148,12 @@ def test_empty_input():
 # ---- razbienie VAD-stroki s dvumya golosami (turn boundaries) -------------
 
 def _asr_seg(t0, t1, text, parts, diar_label="SPEAKER_00", speaker_id=None,
-             speaker_name=None, needs_review=False):
+             speaker_name=None, needs_review=False, speaker_source=None):
     return SimpleNamespace(t_start=t0, t_end=t1, text=text, parts=None,
                            asr_json=parts, speaker_id=speaker_id or diar_label,
                            diar_label=diar_label, speaker_name=speaker_name,
-                           needs_review=needs_review)
+                           needs_review=needs_review,
+                           speaker_source=speaker_source)
 
 
 TURNS_AB = [[0.0, 9.0, "SPEAKER_00"], [9.0, 15.0, "SPEAKER_01"]]
@@ -185,6 +186,22 @@ def test_expand_second_speaker_unnamed_needs_review():
     assert out[1].speaker_name is None
     assert out[1].needs_review is True
     assert speaker_display(out[1]) == "Голос SPEAKER_01"
+
+
+def test_expand_keeps_voice_mix_line_unsplit():
+    """Operatorskiy mikss dvukh golosov: stroku ne rezh em i ne pereatribuiruem."""
+    line = _two_voice_line()
+    line.speaker_source = "voice_mix"
+    out = expand_segments([line], TURNS_AB)
+    assert len(out) == 1 and out[0] is line
+
+
+def test_voice_mix_is_two_voices_not_pending_review():
+    """Mikss — dvukhgolosaya reperika s po metkoy, no bolshe ne 'utochnenie'."""
+    out = coalesce_segments([_seg(0, 5, "a", "S0", speaker_source="voice_mix",
+                                  needs_review=False)])
+    assert out[0].two_voices is True
+    assert out[0].pending_review is False
 
 
 def test_expand_uses_resident_name_of_other_cluster():

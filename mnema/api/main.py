@@ -747,6 +747,43 @@ def api_exclude_segment_from_analysis(rid: int, seg_id: int):
     return {"ok": True, "cluster_closed": cluster_closed, "job_done": done_now}
 
 
+@app.post("/api/reviews/{rid}/segments/{seg_id}/mix")
+def api_mark_segment_voice_mix(rid: int, seg_id: int):
+    """Пометить фрагмент как микс двух голосов (перебивают друг друга):
+    segment ne raspoznaetsya kak otdel'nyy golos (v embedding i imena ne idyot),
+    no ostaetsya v steno/protokolle s pometskoy «dva golosa». Esli v klastere
+    ne ostalos' fragmentov, zhdayushchikh resheniya, — review zakryvaetsya
+    (status=mixed) i analiz vozobnovlyaetsya."""
+    from ..core.pipeline import resume_after_reviews
+    with get_session() as s:
+        r = s.get(ReviewRequest, rid)
+        seg = s.get(Segment, seg_id)
+        if r is None or seg is None or seg.job_id != r.job_id or seg.speaker_id != r.cluster_label:
+            raise HTTPException(404)
+        if r.status != "pending":
+            raise HTTPException(409, "уточнение уже отвечено")
+        if seg.excluded:
+            raise HTTPException(409, "фрагмент уже исключён")
+        seg.speaker_source = "voice_mix"
+        seg.needs_review = False
+        s.add(SessionEvent(job_id=r.job_id, event="segment_mixed",
+                           detail=f"фрагмент {seg.id} (кластер {r.cluster_label})"))
+        waiting = s.scalars(select(Segment).where(
+            Segment.job_id == r.job_id,
+            Segment.speaker_id == r.cluster_label,
+            Segment.excluded.is_(False),
+            Segment.needs_review.is_(True))).first()
+        cluster_closed = waiting is None
+        if cluster_closed:
+            r.status = "mixed"
+            r.answered_by = "web"
+            r.answered_ts = dt.datetime.now(dt.timezone.utc)
+        job_id = r.job_id
+        s.commit()
+    done_now = resume_after_reviews(job_id) if cluster_closed else False
+    return {"ok": True, "cluster_closed": cluster_closed, "job_done": done_now}
+
+
 @app.get("/api/voice-profiles")
 def api_profiles():
     with get_session() as s:

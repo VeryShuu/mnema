@@ -85,9 +85,10 @@ def _part_label(turns: list, s: float, e: float, fallback: str | None,
 
 
 def _two_voices(seg) -> bool:
-    """Фрагмент с наложением двух голосов (multi_voice) либо часть такой VAD-строки."""
+    """Фрагмент с наложением двух голосов (multi_voice / operator-marked voice_mix)
+    либо часть такой VAD-строки."""
     return bool(getattr(seg, "two_voices", False)) or \
-        getattr(seg, "speaker_source", None) == "multi_voice"
+        getattr(seg, "speaker_source", None) in ("multi_voice", "voice_mix")
 
 
 def _pending_review(seg) -> bool:
@@ -118,6 +119,11 @@ def expand_segments(segments: list, turns: list | None = None) -> list:
     out: list = []
     for seg in segments:
         if not (seg.text or "").strip():
+            continue
+        if getattr(seg, "speaker_source", None) == "voice_mix":
+            # оператор подтвердил микс двух голосов: строку не режем и не
+            # переатрибуируем по turns — отдаём целиком с пометкой двух голосов
+            out.append(seg)
             continue
         parts = [p for p in (getattr(seg, "asr_json", None) or [])
                  if (p.get("t") or "").strip()]

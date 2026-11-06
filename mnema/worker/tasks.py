@@ -162,6 +162,10 @@ def run_speaker_id(job_id: int) -> None:
                              .order_by(Segment.t_start, Segment.id)).all()
             for i, row in enumerate(rows):
                 label = labels[i] if i < len(labels) else "SPEAKER_UNKNOWN"
+                if row.speaker_source == "voice_mix":
+                    # operatorskaya pometka miksa: perezapisyvat' ee na
+                    # multi_voice/ne-ozvuchennyy pri povtornoy diarizacii nel'zya
+                    continue
                 row.speaker_id = label
                 row.diar_label = label
                 ratio = ratios[i] if (ratios and i < len(ratios)) else None
@@ -596,11 +600,12 @@ def _run_speaker(job_id: int) -> None:
                     ReviewRequest.job_id == job_id,
                     ReviewRequest.cluster_label == label,
                     ReviewRequest.status.in_(("confirmed", "excluded",
-                                              "superseded")))).first()
+                                              "superseded", "mixed")))).first()
             operator_locked = (existing is not None
                                and existing.status == "confirmed"
                                and existing.answered_by not in (None, "voiceprint"))
-            clean = [x for x in cl if x.speaker_source != "multi_voice"]
+            clean = [x for x in cl
+                     if x.speaker_source not in ("multi_voice", "voice_mix")]
             embedding = _cluster_embedding(wav, clean, turns=turns)
             centroids[label] = embedding
             verdict, profile, sim = match_cluster(embedding) if embedding else ("unresolved", None, 0.0)
@@ -609,6 +614,11 @@ def _run_speaker(job_id: int) -> None:
             for seg in cl:
                 if operator_locked:
                     continue  # otvet cheloveka vertnee lyubogo novogo verdicta
+                if seg.speaker_source == "voice_mix":
+                    # operator skazal: mikss dvuh golosov — imya ne prisvaivaem,
+                    # v embedding ne berem, na review bolshe ne vynosim
+                    seg.needs_review = False
+                    continue
                 if seg.speaker_source == "multi_voice":
                     # v fragmente dva golosa: imya ne prisvaivaem, v embedding
                     # on bez togo ne beretsya — tol'ko flag dlya stenogrammy
@@ -831,7 +841,7 @@ def _phrase_resort(s, job_id: int, wav: Path, segs: list,
     created = 0
     turn_edits: list[tuple[float, float, str, str]] = []
     for seg in segs:
-        if seg.excluded or seg.speaker_source == "multi_voice":
+        if seg.excluded or seg.speaker_source in ("multi_voice", "voice_mix"):
             continue
         base = seg.diar_label or seg.speaker_id
         if not base or base in locked or not centroids.get(base):
@@ -946,7 +956,7 @@ def _cluster_embedding(wav: Path, segs: list, turns: list | None = None
     cands: list[tuple[float, float, float]] = []  # (dur, t0, t1)
     overlap_min = 0.7
     for seg in segs:
-        if seg.speaker_source == "multi_voice":
+        if seg.speaker_source in ("multi_voice", "voice_mix"):
             continue
         t0, t1 = seg.t_start, seg.t_end
         if turns:
@@ -1220,5 +1230,6 @@ def _transcript_lines(segs: list, turns: list | None = None) -> str:
     from ..core.coalesce import coalesce_segments, expand_segments, speaker_display
     out = []
     for seg in coalesce_segments(expand_segments(list(segs), turns)):
-        out.append(f"{_fmt(seg.t_start)} {speaker_display(seg)}: {seg.text}")
+        mix = " [два голоса]" if getattr(seg, "two_voices", False) else ""
+        out.append(f"{_fmt(seg.t_start)} {speaker_display(seg)}{mix}: {seg.text}")
     return "\n".join(out)

@@ -246,9 +246,13 @@ def apply_review_answer(rid: int, employee_id: int | None, employee_name: str | 
         r.answered_ts = dt.datetime.now(dt.timezone.utc)
         # peremenuyat' segmenty klasterya; multi_voice (dva golosa v fragmente)
         # imeni ne prisvaivaetsya — v fragmente vtoroy chelovek, ego frazy ne
-        # dolzhny pisatsya pod podtverzhdennym imenom (kak i v _run_speaker)
+        # dolzhny pisatsya pod podtverzhdennym imenom (kak i v _run_speaker);
+        # voice_mix (operator podtverdil mikss) — to zhe, no snyato s review
         for seg in s.scalars(select(Segment).where(
                 Segment.job_id == job_id, Segment.speaker_id == cluster)).all():
+            if seg.speaker_source == "voice_mix":
+                seg.needs_review = False
+                continue
             if seg.speaker_source == "multi_voice":
                 seg.needs_review = True
                 continue

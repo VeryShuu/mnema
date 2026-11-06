@@ -217,6 +217,48 @@ def test_multi_voice_segment_stays_unnamed_on_auto(db, monkeypatch):
         assert seg.speaker_name is None and seg.needs_review is True
 
 
+def test_voice_mix_segment_stays_unnamed_on_auto(db, monkeypatch):
+    """Operatorskiy mikss dvukh golosov: imya ne prisvaivaetsya i segment
+    bolshe ne zhdyot utochneniya."""
+    pid = _mkprofile("Avtomat Mix Mix.")
+    from mnema.core.db import get_session
+    from mnema.core.models import Job, Segment
+    with get_session() as s:
+        s.add(Job(id=24, topic="t", status="processing", source="upload"))
+        s.add(Segment(job_id=24, speaker_id="S0", diar_label="S0", t_start=0,
+                      t_end=5, text="x", speaker_source="voice_mix",
+                      needs_review=False))
+        s.commit()
+    _speaker_cluster_env(monkeypatch, "auto", pid, 0.9)
+    from mnema.worker.tasks import _run_speaker
+    _run_speaker(24)
+    with get_session() as s:
+        seg = s.scalars(select(Segment).where(Segment.job_id == 24)).first()
+        assert seg.speaker_source == "voice_mix"
+        assert seg.speaker_name is None and seg.needs_review is False
+
+
+def test_run_speaker_does_not_reopen_mixed_review(db, monkeypatch):
+    """Zakrytyy kak mixed review povtornoy matsching ne prevrashchaet v pending."""
+    from mnema.core.db import get_session
+    from mnema.core.models import Job, ReviewRequest, Segment
+    with get_session() as s:
+        s.add(Job(id=25, topic="t", status="processing", source="upload"))
+        s.add(Segment(job_id=25, speaker_id="S0", diar_label="S0", t_start=0,
+                      t_end=5, text="x", speaker_source="voice_mix",
+                      needs_review=False))
+        s.add(ReviewRequest(job_id=25, cluster_label="S0", status="mixed",
+                            answered_by="web"))
+        s.commit()
+    _speaker_cluster_env(monkeypatch, "unresolved", None, 0.1)
+    from mnema.worker.tasks import _run_speaker
+    _run_speaker(25)
+    with get_session() as s:
+        rrs = s.scalars(select(ReviewRequest).where(
+            ReviewRequest.job_id == 25)).all()
+        assert len(rrs) == 1 and rrs[0].status == "mixed"
+
+
 def test_operator_locked_cluster_not_renamed_by_rematch(db, monkeypatch):
     """V5: novyy verdict (osle backfill) ne perekhodyaet imena v klastere s
     ruchnym otvetom operatora."""

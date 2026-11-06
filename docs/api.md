@@ -283,14 +283,15 @@ mp3 доступен сразу после окончания записи.
 
 | Параметр (query) | По умолчанию | Описание |
 |---|---|---|
-| `status` | `pending` | `pending` / `confirmed` / `excluded` / `superseded` / `timeout` |
+| `status` | `pending` | `pending` / `confirmed` / `excluded` / `superseded` / `timeout` / `mixed` |
 
 Ответ: `[{id, job_id, cluster_label, candidate, candidate_id, similarity, status}]`
 
 Значения: `pending` — ждёт ответа; `confirmed` — отвечено оператором;
 `excluded` — кластер закрыт исключением всех фрагментов; `superseded` —
 кластер опустел после открепления фрагмента (см. DELETE); `timeout` — закрыт
-maintenance по истечении `REVIEW_TIMEOUT_HOURS`.
+maintenance по истечении `REVIEW_TIMEOUT_HOURS`; `mixed` — все оставшиеся
+фрагменты помечены миксом двух голосов (см. POST .../mix).
 
 ### `POST /api/reviews/{rid}`
 
@@ -330,6 +331,20 @@ maintenance по истечении `REVIEW_TIMEOUT_HOURS`.
 Исключить фрагмент из анализа полностью (два голоса / посторонние звуки) —
 не попадает в стенограмму и протокол. Если кластер опустел — review
 закрывается (`status=excluded`) и анализ возобновляется.
+
+Ответ: `{"ok", "cluster_closed", "job_done"}`
+
+### `POST /api/reviews/{rid}/segments/{seg_id}/mix`
+
+Пометить фрагмент «Микс голосов»: два человека перебивают друг друга, и
+распознать их по отдельности нельзя (фрагменты длиннее ~5 с с наложением
+диаризация помечает как `multi_voice`). Фрагмент перестаёт уточняться как
+отдельный голос (`speaker_source=voice_mix`, `needs_review` снят), в
+эмбеддинги кластера и в имена не попадает, но остаётся в стенограмме,
+протоколе и входе LLM с пометкой «Два голоса в фрагменте». Если в кластере
+не осталось фрагментов, ждущих решения, — review закрывается
+(`status=mixed`) и анализ возобновляется. Для исключённого фрагмента и
+отвеченного review — `409`.
 
 Ответ: `{"ok", "cluster_closed", "job_done"}`
 
