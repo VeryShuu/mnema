@@ -54,6 +54,11 @@ REGISTRY: tuple[Block, ...] = (
             when="otobrazenie i vzor daty (FT-22)",
             if_empty="Europe/Moscow",
             comment="poyas veb-interfeysa i pisen; hranenie vsegda UTC"),
+        Key("API_TOKEN", DEFAULTED, "", secret=True,
+            readers="api (REST-klienty: portal)",
+            when="auth upravlencheskih /api/jobs* (zagolovok X-API-Key)",
+            if_empty="bez auth — tol'ko setevoy perimetr",
+            comment="vnutrennie endpointy web-bot i veb-UI ne ohvacheni"),
     )),
     Block("recorder (web-bot chitaet vsyo)", (
         Key("ZOOM_PROFILE_DIR", REQUIRED,

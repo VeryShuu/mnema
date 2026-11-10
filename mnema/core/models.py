@@ -35,6 +35,9 @@ class Job(Base):
     duration_max_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="scheduled", index=True)
     created_by: Mapped[str] = mapped_column(String(64), default="api")
+    # vneshniy klyuch zaprosivshey sistemy (portal): povtornyy POST /api/jobs
+    # s tem zhe external_id vozvrashaet sushchestvuyushchuyu vstrechu (bez dublya)
+    external_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     fail_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     join_attempts: Mapped[int] = mapped_column(Integer, default=0)

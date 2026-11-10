@@ -15,6 +15,16 @@ REST API сервиса `api` (FastAPI). Реализация: `mnema/api/main.p
 - Ошибки: `404` — объект не найден, `409` — недопустимое состояние/переход,
   `400`/`422` — некорректные данные, `413` — превышен лимит размера.
 
+### Аутентификация REST (X-API-Key)
+
+Если задан env `API_TOKEN` (непустой), «управленческие» эндпоинты
+`GET /api/jobs`, `POST /api/jobs`, `GET /api/jobs/{jid}`, `PATCH /api/jobs/{jid}`,
+`DELETE /api/jobs/{jid}` требуют заголовок `X-API-Key: <API_TOKEN>`;
+несовпадение — `401`. Пустой `API_TOKEN` — авторизация выключена (только
+сетевой периметр). Служебные эндпоинты web-bot (`/api/jobs/{jid}/join-info`,
+`/status`, `/events`, `/finished`, `/leave`, `/confirm-end`, `/vnc`), раздача
+аудио и WEB-UI под эту проверку не подпадают.
+
 ## Статусы встречи (Job)
 
 Допустимые переходы (`ALLOWED_TRANSITIONS`, `mnema/core/pipeline.py`):
@@ -46,7 +56,7 @@ REST API сервиса `api` (FastAPI). Реализация: `mnema/api/main.p
 |---|---|---|
 | `status` | string, opt | фильтр по статусу |
 
-Ответ: `[{id, zoom_meeting_id, topic, start_at, status, fail_reason, started_ts, ended_ts}]`
+Ответ: `[{id, zoom_meeting_id, topic, start_at, status, fail_reason, started_ts, ended_ts, external_id}]`
 
 ### `POST /api/jobs`
 
@@ -61,14 +71,44 @@ REST API сервиса `api` (FastAPI). Реализация: `mnema/api/main.p
   "pwd": "secret",
   "topic": "Планёрка",
   "start_at": "2026-10-06T10:00:00Z",
-  "duration_max_min": 60
+  "end_at": "2026-10-06T11:00:00Z",
+  "duration_max_min": 60,
+  "external_id": "portal:booking-uuid:room-uuid:1"
 }
 ```
 
 Все поля опциональны (минимум — `meeting_link` или `meeting_id`).
 `start_at = null` — немедленный запуск (внешние встречи).
 
-Ответ: `{"id": 1, "status": "scheduled"}`
+`external_id` — ключ идемпотентности внешней системы (портал): повторный POST
+с тем же `external_id` не создаёт дубль, а возвращает существующую встречу
+(`existing: true`). Пароль, если не передан отдельно, извлекается из ссылки
+(`?pwd=`/`passcode=`); поддерживаются и PMN-ссылки `zoom.us/my/<name>`.
+
+Ответ: `{"id": 1, "status": "scheduled", "existing": false}`
+
+### `PATCH /api/jobs/{jid}`
+
+Частичное обновление ещё не начатой встречи (только `status=scheduled`).
+Переданное поле — обновить, отсутствующее — без изменения (настоящий PATCH).
+
+Тело (JSON, все поля опциональны):
+
+```json
+{
+  "topic": "Планёрка (перенесена)",
+  "meeting_link": "https://us06web.zoom.us/j/123456789?pwd=...",
+  "pwd": "secret",
+  "start_at": "2026-10-06T10:30:00Z",
+  "end_at": "2026-10-06T11:30:00Z"
+}
+```
+
+- Пустая строка в `topic` — `422`; неизвестная ссылка Zoom — `422`.
+- Встреча не в `scheduled` — `409` (параметры запущенной встречи менять нельзя).
+- После смены времени плановый запуск переназначается.
+
+Ответ: `{id, status, topic, start_at, end_at, external_id}`
 
 ### `GET /api/jobs/{jid}`
 
@@ -112,6 +152,9 @@ job переходит в `awaiting_llm` (этап LLM показывается 
 
 Служебный эндпоинт для web-bot (только сетевой периметр): возвращает
 `{meeting_id, pwd, join_link, end_at}`; пароль берётся из secrets store.
+Если `end_at` не задан напрямую, но есть `duration_max_min`, возвращается
+производный `end_at = start_at + duration_max_min` (потребитель — web-bot,
+сейчас поле информационное).
 
 ### `POST /api/jobs/{jid}/events`
 

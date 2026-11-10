@@ -9,18 +9,21 @@ import os
 import subprocess
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import (Depends, FastAPI, File, Form, Header, HTTPException,
+                     Request, UploadFile)
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from ..core import registry
 from ..core.capabilities import capability_status
 from ..core.db import Base, get_engine, get_session
 from ..core.log_setup import setup_logging
-from ..core.jobs_api import (cancel_job, create_job, delete_job, rename_job,
+from ..core.jobs_api import (JobNotEditable, UNSET, cancel_job, create_job,
+                             delete_job, get_job_by_external_id, rename_job,
                              update_job)
 from ..core.models import (AudioFile, Job, Notification, PresetLink, Protocol,
                            ReviewRequest, Segment, SessionEvent, SessionHealth,
@@ -118,16 +121,35 @@ def startup() -> None:
 
 
 # ----------------------------------------------------------------- REST (FT-21)
+def require_api_key(x_api_key: str | None = Header(default=None)):
+    """API-token iz env API_TOKEN (zadumano dlya portal-integracii).
+
+    Pustoy API_TOKEN => auth vykluchen (tol'ko setevoy perimetr, kak bylo).
+    Ohvat — tol'ko upravlencheskie /api/jobs* endpointy: sluzhebnye endpointy
+    web-bot (join-info/status/events/finished/leave/vnc) i veb-UI ostayutsya
+    kak est', chtoby ne meniat' deploy i obmen bot<->api.
+    """
+    expected = os.environ.get("API_TOKEN", "").strip()
+    if not expected:
+        return
+    if x_api_key != expected:
+        raise HTTPException(401, "Требуется корректный заголовок X-API-Key")
+
+
 class JobIn(BaseModel):
     meeting_link: str | None = None
     meeting_id: str | None = None
     pwd: str | None = None
     topic: str | None = None
     start_at: dt.datetime | None = None
+    end_at: dt.datetime | None = None
     duration_max_min: int | None = None
+    # vneshniy klyuch klienta (portal): povtornyy POST s tem zhe external_id
+    # ne sozdayet dubl' — vernetsya sushchestvuyushchaya vstrecha
+    external_id: str | None = None
 
 
-@app.get("/api/jobs")
+@app.get("/api/jobs", dependencies=[Depends(require_api_key)])
 def api_jobs(status: str | None = None):
     with get_session() as s:
         q = select(Job).order_by(Job.start_at.desc()).limit(200)
@@ -138,19 +160,33 @@ def api_jobs(status: str | None = None):
             "id": j.id, "zoom_meeting_id": j.zoom_meeting_id, "topic": j.topic,
             "start_at": j.start_at, "status": j.status, "fail_reason": j.fail_reason,
             "started_ts": j.started_ts, "ended_ts": j.ended_ts,
+            "external_id": j.external_id,
         } for j in jobs]
 
 
-@app.post("/api/jobs")
+@app.post("/api/jobs", dependencies=[Depends(require_api_key)])
 def api_create_job(body: JobIn):
-    job = create_job(meeting_link=body.meeting_link, meeting_id=body.meeting_id,
-                     pwd=body.pwd, topic=body.topic or "",
-                     start_at=body.start_at,
-                     duration_max_min=body.duration_max_min)
-    return {"id": job.id, "status": job.status}
+    external_id = (body.external_id or "").strip() or None
+    if external_id:
+        existing = get_job_by_external_id(external_id)
+        if existing is not None:
+            return {"id": existing.id, "status": existing.status, "existing": True}
+    try:
+        job = create_job(meeting_link=body.meeting_link, meeting_id=body.meeting_id,
+                         pwd=body.pwd, topic=body.topic or "",
+                         start_at=body.start_at, end_at=body.end_at,
+                         duration_max_min=body.duration_max_min,
+                         external_id=external_id)
+    except IntegrityError:
+        # гонка двух одинаковых POST: unique external_id — вернём уже созданную
+        existing = get_job_by_external_id(external_id) if external_id else None
+        if existing is None:
+            raise HTTPException(409, "Конфликт external_id")
+        return {"id": existing.id, "status": existing.status, "existing": True}
+    return {"id": job.id, "status": job.status, "existing": False}
 
 
-@app.delete("/api/jobs/{jid}")
+@app.delete("/api/jobs/{jid}", dependencies=[Depends(require_api_key)])
 def api_cancel_job(jid: int):
     job = cancel_job(jid)
     if job is None:
@@ -158,7 +194,7 @@ def api_cancel_job(jid: int):
     return {"id": job.id, "status": job.status}
 
 
-@app.get("/api/jobs/{jid}")
+@app.get("/api/jobs/{jid}", dependencies=[Depends(require_api_key)])
 def api_job(jid: int):
     with get_session() as s:
         job = s.get(Job, jid)
@@ -174,11 +210,49 @@ def api_job(jid: int):
             "status": job.status, "error": job.error, "fail_reason": job.fail_reason,
             "start_at": job.start_at, "started_ts": job.started_ts,
             "ended_ts": job.ended_ts, "note": job.note,
+            "external_id": job.external_id,
             "parent_job_id": job.parent_job_id, "child_job_ids": list(child_ids),
             "split": job.split_json,
             "events": [{"ts": e.ts, "event": e.event, "detail": e.detail} for e in events],
             "audio": [{"kind": a.kind, "duration_s": a.duration_s, "bytes": a.bytes} for a in audio],
         }
+
+
+class JobPatch(BaseModel):
+    """Chastichnoe obnovlenie ESHCHYO NE NACHATOY vstrechi (status scheduled).
+
+    Peredannoe pole — obnovit, otsutstvuyushchee — bez izmeneniya
+    (chitaem cherez model_dump(exclude_unset=True)). Pustaya stroka v topic —
+    422; prisoedinenie uzhe zapushchennoy vstrechi — 409.
+    """
+    topic: str | None = None
+    meeting_link: str | None = None
+    pwd: str | None = None
+    start_at: dt.datetime | None = None
+    end_at: dt.datetime | None = None
+
+
+@app.patch("/api/jobs/{jid}", dependencies=[Depends(require_api_key)])
+def api_patch_job(jid: int, body: JobPatch):
+    fields = body.model_dump(exclude_unset=True)
+    if fields.get("meeting_link") and not link_valid(fields["meeting_link"]):
+        raise HTTPException(422, "Некорректная ссылка Zoom")
+    try:
+        job = update_job(jid,
+                         topic=fields.get("topic", None),
+                         meeting_link=fields.get("meeting_link", ""),
+                         pwd=fields.get("pwd", ""),
+                         start_at=fields.get("start_at"),
+                         end_at=fields.get("end_at", UNSET))
+    except KeyError:
+        raise HTTPException(404)
+    except JobNotEditable as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"id": job.id, "status": job.status, "topic": job.topic,
+            "start_at": job.start_at, "end_at": job.end_at,
+            "external_id": job.external_id}
 
 
 @app.get("/api/jobs/{jid}/join-info")
@@ -189,8 +263,11 @@ def api_join_info(jid: int):
         job = s.get(Job, jid)
         if job is None:
             raise HTTPException(404)
+        end_at = job.end_at
+        if end_at is None and job.duration_max_min and job.start_at:
+            end_at = job.start_at + dt.timedelta(minutes=job.duration_max_min)
         return {"meeting_id": job.zoom_meeting_id, "pwd": get_pwd(job.pwd_ref),
-                "join_link": job.join_link, "end_at": job.end_at}
+                "join_link": job.join_link, "end_at": end_at}
 
 
 # vnutrennie sobytiya ot web-bot (FT-9 event-log + statusy)

@@ -12,12 +12,24 @@ from .secrets_store import delete_pwd, store_pwd
 from .zoom_link import extract_meeting_id, normalize_join_link
 
 
+class JobNotEditable(ValueError):
+    """Vstrecha uzhe ne v statusе scheduled — parametry menyat nel'zya."""
+
+
+def get_job_by_external_id(external_id: str) -> Job | None:
+    """Vstrecha po vneshnemu klyuchu zaprosivshey sistemy (idempotentnost' POST)."""
+    with get_session() as s:
+        return s.scalars(
+            select(Job).where(Job.external_id == external_id)).first()
+
+
 def create_job(*, meeting_link: str | None = None, meeting_id: str | None = None,
                pwd: str | None = None, topic: str = "",
                start_at: dt.datetime | None = None,
                end_at: dt.datetime | None = None,
                duration_max_min: int | None = None,
-               created_by: str = "api") -> Job:
+               created_by: str = "api",
+               external_id: str | None = None) -> Job:
     src = meeting_link or (meeting_id or "")
     if not src:
         raise ValueError("Нужен meeting_link или meeting_id")
@@ -36,18 +48,21 @@ def create_job(*, meeting_link: str | None = None, meeting_id: str | None = None
     if immediate:
         start_at = dt.datetime.now(dt.timezone.utc)
     status = "scheduled"
+    external_id = (external_id or "").strip() or None
     with get_session() as s:
         job = Job(zoom_meeting_id=mid, join_link=join_link,
                   pwd_ref=(store_pwd(mid, pwd) if pwd else None),
                   topic=topic or f"Meeting {mid}", start_at=start_at,
                   end_at=end_at,
                   duration_max_min=duration_max_min, status=status,
-                  created_by=created_by)
+                  created_by=created_by, external_id=external_id)
         s.add(job)
         s.flush()
-        s.add(SessionEvent(job_id=job.id, event="created",
-                            detail=f"создал: {created_by} · запуск: "
-                                   f"{'сразу' if immediate else 'по расписанию'}"))
+        detail = (f"создал: {created_by} · запуск: "
+                  f"{'сразу' if immediate else 'по расписанию'}")
+        if external_id:
+            detail += f" · external_id: {external_id}"
+        s.add(SessionEvent(job_id=job.id, event="created", detail=detail))
         s.commit()
         s.refresh(job)
     from .scheduler import schedule_job_for
@@ -98,37 +113,48 @@ def rename_job(job_id: int, topic: str) -> Job | None:
         return job
 
 
+# Sentinel "pole ne peredano" dlya PATCH-semantiki update_job: v otlichie ot
+# None (yavnoe ochischenie end_at, kak delaet veb-forma) znachit "bez izmeneniya".
+UNSET: object = object()
+
+
 def update_job(job_id: int, *, meeting_link: str = "", pwd: str = "",
-               topic: str = "", start_at: dt.datetime | None = None,
-               end_at: dt.datetime | None = None) -> Job:
+               topic: str | None = None, start_at: dt.datetime | None = None,
+               end_at: dt.datetime | None | object = UNSET) -> Job:
     """Parametry ESHCHYO NE NACHATOY vstrechi (status scheduled).
 
-    KeyError esli vstrechi net; ValueError pri validacii ili popytke
-    redaktirovat' zapushchennuyu vstrechu. Naivnye start_at/end_at —
-    lokal'noe vremya operatora (kak v create_job). Pustaya pwd/ssylka —
-    bez izmeneniya. Posle smeny vremeni planovyy zapusk perenaznachaetsya.
+    KeyError esli vstrechi net; JobNotEditable (podklass ValueError) pri
+    popytke redaktirovat' zapushchennuyu vstrechu; ValueError pri validacii.
+    Naivnye start_at/end_at — lokal'noe vremya operatora (kak v create_job).
+    Pustaya pwd/ssylka — bez izmeneniya. topic=None — bez izmeneniya
+    (chastichnyy PATCH REST); pustaya stroka — oshibka (kak veb-forma).
+    end_at=UNSET (ne peredano) — bez izmeneniya; None — ochistit'.
+    Posle smeny vremeni planovyy zapusk perenaznachaetsya.
     """
-    topic = (topic or "").strip()[:512]
-    if not topic:
-        raise ValueError("Название не может быть пустым")
+    if topic is not None:
+        topic = (topic or "").strip()[:512]
+        if not topic:
+            raise ValueError("Название не может быть пустым")
     meeting_link = (meeting_link or "").strip()
     pwd = (pwd or "").strip()
     if start_at is not None and start_at.tzinfo is None:
         from .tz import local_to_utc
         start_at = local_to_utc(start_at)
-    if end_at is not None and end_at.tzinfo is None:
+    if end_at is not UNSET and end_at is not None and end_at.tzinfo is None:
         from .tz import local_to_utc
         end_at = local_to_utc(end_at)
-    if end_at is not None and start_at is not None and end_at <= start_at:
+    if end_at is not UNSET and end_at is not None and start_at is not None \
+            and end_at <= start_at:
         raise ValueError("Время окончания должно быть позже начала")
     with get_session() as s:
         job = s.get(Job, job_id)
         if job is None:
             raise KeyError(job_id)
         if job.status != "scheduled":
-            raise ValueError(
+            raise JobNotEditable(
                 "Менять параметры можно только до начала встречи")
-        job.topic = topic
+        if topic is not None:
+            job.topic = topic
         extracted_pwd = None
         if meeting_link:
             mid, extracted_pwd = extract_meeting_id(meeting_link)
@@ -142,7 +168,8 @@ def update_job(job_id: int, *, meeting_link: str = "", pwd: str = "",
                                     new_pwd)
         if start_at is not None:
             job.start_at = start_at
-        job.end_at = end_at
+        if end_at is not UNSET:
+            job.end_at = end_at
         s.add(SessionEvent(job_id=job_id, event="updated",
                            detail="параметры встречи изменены"))
         s.commit()
